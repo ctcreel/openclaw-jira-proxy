@@ -28,10 +28,11 @@ function validateSignature(rawBody: Buffer, signatureHeader: string, secret: str
 
 export async function receiveWebhook(request: Request, response: Response): Promise<void> {
   const settings = getSettings();
-  const signatureHeader = request.headers['x-hub-signature-256'];
+  // Jira Cloud sends X-Hub-Signature (WebSub format), not X-Hub-Signature-256 (GitHub format)
+  const signatureHeader = request.headers['x-hub-signature'];
 
   if (typeof signatureHeader !== 'string') {
-    logger.warn('Missing X-Hub-Signature-256 header');
+    logger.warn('Missing X-Hub-Signature header');
     response.status(401).json({ error: 'Missing signature' });
     return;
   }

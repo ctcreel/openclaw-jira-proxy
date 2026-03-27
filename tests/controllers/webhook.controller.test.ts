@@ -30,7 +30,7 @@ describe('Webhook Controller', () => {
     const response = await supertest(app)
       .post('/hooks/jira')
       .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature-256', signature)
+      .set('X-Hub-Signature', signature)
       .send(payload);
 
     expect(response.status).toBe(202);
@@ -42,7 +42,7 @@ describe('Webhook Controller', () => {
       .post('/hooks/jira')
       .set('Content-Type', 'application/json')
       .set(
-        'X-Hub-Signature-256',
+        'X-Hub-Signature',
         'sha256=deadbeef00000000000000000000000000000000000000000000000000000000',
       )
       .send(payload);
@@ -55,7 +55,7 @@ describe('Webhook Controller', () => {
     const response = await supertest(app)
       .post('/hooks/jira')
       .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature-256', 'md5=abc123')
+      .set('X-Hub-Signature', 'md5=abc123')
       .send(payload);
 
     expect(response.status).toBe(401);
@@ -66,7 +66,7 @@ describe('Webhook Controller', () => {
     const response = await supertest(app)
       .post('/hooks/jira')
       .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature-256', 'sha256=abcd')
+      .set('X-Hub-Signature', 'sha256=abcd')
       .send(payload);
 
     expect(response.status).toBe(401);
