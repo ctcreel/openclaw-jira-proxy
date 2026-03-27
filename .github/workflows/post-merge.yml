@@ -1,0 +1,36 @@
+name: Post Merge
+
+on:
+  push:
+    branches:
+      - development
+      - testing
+      - demo
+      - production
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  determine-environment:
+    name: Determine Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+    steps:
+      - name: Set environment
+        id: env
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "environment=$BRANCH" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy
+    needs: determine-environment
+    if: vars.ENABLE_DEPLOY == 'true'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: ${{ needs.determine-environment.outputs.environment }}
+      deploy: true
+    secrets: inherit

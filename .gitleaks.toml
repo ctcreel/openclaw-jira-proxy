@@ -1,0 +1,167 @@
+# Gitleaks Configuration
+# https://github.com/gitleaks/gitleaks
+#
+# This configuration detects secrets and sensitive information in commits.
+# Used by pre-commit hook to prevent accidental secret commits.
+
+title = "Sc0red Gitleaks Configuration"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GLOBAL ALLOWLIST
+# ═══════════════════════════════════════════════════════════════════════════
+
+[allowlist]
+description = "Global allowlist for non-sensitive patterns"
+
+# Files that should be ignored entirely
+paths = [
+    '''\.gitleaks\.toml$''',
+    '''\.pre-commit-config\.yaml$''',
+    '''go\.sum$''',
+    '''package-lock\.json$''',
+    '''pnpm-lock\.yaml$''',
+    '''\.github/.*\.ya?ml$''',
+]
+
+# Patterns that are NOT secrets (examples, placeholders, etc.)
+regexes = [
+    '''example''',
+    '''test''',
+    '''dummy''',
+    '''placeholder''',
+    '''changeme''',
+    '''your-.*-here''',
+    '''xxx+''',
+    '''fake''',
+    '''sample''',
+    '''mock''',
+]
+
+# Specific commits to ignore (e.g., initial commits with placeholder values)
+commits = []
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AWS RULES
+# ═══════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID"
+regex = '''(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'''
+tags = ["aws", "credentials", "key"]
+
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS Secret Access Key"
+regex = '''(?i)aws_?secret_?access_?key\s*[=:]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?'''
+secretGroup = 1
+tags = ["aws", "credentials", "secret"]
+
+[[rules]]
+id = "aws-session-token"
+description = "AWS Session Token"
+regex = '''(?i)aws_?session_?token\s*[=:]\s*['\"]?([A-Za-z0-9/+=]{100,})['\"]?'''
+secretGroup = 1
+tags = ["aws", "credentials", "token"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GENERIC SECRET RULES
+# ═══════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key"
+regex = '''(?i)(api[_-]?key|apikey)\s*[=:]\s*['\"]?([A-Za-z0-9_\-]{20,})['\"]?'''
+secretGroup = 2
+tags = ["api", "key"]
+
+[[rules]]
+id = "generic-secret"
+description = "Generic Secret"
+regex = '''(?i)(secret|password|passwd|pwd)\s*[=:]\s*['\"]?([^\s'\"]{8,})['\"]?'''
+secretGroup = 2
+tags = ["secret", "password"]
+
+[[rules]]
+id = "private-key"
+description = "Private Key"
+regex = '''-----BEGIN\s*(?:RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE KEY-----'''
+tags = ["key", "private"]
+
+[[rules]]
+id = "ssh-private-key"
+description = "SSH Private Key"
+regex = '''-----BEGIN OPENSSH PRIVATE KEY-----'''
+tags = ["ssh", "key", "private"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATABASE & SERVICE URLS
+# ═══════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+id = "database-url"
+description = "Database Connection URL with credentials"
+regex = '''(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@[^\s]+'''
+tags = ["database", "url", "credentials"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GITHUB & GIT
+# ═══════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+id = "github-token"
+description = "GitHub Personal Access Token"
+regex = '''ghp_[A-Za-z0-9_]{36}'''
+tags = ["github", "token"]
+
+[[rules]]
+id = "github-oauth"
+description = "GitHub OAuth Access Token"
+regex = '''gho_[A-Za-z0-9_]{36}'''
+tags = ["github", "oauth"]
+
+[[rules]]
+id = "github-app-token"
+description = "GitHub App Token"
+regex = '''(ghu|ghs)_[A-Za-z0-9_]{36}'''
+tags = ["github", "app", "token"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JWT & TOKENS
+# ═══════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+id = "jwt"
+description = "JSON Web Token"
+regex = '''eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*'''
+tags = ["jwt", "token"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1PASSWORD REFERENCES (ALLOWED)
+# ═══════════════════════════════════════════════════════════════════════════
+# 1Password references are how we SHOULD reference secrets
+# They look like: op://vault/item/field
+# These should NOT trigger alerts
+
+[[rules]]
+id = "1password-reference"
+description = "1Password reference (allowed - not a secret)"
+regex = '''op://[\w\-/]+'''
+[rules.allowlist]
+regexes = ['''.*''']
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLACK
+# ═══════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+id = "slack-webhook"
+description = "Slack Webhook URL"
+regex = '''https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+'''
+tags = ["slack", "webhook"]
+
+[[rules]]
+id = "slack-token"
+description = "Slack Token"
+regex = '''xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*'''
+tags = ["slack", "token"]

@@ -1,0 +1,46 @@
+name: Naming Validation
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: 'development'
+
+jobs:
+  validate-branch-name:
+    name: Branch Name
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate branch name
+        run: bash scripts/check_branch_name.sh
+
+  validate-naming:
+    name: Naming Conventions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Check naming conventions
+        run: npx tsx scripts/check-naming-conventions.ts
+      - name: Check abbreviations
+        run: npx tsx scripts/check-abbreviations.ts
+      - name: Check skip comments
+        run: npx tsx scripts/check-skip-comments.ts
+
+  naming-summary:
+    name: Naming Summary
+    runs-on: ubuntu-latest
+    needs: [validate-branch-name, validate-naming]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.validate-branch-name.result }}" != "success" ] || \
+             [ "${{ needs.validate-naming.result }}" != "success" ]; then
+            echo "Naming validation failed"
+            exit 1
+          fi
+          echo "All naming checks passed"

@@ -1,0 +1,62 @@
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      deploy:
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-node-pnpm
+
+      - name: Run checks
+        run: make check
+
+      - name: Install CDK dependencies
+        run: cd infra && pnpm install --frozen-lockfile
+
+      - name: Build application
+        if: inputs.deploy
+        run: pnpm run build
+
+      - name: Set environment uppercase
+        if: inputs.deploy
+        id: env
+        run: echo "ENV_UPPER=$(echo '${{ inputs.environment }}' | tr '[:lower:]' '[:upper:]')" >> $GITHUB_OUTPUT
+
+      - name: Load secrets from 1Password
+        if: inputs.deploy
+        uses: 1password/load-secrets-action@v2
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          AWS_ACCESS_KEY_ID: op://Engineering/AWS_ACCESS_KEY_ID_${{ steps.env.outputs.ENV_UPPER }}/credential
+          AWS_SECRET_ACCESS_KEY: op://Engineering/AWS_SECRET_ACCESS_KEY_${{ steps.env.outputs.ENV_UPPER }}/credential
+          AWS_REGION: op://Engineering/AWS_REGION_${{ steps.env.outputs.ENV_UPPER }}/credential
+
+      - name: Configure AWS credentials
+        if: inputs.deploy
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: CDK Bootstrap
+        if: inputs.deploy
+        run: cd infra && pnpm exec cdk bootstrap
+
+      - name: CDK Deploy
+        if: inputs.deploy
+        run: cd infra && pnpm exec cdk deploy --require-approval never -c environment=${{ inputs.environment }}

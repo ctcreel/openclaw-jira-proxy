@@ -1,0 +1,153 @@
+# -*- mode: yaml -*-
+# gitStream rules for automatic PR management
+
+manifest:
+  version: 1.0
+
+automations:
+  # Auto-approve documentation-only changes
+  approve_docs:
+    if:
+      - {{ files | match(regex=r/^.*\.(md|rst|txt)$/) | every }}
+      - {{ author.is_org_member }}
+    run:
+      - action: approve@v1
+      - action: add-label@v1
+        args:
+          label: "documentation"
+
+  # Label PRs by size
+  label_size:
+    if:
+      - {{ true }}
+    run:
+      - action: add-label@v1
+        args:
+          label: |
+            {% if diff.size < 10 %}
+            size/xs
+            {% elif diff.size < 50 %}
+            size/s
+            {% elif diff.size < 150 %}
+            size/m
+            {% elif diff.size < 500 %}
+            size/l
+            {% else %}
+            size/xl
+            {% endif %}
+
+  # Label PRs by type based on files changed
+  label_type:
+    if:
+      - {{ true }}
+    run:
+      - action: add-label@v1
+        args:
+          label: |
+            {% if files | match(regex=r/infra\/.*/) | some %}
+            infrastructure
+            {% elif files | match(regex=r/\.github\/.*/) | some %}
+            ci/cd
+            {% elif files | match(regex=r/tests\/.*/) | some %}
+            tests
+            {% elif files | match(regex=r/src\/.*/) | some %}
+            backend
+            {% else %}
+            misc
+            {% endif %}
+
+  # Request review from team based on changes
+  assign_reviewers:
+    if:
+      - {{ files | match(regex=r/infra\/.*/) | some }}
+      - {{ author.is_org_member }}
+    run:
+      - action: add-reviewers@v1
+        args:
+          reviewers: ["platform-team"]
+
+  # Mark PRs that touch critical files
+  flag_sensitive:
+    if:
+      - {{ files | match(regex=r/.*\.(env|key|pem|crt|cer)$/) | some }}
+    run:
+      - action: add-label@v1
+        args:
+          label: "sensitive"
+      - action: add-comment@v1
+        args:
+          comment: |
+            ⚠️ **This PR contains potentially sensitive files**
+
+            Please ensure:
+            - No secrets or credentials are committed
+            - All sensitive data is properly encrypted
+            - AWS Secrets Manager is used for runtime secrets
+
+  # Auto-merge dependabot PRs for patch versions
+  auto_merge_dependabot:
+    if:
+      - {{ author.name == 'dependabot[bot]' }}
+      - {{ branch.name | includes("dependabot") }}
+      - {{ pr.labels | match("dependencies") | some }}
+    run:
+      - action: approve@v1
+      - action: merge@v1
+        args:
+          wait_for_all_checks: true
+          squash_on_merge: true
+
+  # Require additional review for production changes
+  production_guard:
+    if:
+      - {{ base.name == 'production' }}
+    run:
+      - action: add-label@v1
+        args:
+          label: "production"
+      - action: add-comment@v1
+        args:
+          comment: |
+            🚀 **Production Deployment**
+
+            This PR targets the production branch. Please ensure:
+            - [ ] All tests pass
+            - [ ] Security review completed
+            - [ ] Performance impact assessed
+            - [ ] Rollback plan documented
+            - [ ] Monitoring alerts configured
+
+  # Check for missing tests
+  check_tests:
+    if:
+      - {{ files | match(regex=r/src\/.*\.(ts|tsx)$/) | some }}
+      - {{ files | match(regex=r/tests\/.*\.(test|spec)\.(ts|tsx)$/) | nope }}
+    run:
+      - action: add-label@v1
+        args:
+          label: "needs-tests"
+      - action: request-changes@v1
+        args:
+          comment: |
+            🧪 **Tests Required**
+
+            This PR modifies source code but doesn't include tests.
+            Please add appropriate test coverage.
+
+  # Enforce CLAUDE.md compliance
+  enforce_standards:
+    if:
+      - {{ files | match(regex=r/src\/.*\.(ts|tsx)$/) | some }}
+    run:
+      - action: add-comment@v1
+        args:
+          comment: |
+            🤖 **Code Standards Reminder**
+
+            Please ensure your code follows CLAUDE.md guidelines:
+            - No defensive programming
+            - Strict TypeScript (no `any`, no `as` casting)
+            - No skip comments (`@ts-ignore`, `eslint-disable`)
+            - Functions must fail fast on invalid input
+
+            CodeRabbit will automatically review compliance.

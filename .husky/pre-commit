@@ -1,0 +1,4 @@
+pnpm exec eslint --ext .ts src/ --quiet
+pnpm exec prettier --check "src/**/*.ts"
+pnpm exec tsc --noEmit
+npx tsx scripts/check-skip-comments.ts

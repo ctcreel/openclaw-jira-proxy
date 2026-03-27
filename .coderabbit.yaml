@@ -1,0 +1,44 @@
+language: en-US
+reviews:
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "src/**/*.ts"
+      instructions: |
+        Review for:
+        - No defensive programming (fail fast)
+        - No `any` type usage
+        - No type assertions (`as` or `!`)
+        - Functions must start with a verb
+        - No forbidden abbreviations (msg, req, res, ctx, cfg, etc.)
+        - Files under 300 lines
+        - Functions under 50 lines
+        - Explicit return types on all exported functions
+        - Error handling only at boundaries (controllers/handlers)
+    - path: "src/controllers/**/*.ts"
+      instructions: |
+        Controllers should:
+        - Be thin (delegate to services)
+        - Use Zod validation middleware for input
+        - Not contain business logic
+        - Use Sc0redError for error responses
+    - path: "src/services/**/*.ts"
+      instructions: |
+        Services should:
+        - Contain business logic only
+        - Not import from routes or controllers
+        - Not handle HTTP concerns (status codes, headers)
+        - Return typed results, throw Sc0redError on failure
+    - path: "infra/**/*.ts"
+      instructions: |
+        CDK code must:
+        - Use L2/L3 constructs (no L1/Cfn*)
+        - No hardcoded ARNs or account IDs
+        - Config from CDK context or environment variables
+    - path: "tests/**/*.ts"
+      instructions: |
+        Tests should:
+        - Focus on behavior, not implementation
+        - Use descriptive test names
+        - Mock only external dependencies

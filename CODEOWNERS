@@ -1,0 +1,12 @@
+# Default owners
+* @SC0RED/platform-team
+
+# Infrastructure
+/infra/ @SC0RED/platform-team @SC0RED/infra-team
+
+# CI/CD
+/.github/ @SC0RED/platform-team
+
+# Security-sensitive
+/.gitleaks.toml @SC0RED/security-team
+/scripts/generate-github-app-token.sh @SC0RED/security-team

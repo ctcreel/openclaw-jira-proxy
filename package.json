@@ -1,0 +1,53 @@
+{
+  "name": "template-typescript-backend-repo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "lint": "eslint --ext .ts src/",
+    "lint:fix": "eslint --fix --ext .ts src/",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "naming": "tsx scripts/check-naming-conventions.ts",
+    "abbreviations": "tsx scripts/check-abbreviations.ts",
+    "skip-comments": "tsx scripts/check-skip-comments.ts",
+    "naming:all": "pnpm run naming && pnpm run abbreviations && pnpm run skip-comments",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@vendia/serverless-express": "^4.12.0",
+    "express": "^4.21.0",
+    "mongoose": "^8.8.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.3.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^8.57.1",
+    "eslint-plugin-security": "^3.0.1",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "husky": "^9.1.7",
+    "pino-pretty": "^13.0.0",
+    "prettier": "^3.4.2",
+    "supertest": "^7.0.0",
+    "@types/supertest": "^6.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "packageManager": "pnpm@10.29.3",
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
