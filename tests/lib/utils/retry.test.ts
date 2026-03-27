@@ -22,7 +22,9 @@ describe('createRetryDecorator', () => {
   });
 
   it('should throw RetryExhaustedError when all attempts fail', async () => {
-    const fn = async () => { throw new Error('always fails'); };
+    const fn = async () => {
+      throw new Error('always fails');
+    };
     const retryFn = createRetryDecorator({ maxAttempts: 2, baseDelay: 0.01 })(fn);
     await expect(retryFn()).rejects.toThrow(RetryExhaustedError);
   });

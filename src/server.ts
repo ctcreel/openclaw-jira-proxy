@@ -1,15 +1,16 @@
 import { createApp } from './app';
 import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
-import { connectDatabase } from './database';
 import { getLogger } from './lib/logging';
+import { createWorker } from './services/worker.service';
 
 async function startServer(): Promise<void> {
   setupLogging();
   const logger = getLogger('server');
   const settings = getSettings();
 
-  await connectDatabase();
+  createWorker();
+  logger.info('BullMQ worker started');
 
   const app = createApp();
   const port = settings.port;

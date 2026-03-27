@@ -22,9 +22,7 @@ describe('GET /api/health', () => {
   it('should include application check', async () => {
     const response = await supertest(app).get('/api/health');
     expect(response.body.checks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: 'application', status: 'healthy' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ name: 'application', status: 'healthy' })]),
     );
   });
 });
