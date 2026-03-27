@@ -8,8 +8,6 @@ import { registerRoutes } from './routes';
 export function createApp(): Express {
   const app = express();
 
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true }));
   app.use(createRequestLogger());
 
   registerRoutes(app);

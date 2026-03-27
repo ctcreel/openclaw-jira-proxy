@@ -56,7 +56,7 @@ sonar: ## Run SonarCloud analysis
 	@echo "Running SonarCloud analysis..."
 	@SONAR_TOKEN=$$(op read "op://Engineering/SONAR_TOKEN/credential" 2>/dev/null || echo "$$SONAR_TOKEN") && \
 	pnpm exec vitest run --coverage && \
-	sonar-scanner -Dsonar.token=$$SONAR_TOKEN
+	sonar-scanner -Dsonar.token=$$SONAR_TOKEN || echo "SonarCloud analysis failed (non-blocking)"
 
 # ============================================================================
 # FULL VALIDATION

@@ -2,17 +2,15 @@ import { z } from 'zod';
 
 const settingsSchema = z.object({
   nodeEnv: z.enum(['local', 'development', 'testing', 'demo', 'production']).default('development'),
-  port: z.coerce.number().default(8000),
-  serviceName: z.string().default('sc0red-api'),
+  port: z.coerce.number().default(8792),
+  serviceName: z.string().default('openclaw-jira-proxy'),
   version: z.string().default('0.1.0'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   logFormat: z.enum(['json', 'human']).default('json'),
-  database: z.object({
-    host: z.string().default('localhost'),
-    user: z.string().default(''),
-    password: z.string().default(''),
-    name: z.string().default('sc0red-development'),
-  }),
+  jiraHmacSecret: z.string().min(1),
+  openclawToken: z.string().min(1),
+  openclawHookUrl: z.string().default('http://127.0.0.1:18789/hooks/jira'),
+  redisUrl: z.string().default('redis://127.0.0.1:6379'),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
@@ -30,12 +28,10 @@ export function getSettings(): Settings {
     version: process.env.npm_package_version,
     logLevel: process.env.LOG_LEVEL,
     logFormat: process.env.LOG_FORMAT,
-    database: {
-      host: process.env.DB_HOST,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASS,
-      name: process.env.DB_NAME,
-    },
+    jiraHmacSecret: process.env.JIRA_HMAC_SECRET,
+    openclawToken: process.env.OPENCLAW_TOKEN,
+    openclawHookUrl: process.env.OPENCLAW_HOOK_URL,
+    redisUrl: process.env.REDIS_URL,
   });
   return cachedSettings;
 }
