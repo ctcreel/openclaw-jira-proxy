@@ -1,4 +1,4 @@
-.PHONY: install lint-quick lint test security naming check sonar check-all format review dev dev-unsafe cdk-synth cdk-deploy deploy sync-standards help
+.PHONY: install lint-quick lint test security naming check sonar check-all format review dev dev-unsafe cdk-synth cdk-deploy deploy sync-standards smoke help
 
 # ============================================================================
 # SETUP
@@ -57,6 +57,13 @@ sonar: ## Run SonarCloud analysis
 	@SONAR_TOKEN=$$(op read "op://Engineering/SONAR_TOKEN/credential" 2>/dev/null || echo "$$SONAR_TOKEN") && \
 	pnpm exec vitest run --coverage && \
 	sonar-scanner -Dsonar.token=$$SONAR_TOKEN || echo "SonarCloud analysis failed (non-blocking)"
+
+# ============================================================================
+# SMOKE TEST
+# ============================================================================
+
+smoke: ## Smoke test against running proxy (requires Redis + proxy running)
+	@bash scripts/smoke-test.sh
 
 # ============================================================================
 # FULL VALIDATION
