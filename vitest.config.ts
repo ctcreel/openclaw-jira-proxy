@@ -41,6 +41,7 @@ export default defineConfig({
         'src/controllers/health.controller.ts',
         'src/services/health.service.ts',
         'src/config.ts',
+        'tsup.config.ts',
       ],
     },
   },
