@@ -1,33 +1,53 @@
-import { createHmac } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import supertest from 'supertest';
+import request from 'supertest';
+import { createHmac } from 'node:crypto';
 
-import { createApp } from '../../src/app';
-
-vi.mock('../../src/services/queue.service', () => ({
-  getQueue: vi.fn(() => ({
-    add: vi.fn().mockResolvedValue(undefined),
+vi.mock('../../src/config', () => ({
+  getSettings: vi.fn(() => ({
+    jiraHmacSecret: 'test-secret-key',
+    openclawToken: 'test-token',
+    openclawHookUrl: 'http://127.0.0.1:18789/hooks/agent',
+    redisUrl: 'redis://127.0.0.1:6379',
+    agentId: 'patch',
+    sessionsFilePath: '/tmp/test-sessions.json',
   })),
 }));
 
-function computeSignature(body: string, secret: string): string {
-  const hex = createHmac('sha256', secret).update(Buffer.from(body)).digest('hex');
+const mockQueueAdd = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/services/queue.service', () => ({
+  getQueue: vi.fn(() => ({
+    add: mockQueueAdd,
+  })),
+}));
+
+vi.mock('../../src/lib/logging', () => ({
+  getLogger: vi.fn(() => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  })),
+}));
+
+import { createApp } from '../../src/app';
+
+function signPayload(payload: string, secret: string): string {
+  const hex = createHmac('sha256', secret).update(Buffer.from(payload)).digest('hex');
   return `sha256=${hex}`;
 }
 
-describe('Webhook Controller', () => {
+describe('webhook.controller', () => {
   const app = createApp();
-  const secret = 'test-hmac-secret';
-  const payload = JSON.stringify({ webhookEvent: 'jira:issue_updated' });
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockQueueAdd.mockReset().mockResolvedValue(undefined);
   });
 
-  it('should return 202 for valid HMAC signature', async () => {
-    const signature = computeSignature(payload, secret);
+  it('accepts a validly-signed webhook and returns 202', async () => {
+    const payload = JSON.stringify({ issue: { key: 'SPE-1234' } });
+    const signature = signPayload(payload, 'test-secret-key');
 
-    const response = await supertest(app)
+    const response = await request(app)
       .post('/')
       .set('Content-Type', 'application/json')
       .set('X-Hub-Signature', signature)
@@ -35,51 +55,70 @@ describe('Webhook Controller', () => {
 
     expect(response.status).toBe(202);
     expect(response.body).toEqual({ accepted: true });
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      'jira-event',
+      payload,
+      expect.objectContaining({ jobId: expect.stringMatching(/^jira-[a-f0-9]{16}$/) }),
+    );
   });
 
-  it('should return 401 for invalid HMAC signature', async () => {
-    const response = await supertest(app)
+  it('rejects a request with no signature header (401)', async () => {
+    const response = await request(app)
       .post('/')
       .set('Content-Type', 'application/json')
-      .set(
-        'X-Hub-Signature',
-        'sha256=deadbeef00000000000000000000000000000000000000000000000000000000',
-      )
-      .send(payload);
-
-    expect(response.status).toBe(401);
-    expect(response.body).toEqual({ error: 'Invalid signature' });
-  });
-
-  it('should return 401 for signature with wrong prefix', async () => {
-    const response = await supertest(app)
-      .post('/')
-      .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature', 'md5=abc123')
-      .send(payload);
-
-    expect(response.status).toBe(401);
-    expect(response.body).toEqual({ error: 'Invalid signature' });
-  });
-
-  it('should return 401 for signature with wrong length', async () => {
-    const response = await supertest(app)
-      .post('/')
-      .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature', 'sha256=abcd')
-      .send(payload);
-
-    expect(response.status).toBe(401);
-    expect(response.body).toEqual({ error: 'Invalid signature' });
-  });
-
-  it('should return 401 when signature header is missing', async () => {
-    const response = await supertest(app)
-      .post('/')
-      .set('Content-Type', 'application/json')
-      .send(payload);
+      .send(JSON.stringify({ issue: { key: 'SPE-999' } }));
 
     expect(response.status).toBe(401);
     expect(response.body).toEqual({ error: 'Missing signature' });
+    expect(mockQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it('rejects a request with an invalid signature (401)', async () => {
+    const payload = JSON.stringify({ issue: { key: 'SPE-999' } });
+    const badSignature = signPayload(payload, 'wrong-secret');
+
+    const response = await request(app)
+      .post('/')
+      .set('Content-Type', 'application/json')
+      .set('X-Hub-Signature', badSignature)
+      .send(payload);
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ error: 'Invalid signature' });
+    expect(mockQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it('rejects a signature with wrong prefix format (401)', async () => {
+    const response = await request(app)
+      .post('/')
+      .set('Content-Type', 'application/json')
+      .set('X-Hub-Signature', 'sha512=abcdef')
+      .send(JSON.stringify({ issue: { key: 'SPE-999' } }));
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ error: 'Invalid signature' });
+  });
+
+  it('generates a deterministic job ID for deduplication', async () => {
+    const payload = JSON.stringify({ issue: { key: 'SPE-DUPE' } });
+    const signature = signPayload(payload, 'test-secret-key');
+
+    await request(app)
+      .post('/')
+      .set('Content-Type', 'application/json')
+      .set('X-Hub-Signature', signature)
+      .send(payload);
+
+    await request(app)
+      .post('/')
+      .set('Content-Type', 'application/json')
+      .set('X-Hub-Signature', signature)
+      .send(payload);
+
+    // Both calls should produce the same jobId.
+    const firstJobId = mockQueueAdd.mock.calls[0]?.[2]?.jobId;
+    const secondJobId = mockQueueAdd.mock.calls[1]?.[2]?.jobId;
+    expect(firstJobId).toBe(secondJobId);
+    expect(firstJobId).toMatch(/^jira-[a-f0-9]{16}$/);
   });
 });

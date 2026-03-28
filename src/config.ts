@@ -9,8 +9,10 @@ const settingsSchema = z.object({
   logFormat: z.enum(['json', 'human']).default('json'),
   jiraHmacSecret: z.string().min(1),
   openclawToken: z.string().min(1),
-  openclawHookUrl: z.string().default('http://127.0.0.1:18789/hooks/jira'),
+  openclawHookUrl: z.string().default('http://127.0.0.1:18789/hooks/agent'),
   redisUrl: z.string().default('redis://127.0.0.1:6379'),
+  agentId: z.string().default('patch'),
+  sessionsFilePath: z.string().default(''),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
@@ -32,6 +34,10 @@ export function getSettings(): Settings {
     openclawToken: process.env.OPENCLAW_TOKEN,
     openclawHookUrl: process.env.OPENCLAW_HOOK_URL,
     redisUrl: process.env.REDIS_URL,
+    agentId: process.env.OPENCLAW_AGENT_ID,
+    sessionsFilePath:
+      process.env.OPENCLAW_SESSIONS_FILE ??
+      `${process.env.HOME ?? '/tmp'}/.openclaw/agents/${process.env.OPENCLAW_AGENT_ID ?? 'patch'}/sessions/sessions.json`,
   });
   return cachedSettings;
 }

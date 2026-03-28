@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
 
 import { getSettings } from '../config';
@@ -24,6 +24,16 @@ function validateSignature(rawBody: Buffer, signatureHeader: string, secret: str
   }
 
   return timingSafeEqual(receivedBuffer, computedBuffer);
+}
+
+/**
+ * Generate a stable job ID from the payload to prevent duplicate enqueues.
+ *
+ * Jira retries webhook deliveries on 5xx / timeout.  Using a content hash
+ * as the BullMQ job ID means the second delivery is silently de-duplicated.
+ */
+function generateJobId(rawBody: Buffer): string {
+  return `jira-${createHash('sha256').update(rawBody).digest('hex').slice(0, 16)}`;
 }
 
 export async function receiveWebhook(request: Request, response: Response): Promise<void> {
@@ -55,8 +65,10 @@ export async function receiveWebhook(request: Request, response: Response): Prom
   }
 
   const queue = getQueue();
-  await queue.add('jira-event', rawBody.toString('utf-8'));
+  const jobId = generateJobId(rawBody);
 
-  logger.info('Webhook accepted and enqueued');
+  await queue.add('jira-event', rawBody.toString('utf-8'), { jobId });
+
+  logger.info({ jobId }, 'Webhook accepted and enqueued');
   response.status(202).json({ accepted: true });
 }
