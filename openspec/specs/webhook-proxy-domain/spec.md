@@ -270,19 +270,26 @@ All configuration MUST be loaded from environment variables and validated at sta
 - `MAX_CONCURRENT_RUNS` — global concurrency limit (default: 1)
 - `AGENT_WAIT_TIMEOUT_MS` — default timeout for agent.wait calls (default: 1800000 / 30 minutes)
 
-**Per-provider settings (via PROVIDERS_CONFIG JSON string or individual env vars):**
-- Provider name
-- Route path
-- HMAC secret
-- Signature strategy name
-- OpenClaw hook URL
+**Provider settings (via PROVIDERS_CONFIG JSON string, required):**
 
-#### Scenario: Minimal Configuration
-- **GIVEN** Only `OPENCLAW_TOKEN` and `JIRA_HMAC_SECRET` are set (single Jira provider)
+All providers are defined uniformly via `PROVIDERS_CONFIG`. There are no hardcoded providers or per-provider env vars. Each entry in the JSON array MUST include:
+- `name` — unique provider identifier (used for queue naming and logging)
+- `routePath` — inbound route path (e.g., `/hooks/jira`)
+- `hmacSecret` — shared secret for HMAC signature validation
+- `signatureStrategy` — name of the signature validation strategy (e.g., `"websub"`, `"github"`)
+- `openclawHookUrl` — target URL for forwarding validated events
+
+#### Scenario: Single Provider
+- **GIVEN** `PROVIDERS_CONFIG` contains one provider entry for Jira
 - **WHEN** The proxy starts
-- **THEN** It MUST start with defaults for all other settings and register Jira as the sole provider
+- **THEN** It MUST register a single route, queue, and worker for Jira
 
 #### Scenario: Multi-Provider Configuration
-- **GIVEN** `PROVIDERS_CONFIG` is set to a JSON array defining Jira and GitHub providers
+- **GIVEN** `PROVIDERS_CONFIG` contains entries for Jira and GitHub
 - **WHEN** The proxy starts
 - **THEN** Both providers MUST be registered with their respective routes, secrets, and strategies
+
+#### Scenario: Missing PROVIDERS_CONFIG
+- **GIVEN** `PROVIDERS_CONFIG` is not set
+- **WHEN** The proxy starts
+- **THEN** It MUST fail with a clear error indicating no providers are configured

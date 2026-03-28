@@ -32,24 +32,15 @@ At least one provider secret is also required (e.g., `JIRA_HMAC_SECRET`).
 | `MAX_CONCURRENT_RUNS` | `1` | Global concurrency limit across all providers |
 | `AGENT_WAIT_TIMEOUT_MS` | `1800000` | Timeout for `agent.wait` calls (30 minutes) |
 
-## Provider Secrets
+## Provider Configuration
 
-Individual provider secrets (used when `PROVIDERS_CONFIG` is not set):
+All providers are configured via a single env var:
 
-| Variable | Description |
-|----------|-------------|
-| `JIRA_HMAC_SECRET` | Shared secret for Jira webhook HMAC (WebSub format) |
-| `GITHUB_HMAC_SECRET` | Shared secret for GitHub webhook HMAC |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PROVIDERS_CONFIG` | Yes | JSON array of provider objects (see README for schema) |
 
-## Multi-Provider Configuration
-
-For advanced setups with multiple providers, set `PROVIDERS_CONFIG` as a JSON string:
-
-| Variable | Description |
-|----------|-------------|
-| `PROVIDERS_CONFIG` | JSON array of provider objects (see README for schema) |
-
-When `PROVIDERS_CONFIG` is set, individual provider env vars (`JIRA_HMAC_SECRET`, etc.) are ignored.
+Each provider object defines: name, route path, HMAC secret, signature strategy, and OpenClaw hook URL. There are no per-provider env vars — everything lives in `PROVIDERS_CONFIG`.
 
 ## Validation
 

@@ -83,13 +83,6 @@ The installer prompts for secrets, builds the project, installs a launchd agent,
 |---|---|
 | `OPENCLAW_TOKEN` | Bearer token for OpenClaw API authentication |
 
-#### Provider Secrets (at least one required)
-
-| Variable | Description |
-|---|---|
-| `JIRA_HMAC_SECRET` | HMAC secret for Jira webhook signature validation |
-| `GITHUB_HMAC_SECRET` | HMAC secret for GitHub webhook signature validation |
-
 #### Optional
 
 | Variable | Default | Description |
@@ -103,30 +96,40 @@ The installer prompts for secrets, builds the project, installs a launchd agent,
 | `SERVICE_NAME` | `clawndom` | Service identifier for structured logging |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error, fatal) |
 | `LOG_FORMAT` | `json` | Log format (json, human) |
-| `PROVIDERS_CONFIG` | — | JSON array for multi-provider configuration (see below) |
+| `PROVIDERS_CONFIG` | — | JSON array of provider configurations (required, see below) |
 
-#### Multi-Provider Configuration
+#### Provider Configuration
 
-For a single Jira provider, just set `JIRA_HMAC_SECRET`. For multiple providers, set `PROVIDERS_CONFIG` as a JSON string:
+All providers are defined in `PROVIDERS_CONFIG` as a JSON string. There are no hardcoded providers — every webhook source is configured the same way.
 
 ```json
 [
   {
     "name": "jira",
     "routePath": "/hooks/jira",
-    "hmacSecret": "...",
+    "hmacSecret": "your-jira-hmac-secret",
     "signatureStrategy": "websub",
     "openclawHookUrl": "http://127.0.0.1:18789/hooks/jira"
   },
   {
     "name": "github",
     "routePath": "/hooks/github",
-    "hmacSecret": "...",
+    "hmacSecret": "your-github-hmac-secret",
     "signatureStrategy": "github",
     "openclawHookUrl": "http://127.0.0.1:18789/hooks/agent"
   }
 ]
 ```
+
+Each provider declares:
+
+| Field | Description |
+|---|---|
+| `name` | Unique identifier (used for queue naming, logging) |
+| `routePath` | Inbound route the proxy listens on |
+| `hmacSecret` | Shared secret for HMAC signature validation |
+| `signatureStrategy` | Which HMAC format to use (`websub`, `github`) |
+| `openclawHookUrl` | Where to forward validated events |
 
 ### Tailscale Funnel
 
