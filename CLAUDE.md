@@ -10,18 +10,20 @@ After pushing, check CodeRabbit: `gh pr view --comments`
 
 ## Architecture
 
-Express.js on AWS Lambda via @vendia/serverless-express. MongoDB/Mongoose for data.
+Express.js standalone proxy. BullMQ + Redis for job queue. WebSocket to OpenClaw gateway for `agent.wait` RPC.
 
 ```
 src/routes/       - HTTP route definitions
-src/controllers/  - Request handling, input validation
-src/services/     - Business logic
+src/controllers/  - Request handling, input validation, HMAC signature verification
+src/services/     - Business logic (queue, worker, gateway client, concurrency gate)
 src/lib/          - Shared infrastructure (logging, exceptions, utils)
-src/database/     - Mongoose connection and models
 src/middleware/    - Express middleware (error handler, request logger, validation)
+src/strategies/   - Signature validation strategies (websub, github)
 ```
 
-Dependencies flow inward: routes -> controllers -> services -> lib/database.
+Dependencies flow inward: routes -> controllers -> services -> lib.
+
+Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, HMAC strategy, and BullMQ queue. Workers wait for `agent.wait` completion before picking up the next job.
 
 ## Rules
 
