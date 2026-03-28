@@ -40,7 +40,16 @@ export async function receiveWebhook(request: Request, response: Response): Prom
   const rawBody = request.body as Buffer;
 
   if (!validateSignature(rawBody, signatureHeader, settings.jiraHmacSecret)) {
-    logger.warn('Invalid HMAC signature');
+    const computedHex = createHmac('sha256', settings.jiraHmacSecret).update(rawBody).digest('hex');
+    logger.warn(
+      {
+        receivedSig: signatureHeader,
+        computedSig: `sha256=${computedHex}`,
+        bodyLength: rawBody.length,
+        secretPrefix: settings.jiraHmacSecret.slice(0, 8),
+      },
+      'Invalid HMAC signature',
+    );
     response.status(401).json({ error: 'Invalid signature' });
     return;
   }
