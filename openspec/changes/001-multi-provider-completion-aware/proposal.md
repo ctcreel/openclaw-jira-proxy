@@ -86,7 +86,7 @@ Add Redis connectivity and per-provider queue health to the `/api/health` endpoi
 
 ## Decisions
 
-1. **Repo rename:** Yes — `openclaw-jira-proxy` → `openclaw-webhook-proxy`
+1. **Repo rename:** Done — `openclaw-jira-proxy` → `clawndom` (SC0RED/clawndom)
 2. **Config format:** Strategy-based — support env vars as default, config file as option. Config loading itself uses a strategy so we can swap later.
 3. **WS reconnection:** Reconnect-first, REST poll fallback, timeout as last resort. Never re-POST the event. See domain spec "Completion Tracking Resilience" requirement.
 4. **Concurrency model:** Global concurrency gate is the primary throttle (protects the LLM API). Per-provider maxConcurrency is an optional fairness cap. This was corrected from the initial per-provider-only model which didn't match the actual resource being protected.

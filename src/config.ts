@@ -3,7 +3,7 @@ import { z } from 'zod';
 const settingsSchema = z.object({
   nodeEnv: z.enum(['local', 'development', 'testing', 'demo', 'production']).default('development'),
   port: z.coerce.number().default(8792),
-  serviceName: z.string().default('openclaw-jira-proxy'),
+  serviceName: z.string().default('clawndom'),
   version: z.string().default('0.1.0'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   logFormat: z.enum(['json', 'human']).default('json'),

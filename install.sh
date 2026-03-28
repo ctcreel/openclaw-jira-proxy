@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== openclaw-jira-proxy installer ==="
+echo "=== clawndom installer ==="
 echo ""
 
 # Check Node.js >= 22
@@ -26,20 +26,20 @@ echo "Node.js $(node -v) and pnpm $(pnpm -v) detected."
 echo ""
 
 # Prompt for configuration
-read -rp "JIRA_HMAC_SECRET: " JIRA_HMAC_SECRET
-if [ -z "$JIRA_HMAC_SECRET" ]; then
-  echo "Error: JIRA_HMAC_SECRET is required." >&2
-  exit 1
-fi
-
 read -rp "OPENCLAW_TOKEN: " OPENCLAW_TOKEN
 if [ -z "$OPENCLAW_TOKEN" ]; then
   echo "Error: OPENCLAW_TOKEN is required." >&2
   exit 1
 fi
 
-read -rp "OPENCLAW_HOOK_URL [http://127.0.0.1:18789/hooks/jira]: " OPENCLAW_HOOK_URL
-OPENCLAW_HOOK_URL="${OPENCLAW_HOOK_URL:-http://127.0.0.1:18789/hooks/jira}"
+read -rp "JIRA_HMAC_SECRET (leave blank to skip): " JIRA_HMAC_SECRET
+
+read -rp "GITHUB_HMAC_SECRET (leave blank to skip): " GITHUB_HMAC_SECRET
+
+if [ -z "$JIRA_HMAC_SECRET" ] && [ -z "$GITHUB_HMAC_SECRET" ]; then
+  echo "Error: At least one provider HMAC secret is required." >&2
+  exit 1
+fi
 
 read -rp "REDIS_URL [redis://127.0.0.1:6379]: " REDIS_URL
 REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379}"
@@ -49,27 +49,49 @@ PORT="${PORT:-8792}"
 
 echo ""
 echo "Building..."
-pnpm install
+
+# Install dependencies and build
+pnpm install --frozen-lockfile
 pnpm build
 
 INSTALL_PATH="$(pwd)"
-PLIST_SRC="infra/launchd/com.openclaw.jira-proxy.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.openclaw.jira-proxy.plist"
+PLIST_SRC="infra/launchd/com.openclaw.clawndom.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/com.openclaw.clawndom.plist"
 
-# Generate plist with substituted values
-sed \
-  -e "s|INSTALL_PATH|${INSTALL_PATH}|g" \
-  -e "s|>JIRA_HMAC_SECRET<|>${JIRA_HMAC_SECRET}<|g" \
-  -e "s|>OPENCLAW_TOKEN<|>${OPENCLAW_TOKEN}<|g" \
-  -e "s|>OPENCLAW_HOOK_URL<|>${OPENCLAW_HOOK_URL}<|g" \
-  -e "s|>REDIS_URL<|>${REDIS_URL}<|g" \
-  -e "s|>PORT<|>${PORT}<|g" \
-  "$PLIST_SRC" > "$PLIST_DST"
+# Unload existing service if present
+if launchctl list | grep -q com.openclaw.clawndom 2>/dev/null; then
+  echo "Unloading existing service..."
+  launchctl unload "$PLIST_DST" 2>/dev/null || true
+fi
 
-echo "Plist written to $PLIST_DST"
+# Also unload old jira-proxy service if present
+if launchctl list | grep -q com.openclaw.jira-proxy 2>/dev/null; then
+  echo "Unloading old jira-proxy service..."
+  launchctl unload "$HOME/Library/LaunchAgents/com.openclaw.jira-proxy.plist" 2>/dev/null || true
+  rm -f "$HOME/Library/LaunchAgents/com.openclaw.jira-proxy.plist"
+fi
 
-# Load the service
+# Configure plist
+cp "$PLIST_SRC" "$PLIST_DST"
+sed -i '' "s|INSTALL_PATH|$INSTALL_PATH|g" "$PLIST_DST"
+sed -i '' "s|OPENCLAW_TOKEN|$OPENCLAW_TOKEN|g" "$PLIST_DST"
+sed -i '' "s|REDIS_URL|$REDIS_URL|g" "$PLIST_DST"
+sed -i '' "s|>PORT<|>$PORT<|g" "$PLIST_DST"
+
+if [ -n "$JIRA_HMAC_SECRET" ]; then
+  sed -i '' "s|JIRA_HMAC_SECRET|$JIRA_HMAC_SECRET|g" "$PLIST_DST"
+else
+  # Remove Jira secret entry if not provided
+  sed -i '' '/<key>JIRA_HMAC_SECRET<\/key>/,/<string>.*<\/string>/d' "$PLIST_DST"
+fi
+
+# Load service
 launchctl load "$PLIST_DST"
 
 echo ""
-echo "Proxy installed. Test: curl -s http://127.0.0.1:${PORT}/api/health"
+echo "✅ clawndom installed and running on port $PORT"
+echo ""
+echo "Next steps:"
+echo "  1. Set up Tailscale Funnel: tailscale funnel --bg --set-path /hooks/jira $PORT"
+echo "  2. Configure your webhook provider to point to https://<machine>.ts.net/hooks/<provider>"
+echo "  3. Check health: curl http://localhost:$PORT/api/health"

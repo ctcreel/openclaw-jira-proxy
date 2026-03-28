@@ -1,42 +1,29 @@
 # Branching Strategy
 
-## Four-Branch Model
+## Single-Branch Model
 
-```
-development -> testing -> demo -> production
-```
-
-| Branch | Environment | Purpose |
-|--------|-------------|---------|
-| `development` | Dev | Integration branch |
-| `testing` | QA | Quality assurance |
-| `demo` | Demo | Stakeholder review |
-| `production` | Prod | Live environment |
+clawndom uses `main` as the primary branch. This is a standalone infrastructure service, not a multi-environment application — there is no promotion pipeline through testing/demo/production.
 
 ## Feature Branch Naming
 
-Format: `{type}/{TICKET-ID}-{description}`
+Format: `{type}/{description}`
 
 | Type | Use for |
 |------|---------|
-| `feature` | New features |
-| `bugfix` | Bug fixes |
-| `hotfix` | Urgent fixes |
-| `chore` | Maintenance |
-| `docs` | Documentation |
-| `refactor` | Code refactoring |
-| `test` | Test additions |
+| `feature` | New features (e.g., new provider support) |
+| `fix` | Bug fixes |
+| `chore` | Maintenance, dependency updates |
+| `docs` | Documentation changes |
+| `refactor` | Code restructuring |
 
 Rules:
-- Ticket ID: `{PROJECT}-{NUMBER}` (e.g., `SF-123`)
-- Description: lowercase, numbers, hyphens only, 3-50 chars
-- Example: `feature/SF-123-add-user-authentication`
+- Description: lowercase, numbers, hyphens only
+- Example: `feature/github-provider`, `fix/websocket-reconnect`
 
 ## Workflow
 
-1. Create feature branch from `development`
+1. Create feature branch from `main`
 2. Work, commit, push
-3. Create PR to `development`
-4. Pass all checks + CodeRabbit review
-5. Merge to `development`
-6. Promote: development -> testing -> demo -> production (via PRs)
+3. Create PR to `main`
+4. Pass all checks (lint, test, typecheck, security)
+5. Merge to `main`

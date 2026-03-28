@@ -1,4 +1,4 @@
-# Sc0red TypeScript Backend Standards
+# clawndom — TypeScript Backend Standards
 
 ## Before Completing Any Task
 

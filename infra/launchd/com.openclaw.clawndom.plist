@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.openclaw.jira-proxy</string>
+  <string>com.openclaw.clawndom</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -15,16 +15,18 @@
   <dict>
     <key>NODE_ENV</key>
     <string>production</string>
-    <key>JIRA_HMAC_SECRET</key>
-    <string>JIRA_HMAC_SECRET</string>
     <key>OPENCLAW_TOKEN</key>
     <string>OPENCLAW_TOKEN</string>
-    <key>OPENCLAW_HOOK_URL</key>
-    <string>OPENCLAW_HOOK_URL</string>
+    <key>JIRA_HMAC_SECRET</key>
+    <string>JIRA_HMAC_SECRET</string>
+    <key>OPENCLAW_GATEWAY_WS_URL</key>
+    <string>ws://127.0.0.1:18789</string>
     <key>REDIS_URL</key>
     <string>REDIS_URL</string>
     <key>PORT</key>
     <string>PORT</string>
+    <key>MAX_CONCURRENT_RUNS</key>
+    <string>1</string>
   </dict>
 
   <key>RunAtLoad</key>
@@ -34,9 +36,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/usr/local/var/log/openclaw-jira-proxy.log</string>
+  <string>/usr/local/var/log/clawndom.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/usr/local/var/log/openclaw-jira-proxy.log</string>
+  <string>/usr/local/var/log/clawndom.log</string>
 </dict>
 </plist>
