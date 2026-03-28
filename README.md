@@ -1,6 +1,23 @@
 # clawndom
 
-A completion-aware webhook proxy that serializes third-party events (Jira, GitHub, Linear, Stripe, etc.) into OpenClaw agent runs. Events are HMAC-validated, queued via BullMQ, and forwarded one at a time — each job blocks on the gateway's `agent.wait` RPC until the agent run finishes before the next event is processed. This prevents downstream LLM API rate limiting when external systems fire webhook bursts.
+## Why
+
+You've got OpenClaw agents reacting to external events — Jira transitions, GitHub pushes, Linear updates. The problem: these services don't send one webhook at a time. A Jira board reorganization fires 10 events in 2 seconds. A GitHub merge triggers webhooks for the push, the PR close, the deployment, and the status checks. Each event wakes an agent, each agent calls an LLM API, and suddenly you're rate-limited, runs are failing, and you're burning tokens on retries.
+
+clawndom sits between your webhook sources and OpenClaw. It accepts events, validates them, and queues them — but the key thing is it **waits for each agent run to actually finish** before letting the next event through. Not "wait for OpenClaw to accept the POST" — wait for the agent to complete its work, send its messages, and go idle. One run at a time. No bursts. No rate limits. No wasted spend.
+
+It also solves the auth gap: most webhook providers (Jira, GitHub) can't send bearer tokens. They sign payloads with HMAC instead. clawndom validates the signature, then forwards to OpenClaw with proper auth.
+
+**Use clawndom if:**
+- Your OpenClaw agents are triggered by external webhooks
+- Those webhooks arrive in bursts (most do)
+- You're hitting LLM API rate limits or seeing dropped/duplicate runs
+- Your webhook source can't send bearer auth (needs HMAC validation)
+
+**You don't need clawndom if:**
+- Your agents are only triggered by chat messages or scheduled tasks
+- You're running a single webhook source with low volume
+- You're fine with fire-and-forget delivery (no completion tracking)
 
 ## How It Works
 
