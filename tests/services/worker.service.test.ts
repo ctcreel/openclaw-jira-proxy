@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Job } from 'bullmq';
 
 import type { ProviderConfig } from '../../src/config';
+import {
+  registerRoutingStrategy,
+  resetRoutingStrategies,
+  fieldEqualsStrategy,
+  regexStrategy,
+  defaultStrategy,
+} from '../../src/strategies/routing';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -14,6 +21,7 @@ vi.mock('ioredis', () => ({
 }));
 
 import { processJob } from '../../src/services/worker.service';
+import { resetSettings } from '../../src/config';
 
 const testProvider: ProviderConfig = {
   name: 'test-provider',
@@ -27,11 +35,23 @@ function createFakeJob(data: string, id = 'test-job-1'): Job<string> {
   return { id, data } as unknown as Job<string>;
 }
 
+function mockFetchOk(): void {
+  globalThis.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: vi.fn().mockResolvedValue('{"ok":true}'),
+  });
+}
+
 describe('processJob', () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRoutingStrategies();
+    registerRoutingStrategy(fieldEqualsStrategy);
+    registerRoutingStrategy(regexStrategy);
+    registerRoutingStrategy(defaultStrategy);
   });
 
   afterEach(() => {
@@ -39,11 +59,7 @@ describe('processJob', () => {
   });
 
   it('should resolve when gateway returns 200', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: vi.fn().mockResolvedValue('{"ok":true}'),
-    });
+    mockFetchOk();
 
     await expect(
       processJob(createFakeJob('{"event":"updated"}'), testProvider),
@@ -57,9 +73,24 @@ describe('processJob', () => {
           'Content-Type': 'application/json',
           Authorization: expect.stringMatching(/^Bearer /),
         }),
-        body: JSON.stringify({ message: '{"event":"updated"}' }),
+        body: expect.stringContaining('"message":"{\\"event\\":\\"updated\\"}"'),
       }),
     );
+  });
+
+  it('should include agentId, sessionKey, and deliver in envelope', async () => {
+    mockFetchOk();
+
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
+
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body).toMatchObject({
+      message: '{"event":"updated"}',
+      agentId: 'patch',
+      sessionKey: 'hook:test-provider:test-job-1',
+      deliver: false,
+    });
   });
 
   it('should throw when gateway returns non-200', async () => {
@@ -82,19 +113,101 @@ describe('processJob', () => {
     );
   });
 
-  it('should forward the raw job data as the request body', async () => {
+  it('should forward the raw job data as message in the envelope', async () => {
     const payload = '{"issue":{"key":"SPE-1567"}}';
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: vi.fn().mockResolvedValue('{"ok":true}'),
-    });
+    mockFetchOk();
 
     await processJob(createFakeJob(payload), testProvider);
 
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ body: JSON.stringify({ message: payload }) }),
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body.message).toBe(payload);
+  });
+
+  it('should route to agent based on field-equals rule', async () => {
+    mockFetchOk();
+
+    const providerWithRouting: ProviderConfig = {
+      ...testProvider,
+      routing: {
+        rules: [
+          {
+            strategy: 'field-equals',
+            field: 'issue.fields.assignee.displayName',
+            value: 'Patches',
+            agentId: 'patch',
+          },
+        ],
+        default: 'main',
+      },
+    };
+
+    await processJob(
+      createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Patches"}}}}'),
+      providerWithRouting,
     );
+
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body.agentId).toBe('patch');
+  });
+
+  it('should fall through to routing default when no rules match', async () => {
+    mockFetchOk();
+
+    const providerWithRouting: ProviderConfig = {
+      ...testProvider,
+      routing: {
+        rules: [
+          {
+            strategy: 'field-equals',
+            field: 'issue.fields.assignee.displayName',
+            value: 'Patches',
+            agentId: 'patch',
+          },
+        ],
+        default: 'main',
+      },
+    };
+
+    await processJob(
+      createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Someone Else"}}}}'),
+      providerWithRouting,
+    );
+
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body.agentId).toBe('main');
+  });
+
+  it('should skip forwarding when no routing match and no default', async () => {
+    mockFetchOk();
+
+    // Clear cached settings and set empty agent ID to test no-match skip
+    const originalAgentId = process.env.OPENCLAW_AGENT_ID;
+    process.env.OPENCLAW_AGENT_ID = '';
+    resetSettings();
+
+    const providerNoDefault: ProviderConfig = {
+      ...testProvider,
+      routing: {
+        rules: [
+          {
+            strategy: 'field-equals',
+            field: 'issue.fields.assignee.displayName',
+            value: 'Nobody',
+            agentId: 'ghost',
+          },
+        ],
+      },
+    };
+
+    await processJob(createFakeJob('{"issue":{"fields":{}}}'), providerNoDefault);
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+
+    // Restore
+    process.env.OPENCLAW_AGENT_ID = originalAgentId;
+    resetSettings();
   });
 });

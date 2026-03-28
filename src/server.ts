@@ -3,11 +3,21 @@ import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
 import { getLogger } from './lib/logging';
 import { createWorker } from './services/worker.service';
+import {
+  registerRoutingStrategy,
+  fieldEqualsStrategy,
+  regexStrategy,
+  defaultStrategy,
+} from './strategies/routing';
 
 async function startServer(): Promise<void> {
   setupLogging();
   const logger = getLogger('server');
   const settings = getSettings();
+
+  registerRoutingStrategy(fieldEqualsStrategy);
+  registerRoutingStrategy(regexStrategy);
+  registerRoutingStrategy(defaultStrategy);
 
   for (const provider of settings.providers) {
     createWorker(provider);

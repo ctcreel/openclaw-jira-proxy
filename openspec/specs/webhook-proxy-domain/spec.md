@@ -179,11 +179,93 @@ When the global limit is reached, workers from all provider queues MUST wait unt
 - **WHEN** The job is marked as failed
 - **THEN** The semaphore slot MUST be released so another worker can proceed
 
+### Requirement: Agent Routing
+
+The proxy MUST support configurable, per-provider routing rules that determine which OpenClaw agent receives each webhook event. Routing MUST use a Strategy pattern — each rule specifies a strategy name, a field path into the parsed payload, a match criterion, and a target `agentId`.
+
+**Built-in strategies:**
+- **`field-equals`** — Exact string match on a resolved field value. MUST support dot-notation field paths (e.g., `issue.fields.assignee.displayName`). If the resolved value is an array, the rule matches if ANY element equals the target value.
+- **`regex`** — Regular expression match on a resolved field value. MUST support an optional `flags` field (e.g., `"i"` for case-insensitive). If the resolved value is an array, the rule matches if ANY element matches the pattern.
+- **`default`** — Always matches. Used as the fallback. Takes no field or match criterion — only an `agentId`.
+
+**Evaluation order:** Rules MUST be evaluated in array order. The first rule whose strategy returns a non-null `agentId` wins. If no rule matches and no `default` entry exists, the provider-level `defaultAgentId` is used. If that is also absent, the global `OPENCLAW_AGENT_ID` env var is used.
+
+**Configuration:** Routing rules are defined per-provider in `PROVIDERS_CONFIG`:
+
+```json
+{
+  "name": "jira",
+  "routePath": "/hooks/jira",
+  "hmacSecret": "...",
+  "signatureStrategy": "websub",
+  "routing": {
+    "rules": [
+      { "strategy": "field-equals", "field": "issue.fields.assignee.displayName", "value": "Patches", "agentId": "patch" },
+      { "strategy": "regex", "field": "webhookEvent", "pattern": "^comment_", "flags": "i", "agentId": "main" }
+    ],
+    "default": "patch"
+  }
+}
+```
+
+If `routing` is omitted from a provider config, the provider MUST use the global `OPENCLAW_AGENT_ID` for all events (backward compatible).
+
+**Strategy interface:**
+```typescript
+interface RoutingStrategy {
+  readonly name: string;
+  evaluate(payload: unknown, rule: RoutingRule): string | null;
+}
+```
+
+Strategies MUST be registered in a routing strategy registry (mirroring the signature strategy registry pattern). Adding a new strategy MUST require only: (1) implementing the interface, (2) registering it by name.
+
+#### Scenario: Field-Equals Match
+- **GIVEN** A Jira webhook where `issue.fields.assignee.displayName` is `"Patches"`
+- **WHEN** A `field-equals` rule matches on that field with value `"Patches"` and agentId `"patch"`
+- **THEN** The event MUST be routed to agent `"patch"`
+
+#### Scenario: Regex Match on Event Type
+- **GIVEN** A Jira webhook where `webhookEvent` is `"jira:issue_updated"`
+- **WHEN** A `regex` rule matches on `webhookEvent` with pattern `"^jira:issue_updated$"` and agentId `"patch"`
+- **THEN** The event MUST be routed to agent `"patch"`
+
+#### Scenario: Array Field Match
+- **GIVEN** A Jira webhook where `issue.fields.labels` is `["infra", "urgent"]`
+- **WHEN** A `regex` rule matches on `issue.fields.labels` with pattern `"infra"` and agentId `"sasha"`
+- **THEN** The event MUST be routed to agent `"sasha"` (matched on array element `"infra"`)
+
+#### Scenario: First Match Wins
+- **GIVEN** Two rules: rule 1 matches assignee → agent `"patch"`, rule 2 matches event type → agent `"main"`
+- **WHEN** Both rules would match the incoming payload
+- **THEN** The event MUST be routed to agent `"patch"` (rule 1, first match)
+
+#### Scenario: No Rules Match — Default Fallback
+- **GIVEN** A provider with routing rules but none match the payload, and `routing.default` is `"patch"`
+- **WHEN** The event is processed
+- **THEN** The event MUST be routed to agent `"patch"` via the default fallback
+
+#### Scenario: No Routing Config — Backward Compatible
+- **GIVEN** A provider config with no `routing` key
+- **WHEN** The event is processed
+- **THEN** The event MUST be routed using the global `OPENCLAW_AGENT_ID`
+
+#### Scenario: No Match and No Default — Skip
+- **GIVEN** Routing rules that don't match and no `routing.default` and no global `OPENCLAW_AGENT_ID`
+- **WHEN** The event is processed
+- **THEN** The job MUST complete without forwarding and log a `routing:no-match` warning
+
 ### Requirement: Event Forwarding
 
 The worker MUST forward events to OpenClaw by POSTing the original webhook payload to the provider's configured hook URL with:
 - `Content-Type: application/json`
 - `Authorization: Bearer <token>`
+
+The request body MUST include:
+- `message` — the original webhook payload (stringified)
+- `agentId` — the resolved agent ID from routing
+- `sessionKey` — a unique session key for the run (e.g., `hook:<provider>:<jobId>`)
+- `deliver` — `false` (agent processes internally, does not echo to a channel)
 
 The OpenClaw token MUST be shared across all providers (single OpenClaw instance). The token MUST be loaded from the `OPENCLAW_TOKEN` environment variable.
 

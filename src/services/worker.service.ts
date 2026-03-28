@@ -5,6 +5,7 @@ import IORedis from 'ioredis';
 import type { ProviderConfig } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
+import { resolveAgent } from '../strategies/routing';
 
 const logger = getLogger('worker');
 
@@ -16,7 +17,29 @@ export async function processJob(job: Job<string>, provider: ProviderConfig): Pr
   const settings = getSettings();
   logger.info({ jobId: job.id, provider: provider.name }, 'Processing webhook job');
 
-  const envelope = JSON.stringify({ message: job.data });
+  let parsedPayload: unknown;
+  try {
+    parsedPayload = JSON.parse(job.data);
+  } catch {
+    parsedPayload = {};
+  }
+
+  const agentId = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
+  if (agentId === null) {
+    logger.warn(
+      { jobId: job.id, provider: provider.name },
+      'routing:no-match — skipping forwarding',
+    );
+    return;
+  }
+
+  const sessionKey = `hook:${provider.name}:${job.id ?? 'unknown'}`;
+  const envelope = JSON.stringify({
+    message: job.data,
+    agentId,
+    sessionKey,
+    deliver: false,
+  });
 
   const response = await fetch(settings.openclawHookUrl, {
     method: 'POST',
