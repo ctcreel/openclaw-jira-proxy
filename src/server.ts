@@ -3,19 +3,14 @@ import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
 import { getLogger } from './lib/logging';
 import { createWorker } from './services/worker.service';
-import { GatewayClient } from './services/gateway-client';
 
 async function startServer(): Promise<void> {
   setupLogging();
   const logger = getLogger('server');
   const settings = getSettings();
 
-  // Single gateway WS connection shared by all workers
-  const gatewayClient = new GatewayClient(settings.openclawGatewayWsUrl, settings.openclawToken);
-  await gatewayClient.connect();
-
   for (const provider of settings.providers) {
-    createWorker(provider, gatewayClient);
+    createWorker(provider);
   }
   logger.info({ providers: settings.providers.map((p) => p.name) }, 'Workers started');
 
@@ -26,9 +21,8 @@ async function startServer(): Promise<void> {
     logger.info({ port }, `Server running on port ${port}`);
   });
 
-  const shutdown = async (): Promise<void> => {
+  const shutdown = (): void => {
     logger.info('Shutting down...');
-    await gatewayClient.close();
     process.exit(0);
   };
 

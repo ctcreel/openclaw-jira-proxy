@@ -1,16 +1,16 @@
 /**
- * End-to-end integration test: webhook HTTP → HMAC → BullMQ → worker → gateway WS → agent.wait
+ * End-to-end integration test: webhook HTTP → HMAC → BullMQ → worker → gateway HTTP POST
  *
- * Mocked: OpenClaw gateway (WebSocket server handling connect/agent/agent.wait RPCs)
- * Real: Express app, HMAC validation, BullMQ queue + worker, GatewayClient WS
+ * Mocked: OpenClaw gateway (simple HTTP server accepting POST /hooks/agent)
+ * Real: Express app, HMAC validation, BullMQ queue + worker
  *
  * Simulates webhook payloads from Jira, GitHub, and Linear hitting HTTP endpoints
- * and verifies the full chain through to agent completion.
+ * and verifies the full chain through to gateway delivery.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { WebSocketServer } from 'ws';
-import type { WebSocket } from 'ws';
+import { createServer } from 'node:http';
+import type { Server, IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 
@@ -22,7 +22,7 @@ const JIRA_SECRET = 'jira-test-hmac-secret-1234';
 const GITHUB_SECRET = 'github-test-hmac-secret-5678';
 const LINEAR_SECRET = 'linear-test-hmac-secret-9012';
 
-// -- Provider config (shared by beforeAll + beforeEach) --
+// -- Provider config --
 const TEST_PROVIDERS = [
   {
     name: 'jira',
@@ -103,73 +103,42 @@ function signGitHub(payload: string, secret: string): string {
   return `sha256=${createHmac('sha256', secret).update(payload).digest('hex')}`;
 }
 
-// -- Mock Gateway --
-interface AgentRun {
-  id: string;
-  message: string;
-  sessionKey: string;
-  providerName: string;
-  completedAt?: string;
+// -- Mock Gateway (HTTP) --
+interface DeliveredPayload {
+  body: string;
+  authHeader: string;
+  receivedAt: string;
 }
 
-function createMockGateway(): { wss: WebSocketServer; runs: AgentRun[]; getPort: () => number } {
-  const runs: AgentRun[] = [];
-  const wss = new WebSocketServer({ port: 0 });
+function createMockGateway(): { server: Server; deliveries: DeliveredPayload[]; getPort: () => number } {
+  const deliveries: DeliveredPayload[] = [];
 
-  wss.on('connection', (ws: WebSocket) => {
-    ws.on('message', (data: Buffer | string) => {
-      const msg = JSON.parse(String(data));
-
-      if (msg.method === 'connect') {
-        ws.send(JSON.stringify({
-          type: 'res', id: msg.id, ok: true,
-          payload: {
-            type: 'hello-ok', protocol: 3,
-            server: { version: 'test', connId: 'ws-e2e' },
-            features: { methods: ['agent', 'agent.wait'], events: [] },
-            snapshot: { presence: [], health: {}, stateVersion: {}, uptimeMs: 0 },
-            policy: { maxPayload: 1048576, maxBufferedBytes: 1048576, tickIntervalMs: 30000 },
-          },
-        }));
-        return;
-      }
-
-      if (msg.method === 'agent') {
-        const runId = `run-e2e-${runs.length + 1}`;
-        runs.push({
-          id: runId,
-          message: msg.params.message as string,
-          sessionKey: msg.params.sessionKey as string,
-          providerName: msg.params.name as string,
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    if (req.method === 'POST' && req.url === '/hooks/agent') {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        deliveries.push({
+          body: Buffer.concat(chunks).toString(),
+          authHeader: req.headers.authorization ?? '',
+          receivedAt: new Date().toISOString(),
         });
-        ws.send(JSON.stringify({
-          type: 'res', id: msg.id, ok: true,
-          payload: { runId, acceptedAt: new Date().toISOString() },
-        }));
-        return;
-      }
-
-      if (msg.method === 'agent.wait') {
-        const runId = msg.params.runId as string;
-        setTimeout(() => {
-          const run = runs.find((r) => r.id === runId);
-          if (run) run.completedAt = new Date().toISOString();
-          ws.send(JSON.stringify({
-            type: 'res', id: msg.id, ok: true,
-            payload: { runId, status: 'ok', startedAt: new Date().toISOString(), endedAt: new Date().toISOString() },
-          }));
-        }, 50);
-        return;
-      }
-
-      ws.send(JSON.stringify({
-        type: 'res', id: msg.id, ok: false,
-        error: { code: 'METHOD_NOT_FOUND', message: `Unknown: ${msg.method}` },
-      }));
-    });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
   });
 
-  return { wss, runs, getPort: () => (wss.address() as AddressInfo).port };
+  server.listen(0);
+
+  return {
+    server,
+    deliveries,
+    getPort: () => (server.address() as AddressInfo).port,
+  };
 }
 
 // -- Helpers --
@@ -177,12 +146,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForRuns(runs: AgentRun[], count: number, timeoutMs: number): Promise<void> {
+async function waitForDeliveries(
+  deliveries: DeliveredPayload[],
+  count: number,
+  timeoutMs: number,
+): Promise<void> {
   const start = Date.now();
-  while (runs.filter((r) => r.completedAt).length < count) {
+  while (deliveries.length < count) {
     if (Date.now() - start > timeoutMs) {
       throw new Error(
-        `Timed out waiting for ${count} completed runs (got ${runs.filter((r) => r.completedAt).length}/${runs.length})`,
+        `Timed out waiting for ${count} deliveries (got ${deliveries.length})`,
       );
     }
     await sleep(100);
@@ -190,50 +163,41 @@ async function waitForRuns(runs: AgentRun[], count: number, timeoutMs: number): 
 }
 
 // -- Test suite --
-describe('E2E: webhook → queue → gateway agent.wait', () => {
+describe('E2E: webhook → queue → gateway HTTP delivery', () => {
   let gateway: ReturnType<typeof createMockGateway>;
   let app: import('express').Express;
   let workers: Array<import('bullmq').Worker>;
-  let gatewayClient: import('../../src/services/gateway-client').GatewayClient;
 
   beforeAll(async () => {
     gateway = createMockGateway();
 
     process.env.OPENCLAW_TOKEN = 'e2e-test-token';
-    process.env.OPENCLAW_GATEWAY_WS_URL = `ws://127.0.0.1:${gateway.getPort()}`;
+    process.env.OPENCLAW_HOOK_URL = `http://127.0.0.1:${gateway.getPort()}/hooks/agent`;
     process.env.PROVIDERS_CONFIG = JSON.stringify(TEST_PROVIDERS);
-    process.env.AGENT_WAIT_TIMEOUT_MS = '10000';
     resetSettings();
     resetQueues();
 
     const { createApp } = await import('../../src/app');
     app = createApp();
 
-    const { GatewayClient } = await import('../../src/services/gateway-client');
     const { createWorker } = await import('../../src/services/worker.service');
     const { getSettings } = await import('../../src/config');
 
     const settings = getSettings();
-    gatewayClient = new GatewayClient(settings.openclawGatewayWsUrl, settings.openclawToken);
-    await gatewayClient.connect();
-
-    workers = settings.providers.map((p) => createWorker(p, gatewayClient));
+    workers = settings.providers.map((p) => createWorker(p));
   });
 
   beforeEach(() => {
-    // Global setup.ts resets settings each test — restore our env so getSettings() re-parses correctly
     process.env.OPENCLAW_TOKEN = 'e2e-test-token';
-    process.env.OPENCLAW_GATEWAY_WS_URL = `ws://127.0.0.1:${gateway.getPort()}`;
+    process.env.OPENCLAW_HOOK_URL = `http://127.0.0.1:${gateway.getPort()}/hooks/agent`;
     process.env.PROVIDERS_CONFIG = JSON.stringify(TEST_PROVIDERS);
-    process.env.AGENT_WAIT_TIMEOUT_MS = '10000';
-    gateway.runs.length = 0;
+    gateway.deliveries.length = 0;
   });
 
   afterAll(async () => {
     if (workers) await Promise.all(workers.map((w) => w.close()));
-    if (gatewayClient) await gatewayClient.close();
     await new Promise<void>((resolve, reject) => {
-      gateway.wss.close((err) => (err ? reject(err) : resolve()));
+      gateway.server.close((err) => (err ? reject(err) : resolve()));
     });
     resetSettings();
     resetQueues();
@@ -241,7 +205,7 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
 
   // --- Jira ---
 
-  it('should accept a Jira webhook and deliver to agent with completion', async () => {
+  it('should accept a Jira webhook and deliver to gateway', async () => {
     const res = await request(app)
       .post('/hooks/jira')
       .set('Content-Type', 'application/json')
@@ -251,15 +215,14 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ accepted: true });
 
-    await waitForRuns(gateway.runs, 1, 5000);
+    await waitForDeliveries(gateway.deliveries, 1, 5000);
 
-    expect(gateway.runs).toHaveLength(1);
-    const [run] = gateway.runs;
-    expect(run.providerName).toBe('jira');
-    expect(run.sessionKey).toMatch(/^hook:jira:/);
-    expect(run.completedAt).toBeDefined();
+    expect(gateway.deliveries).toHaveLength(1);
+    const [delivery] = gateway.deliveries;
+    expect(delivery.authHeader).toBe('Bearer e2e-test-token');
 
-    const forwarded = JSON.parse(run.message);
+    const envelope = JSON.parse(delivery.body);
+    const forwarded = JSON.parse(envelope.message);
     expect(forwarded.issue.key).toBe('SPE-1567');
     expect(forwarded.webhookEvent).toBe('jira:issue_updated');
   });
@@ -275,13 +238,10 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
 
     expect(res.status).toBe(202);
 
-    await waitForRuns(gateway.runs, 1, 5000);
+    await waitForDeliveries(gateway.deliveries, 1, 5000);
 
-    const [run] = gateway.runs;
-    expect(run.providerName).toBe('github');
-    expect(run.sessionKey).toMatch(/^hook:github:/);
-
-    const forwarded = JSON.parse(run.message);
+    const envelope = JSON.parse(gateway.deliveries[0].body);
+    const forwarded = JSON.parse(envelope.message);
     expect(forwarded.action).toBe('submitted');
     expect(forwarded.pull_request.number).toBe(1053);
     expect(forwarded.repository.full_name).toBe('SC0RED/Platform-Frontend');
@@ -298,11 +258,10 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
 
     expect(res.status).toBe(202);
 
-    await waitForRuns(gateway.runs, 1, 5000);
+    await waitForDeliveries(gateway.deliveries, 1, 5000);
 
-    const [run] = gateway.runs;
-    expect(run.providerName).toBe('linear');
-    const forwarded = JSON.parse(run.message);
+    const envelope = JSON.parse(gateway.deliveries[0].body);
+    const forwarded = JSON.parse(envelope.message);
     expect(forwarded.data.identifier).toBe('ENG-42');
   });
 
@@ -319,7 +278,7 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
     expect(res.body).toEqual({ error: 'Invalid signature' });
 
     await sleep(200);
-    expect(gateway.runs).toHaveLength(0);
+    expect(gateway.deliveries).toHaveLength(0);
   });
 
   it('should reject a webhook with missing signature header', async () => {
@@ -337,14 +296,14 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
       .post('/hooks/stripe')
       .set('Content-Type', 'application/json')
       .set('X-Hub-Signature', 'sha256=abc123')
-      .send("{}");
+      .send('{}');
 
     expect(res.status).toBe(404);
   });
 
-  // --- Multi-provider concurrency ---
+  // --- Multi-provider ---
 
-  it('should process webhooks from multiple providers in parallel', async () => {
+  it('should process webhooks from multiple providers', async () => {
     const [jiraRes, githubRes, linearRes] = await Promise.all([
       request(app)
         .post('/hooks/jira')
@@ -367,18 +326,11 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
     expect(githubRes.status).toBe(202);
     expect(linearRes.status).toBe(202);
 
-    await waitForRuns(gateway.runs, 3, 10000);
-
-    expect(gateway.runs).toHaveLength(3);
-    const providers = gateway.runs.map((r) => r.providerName).sort();
-    expect(providers).toEqual(['github', 'jira', 'linear']);
-
-    for (const run of gateway.runs) {
-      expect(run.completedAt).toBeDefined();
-    }
+    await waitForDeliveries(gateway.deliveries, 3, 10000);
+    expect(gateway.deliveries).toHaveLength(3);
   });
 
-  // --- Same-provider serialization ---
+  // --- Serialization ---
 
   it('should serialize multiple webhooks from the same provider', async () => {
     const payload2 = JSON.stringify({
@@ -412,18 +364,13 @@ describe('E2E: webhook → queue → gateway agent.wait', () => {
     expect(res1.status).toBe(202);
     expect(res2.status).toBe(202);
 
-    await waitForRuns(gateway.runs, 2, 10000);
+    await waitForDeliveries(gateway.deliveries, 2, 10000);
+    expect(gateway.deliveries).toHaveLength(2);
 
-    expect(gateway.runs).toHaveLength(2);
-    for (const run of gateway.runs) {
-      expect(run.providerName).toBe('jira');
-      expect(run.completedAt).toBeDefined();
-    }
-
-    // Second run started after first completed (serialized by BullMQ concurrency:1)
-    const [first, second] = gateway.runs;
-    expect(new Date(first.completedAt!).getTime()).toBeLessThanOrEqual(
-      new Date(second.completedAt!).getTime(),
+    // Verify ordering — second delivery happened after first
+    const [first, second] = gateway.deliveries;
+    expect(new Date(first.receivedAt).getTime()).toBeLessThanOrEqual(
+      new Date(second.receivedAt).getTime(),
     );
   });
 });

@@ -4,7 +4,6 @@ import IORedis from 'ioredis';
 
 import type { ProviderConfig } from '../config';
 import { getSettings } from '../config';
-import type { GatewayClient } from './gateway-client';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('worker');
@@ -13,51 +12,39 @@ function buildQueueName(providerName: string): string {
   return `webhooks-${providerName}`;
 }
 
-export async function processJob(
-  job: Job<string>,
-  provider: ProviderConfig,
-  gatewayClient: GatewayClient,
-): Promise<void> {
+export async function processJob(job: Job<string>, provider: ProviderConfig): Promise<void> {
   const settings = getSettings();
   logger.info({ jobId: job.id, provider: provider.name }, 'Processing webhook job');
 
-  const result = await gatewayClient.runAndWait(
-    {
-      message: job.data,
-      sessionKey: `hook:${provider.name}:${job.id}`,
-      name: provider.name,
-      deliver: true,
+  const envelope = JSON.stringify({ message: job.data });
+
+  const response = await fetch(settings.openclawHookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.openclawToken}`,
     },
-    settings.agentWaitTimeoutMs,
-  );
+    body: envelope,
+  });
 
-  if (result.status === 'error') {
-    throw new Error(`Agent run failed: ${result.error ?? 'unknown error'}`);
-  }
-
-  if (result.status === 'timeout') {
-    logger.warn(
-      { jobId: job.id, provider: provider.name, runId: result.runId },
-      'Agent run timed out',
-    );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Gateway returned ${response.status}: ${body}`);
   }
 
   logger.info(
-    { jobId: job.id, provider: provider.name, runId: result.runId, status: result.status },
-    'Webhook delivered and agent run completed',
+    { jobId: job.id, provider: provider.name, status: response.status },
+    'Webhook delivered to gateway',
   );
 }
 
-export function createWorker(
-  provider: ProviderConfig,
-  gatewayClient: GatewayClient,
-): Worker<string> {
+export function createWorker(provider: ProviderConfig): Worker<string> {
   const settings = getSettings();
   const connection = new IORedis(settings.redisUrl, { maxRetriesPerRequest: null });
 
   const worker = new Worker<string>(
     buildQueueName(provider.name),
-    (job) => processJob(job, provider, gatewayClient),
+    (job) => processJob(job, provider),
     {
       connection,
       concurrency: 1,

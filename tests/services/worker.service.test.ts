@@ -1,8 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Job } from 'bullmq';
 
 import type { ProviderConfig } from '../../src/config';
-import type { GatewayClient, AgentRunResult } from '../../src/services/gateway-client';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -28,83 +27,74 @@ function createFakeJob(data: string, id = 'test-job-1'): Job<string> {
   return { id, data } as unknown as Job<string>;
 }
 
-function createMockGatewayClient(result: AgentRunResult): GatewayClient {
-  return {
-    runAndWait: vi.fn().mockResolvedValue(result),
-    connect: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(undefined),
-  } as unknown as GatewayClient;
-}
-
 describe('processJob', () => {
+  const originalFetch = globalThis.fetch;
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('should resolve when agent run completes with ok status', async () => {
-    const client = createMockGatewayClient({
-      runId: 'run-123',
-      status: 'ok',
-      startedAt: '2026-03-28T10:00:00Z',
-      endedAt: '2026-03-28T10:00:05Z',
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('should resolve when gateway returns 200', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockResolvedValue('{"ok":true}'),
     });
 
     await expect(
-      processJob(createFakeJob('{"event":"updated"}'), testProvider, client),
+      processJob(createFakeJob('{"event":"updated"}'), testProvider),
     ).resolves.toBeUndefined();
 
-    expect(client.runAndWait).toHaveBeenCalledWith(
-      {
-        message: '{"event":"updated"}',
-        sessionKey: 'hook:test-provider:test-job-1',
-        name: 'test-provider',
-        deliver: true,
-      },
-      expect.any(Number),
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/hooks/agent'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          Authorization: expect.stringMatching(/^Bearer /),
+        }),
+        body: JSON.stringify({ message: '{"event":"updated"}' }),
+      }),
     );
   });
 
-  it('should throw when agent run completes with error status', async () => {
-    const client = createMockGatewayClient({
-      runId: 'run-456',
-      status: 'error',
-      error: 'Model rate limited',
+  it('should throw when gateway returns non-200', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: vi.fn().mockResolvedValue('Service Unavailable'),
     });
 
-    await expect(processJob(createFakeJob('{}'), testProvider, client)).rejects.toThrow(
-      'Agent run failed: Model rate limited',
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
+      'Gateway returned 503: Service Unavailable',
     );
   });
 
-  it('should resolve (with warning) when agent run times out', async () => {
-    const client = createMockGatewayClient({
-      runId: 'run-789',
-      status: 'timeout',
+  it('should throw when fetch rejects', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Connection refused'));
+
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
+      'Connection refused',
+    );
+  });
+
+  it('should forward the raw job data as the request body', async () => {
+    const payload = '{"issue":{"key":"SPE-1567"}}';
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockResolvedValue('{"ok":true}'),
     });
 
-    await expect(processJob(createFakeJob('{}'), testProvider, client)).resolves.toBeUndefined();
-  });
+    await processJob(createFakeJob(payload), testProvider);
 
-  it('should propagate gateway client errors', async () => {
-    const client = {
-      runAndWait: vi.fn().mockRejectedValue(new Error('Gateway WS closed')),
-      connect: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-    } as unknown as GatewayClient;
-
-    await expect(processJob(createFakeJob('{}'), testProvider, client)).rejects.toThrow(
-      'Gateway WS closed',
-    );
-  });
-
-  it('should include provider name in session key', async () => {
-    const client = createMockGatewayClient({ runId: 'r1', status: 'ok' });
-
-    await processJob(createFakeJob('{}', 'job-42'), testProvider, client);
-
-    expect(client.runAndWait).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: 'hook:test-provider:job-42' }),
-      expect.any(Number),
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ body: JSON.stringify({ message: payload }) }),
     );
   });
 });
