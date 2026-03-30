@@ -20,8 +20,13 @@ vi.mock('ioredis', () => ({
   default: vi.fn().mockImplementation(() => ({})),
 }));
 
+vi.mock('../../src/services/session-monitor.service', () => ({
+  waitForSessionIdle: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { processJob } from '../../src/services/worker.service';
 import { resetSettings } from '../../src/config';
+import { waitForSessionIdle } from '../../src/services/session-monitor.service';
 
 const testProvider: ProviderConfig = {
   name: 'test-provider',
@@ -35,11 +40,12 @@ function createFakeJob(data: string, id = 'test-job-1'): Job<string> {
   return { id, data } as unknown as Job<string>;
 }
 
-function mockFetchOk(): void {
+function mockFetchOk(runId = 'run-123'): void {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     status: 200,
-    text: vi.fn().mockResolvedValue('{"ok":true}'),
+    text: vi.fn().mockResolvedValue(JSON.stringify({ ok: true, runId })),
+    json: vi.fn().mockResolvedValue({ ok: true, runId }),
   });
 }
 
@@ -48,6 +54,8 @@ describe('processJob', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.OPENCLAW_AGENT_ID = 'patch';
+    resetSettings();
     resetRoutingStrategies();
     registerRoutingStrategy(fieldEqualsStrategy);
     registerRoutingStrategy(regexStrategy);
@@ -58,7 +66,7 @@ describe('processJob', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('should resolve when gateway returns 200', async () => {
+  it('should resolve when gateway returns 200 and session goes idle', async () => {
     mockFetchOk();
 
     await expect(
@@ -74,6 +82,12 @@ describe('processJob', () => {
           Authorization: expect.stringMatching(/^Bearer /),
         }),
         body: expect.stringContaining('"message":"{\\"event\\":\\"updated\\"}"'),
+      }),
+    );
+
+    expect(waitForSessionIdle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: expect.stringContaining('agent:'),
       }),
     );
   });
@@ -183,7 +197,6 @@ describe('processJob', () => {
   it('should skip forwarding when no routing match and no default', async () => {
     mockFetchOk();
 
-    // Clear cached settings and set empty agent ID to test no-match skip
     const originalAgentId = process.env.OPENCLAW_AGENT_ID;
     process.env.OPENCLAW_AGENT_ID = '';
     resetSettings();
@@ -205,9 +218,34 @@ describe('processJob', () => {
     await processJob(createFakeJob('{"issue":{"fields":{}}}'), providerNoDefault);
 
     expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(waitForSessionIdle).not.toHaveBeenCalled();
 
-    // Restore
     process.env.OPENCLAW_AGENT_ID = originalAgentId;
     resetSettings();
+  });
+
+  it('should wait for session idle after successful delivery', async () => {
+    mockFetchOk('run-456');
+
+    await processJob(createFakeJob('{"event":"test"}'), testProvider);
+
+    expect(waitForSessionIdle).toHaveBeenCalledTimes(1);
+    expect(waitForSessionIdle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionsFilePath: expect.any(String),
+        sessionKey: 'agent:patch:hook:test-provider:test-job-1',
+      }),
+    );
+  });
+
+  it('should throw when session monitor times out', async () => {
+    mockFetchOk();
+    vi.mocked(waitForSessionIdle).mockRejectedValueOnce(
+      new Error('Session monitor timeout: agent:patch:hook:test-provider:test-job-1 did not go idle within 600000ms'),
+    );
+
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
+      'Session monitor timeout',
+    );
   });
 });

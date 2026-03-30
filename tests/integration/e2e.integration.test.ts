@@ -14,8 +14,13 @@ import type { Server, IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 
+import { vi } from 'vitest';
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
+
+vi.mock('../../src/services/session-monitor.service', () => ({
+  waitForSessionIdle: vi.fn().mockResolvedValue(undefined),
+}));
 
 // -- Secrets --
 const JIRA_SECRET = 'jira-test-hmac-secret-1234';
@@ -124,7 +129,7 @@ function createMockGateway(): { server: Server; deliveries: DeliveredPayload[]; 
           receivedAt: new Date().toISOString(),
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(JSON.stringify({ ok: true, runId: `run-${deliveries.length}` }));
       });
     } else {
       res.writeHead(404);
@@ -177,6 +182,23 @@ describe('E2E: webhook → queue → gateway HTTP delivery', () => {
     resetSettings();
     resetQueues();
 
+    // Flush stale completed/failed jobs from previous runs so content-hash dedup works
+    const { Queue } = await import('bullmq');
+    const IORedis = (await import('ioredis')).default;
+    const flushConn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', { maxRetriesPerRequest: null });
+    for (const p of TEST_PROVIDERS) {
+      const q = new Queue(`webhooks-${p.name}`, { connection: flushConn });
+      await q.drain(true);  // remove delayed jobs
+      // Remove completed/failed to reset dedup
+      const completed = await q.getCompleted(0, 1000);
+      const failed = await q.getFailed(0, 1000);
+      for (const job of [...completed, ...failed]) {
+        await job.remove();
+      }
+      await q.close();
+    }
+    await flushConn.quit();
+
     const { createApp } = await import('../../src/app');
     app = createApp();
 
@@ -187,11 +209,26 @@ describe('E2E: webhook → queue → gateway HTTP delivery', () => {
     workers = settings.providers.map((p) => createWorker(p));
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.OPENCLAW_TOKEN = 'e2e-test-token';
     process.env.OPENCLAW_HOOK_URL = `http://127.0.0.1:${gateway.getPort()}/hooks/agent`;
     process.env.PROVIDERS_CONFIG = JSON.stringify(TEST_PROVIDERS);
     gateway.deliveries.length = 0;
+
+    // Remove completed/failed jobs between tests so content-hash dedup doesn't skip re-enqueues
+    const { Queue } = await import('bullmq');
+    const IORedis = (await import('ioredis')).default;
+    const conn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', { maxRetriesPerRequest: null });
+    for (const p of TEST_PROVIDERS) {
+      const q = new Queue(`webhooks-${p.name}`, { connection: conn });
+      const completed = await q.getCompleted(0, 1000);
+      const failed = await q.getFailed(0, 1000);
+      for (const job of [...completed, ...failed]) {
+        await job.remove();
+      }
+      await q.close();
+    }
+    await conn.quit();
   });
 
   afterAll(async () => {
