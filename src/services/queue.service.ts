@@ -19,13 +19,6 @@ export function getProviderQueue(providerName: string): Queue {
   const connection = new IORedis(settings.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue(buildQueueName(providerName), {
     connection,
-    defaultJobOptions: {
-      attempts: settings.jobMaxAttempts,
-      backoff: {
-        type: 'exponential',
-        delay: settings.jobBackoffDelayMs,
-      },
-    },
   });
 
   queueInstances.set(providerName, queue);

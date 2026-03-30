@@ -24,7 +24,8 @@ vi.mock('../../src/services/session-monitor.service', () => ({
   waitForSessionIdle: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { processJob } from '../../src/services/worker.service';
+import { processJob, parseEnvelope } from '../../src/services/worker.service';
+import type { JobEnvelope } from '../../src/services/worker.service';
 import { resetSettings } from '../../src/config';
 import { waitForSessionIdle } from '../../src/services/session-monitor.service';
 
@@ -241,11 +242,63 @@ describe('processJob', () => {
   it('should throw when session monitor times out', async () => {
     mockFetchOk();
     vi.mocked(waitForSessionIdle).mockRejectedValueOnce(
-      new Error('Session monitor timeout: agent:patch:hook:test-provider:test-job-1 did not go idle within 600000ms'),
+      new Error(
+        'Session monitor timeout: agent:patch:hook:test-provider:test-job-1 did not go idle within 600000ms',
+      ),
     );
 
     await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
       'Session monitor timeout',
     );
+  });
+
+  it('should unwrap envelope and forward original payload', async () => {
+    mockFetchOk();
+
+    const envelope: JobEnvelope = {
+      payload: '{"issue":{"key":"SPE-1234"}}',
+      attempt: 2,
+      originalJobId: 'original-42',
+    };
+
+    await processJob(createFakeJob(JSON.stringify(envelope)), testProvider);
+
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body.message).toBe('{"issue":{"key":"SPE-1234"}}');
+    // sessionKey uses originalJobId for traceability
+    expect(body.sessionKey).toBe('hook:test-provider:original-42');
+  });
+});
+
+describe('parseEnvelope', () => {
+  it('should wrap raw string as first attempt', () => {
+    const result = parseEnvelope('{"event":"updated"}');
+    expect(result).toEqual({
+      payload: '{"event":"updated"}',
+      attempt: 1,
+    });
+  });
+
+  it('should return existing envelope as-is', () => {
+    const envelope: JobEnvelope = {
+      payload: '{"event":"updated"}',
+      attempt: 2,
+      originalJobId: 'job-42',
+    };
+    const result = parseEnvelope(JSON.stringify(envelope));
+    expect(result).toEqual(envelope);
+  });
+
+  it('should treat non-envelope JSON as raw payload', () => {
+    const result = parseEnvelope('{"issue":{"key":"SPE-1"}}');
+    expect(result.payload).toBe('{"issue":{"key":"SPE-1"}}');
+    expect(result.attempt).toBe(1);
+  });
+
+  it('should handle malformed JSON as raw payload', () => {
+    const result = parseEnvelope('not-json');
+    expect(result.payload).toBe('not-json');
+    expect(result.attempt).toBe(1);
   });
 });

@@ -1,4 +1,4 @@
-import { Worker } from 'bullmq';
+import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
 
@@ -16,17 +16,62 @@ function buildQueueName(providerName: string): string {
   return `webhooks-${providerName}`;
 }
 
+/**
+ * Job data envelope. The webhook payload is wrapped with attempt metadata
+ * so we can track retries without relying on BullMQ's built-in attempts
+ * (which hold the failed job at the front of the queue).
+ */
+export interface JobEnvelope {
+  /** Original webhook body (stringified JSON). */
+  payload: string;
+  /** Current attempt number (1-indexed). */
+  attempt: number;
+  /** Original job ID for traceability across re-enqueues. */
+  originalJobId?: string;
+}
+
+/**
+ * Wrap a raw payload string into a JobEnvelope for first attempt.
+ * If the data is already an envelope (from a re-enqueue), return as-is.
+ */
+export function parseEnvelope(data: string): JobEnvelope {
+  try {
+    const parsed = JSON.parse(data);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'payload' in parsed &&
+      'attempt' in parsed
+    ) {
+      return parsed as JobEnvelope;
+    }
+  } catch {
+    // Not JSON or not an envelope — treat as raw payload
+  }
+  return { payload: data, attempt: 1 };
+}
+
 export async function processJob(
   job: Job<string>,
   provider: ProviderConfig,
   signal?: AbortSignal,
 ): Promise<void> {
   const settings = getSettings();
-  logger.info({ jobId: job.id, provider: provider.name }, 'Processing webhook job');
+  const envelope = parseEnvelope(job.data);
+
+  logger.info(
+    {
+      jobId: job.id,
+      provider: provider.name,
+      attempt: envelope.attempt,
+      maxAttempts: settings.jobMaxAttempts,
+    },
+    'Processing webhook job',
+  );
 
   let parsedPayload: unknown;
   try {
-    parsedPayload = JSON.parse(job.data);
+    parsedPayload = JSON.parse(envelope.payload);
   } catch {
     parsedPayload = {};
   }
@@ -40,9 +85,10 @@ export async function processJob(
     return;
   }
 
-  const sessionKey = `hook:${provider.name}:${job.id ?? 'unknown'}`;
-  const envelope = JSON.stringify({
-    message: job.data,
+  const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
+  const sessionKey = `hook:${provider.name}:${traceId}`;
+  const gatewayEnvelope = JSON.stringify({
+    message: envelope.payload,
     agentId,
     sessionKey,
     deliver: false,
@@ -54,7 +100,7 @@ export async function processJob(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${settings.openclawToken}`,
     },
-    body: envelope,
+    body: gatewayEnvelope,
   });
 
   if (!response.ok) {
@@ -100,9 +146,10 @@ export function createWorker(
   const alertRegistry = isOptions(providerOrOptions) ? providerOrOptions.alertRegistry : undefined;
 
   const settings = getSettings();
-  const connection = new IORedis(settings.redisUrl, { maxRetriesPerRequest: null });
+  const redisUrl = settings.redisUrl;
+  const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  const maxAttempts = settings.jobMaxAttempts;
 
-  const attempts = settings.jobMaxAttempts;
   const worker = new Worker<string>(
     buildQueueName(provider.name),
     (job) => processJob(job, provider),
@@ -115,44 +162,95 @@ export function createWorker(
   );
 
   worker.on('failed', (job, error) => {
-    const isFinalFailure = (job?.attemptsMade ?? 0) >= attempts;
+    if (!job) return;
 
-    logger.error(
-      {
-        jobId: job?.id,
-        provider: provider.name,
-        error: error.message,
-        attempt: job?.attemptsMade,
-        maxAttempts: attempts,
-        final: isFinalFailure,
-      },
-      isFinalFailure ? 'Job permanently failed' : 'Job failed — will retry',
-    );
+    const envelope = parseEnvelope(job.data);
+    const isFinalFailure = envelope.attempt >= maxAttempts;
 
-    if (isFinalFailure && alertRegistry) {
-      const alert: JobAlert = {
-        jobId: job?.id ?? 'unknown',
-        sessionKey: `hook:${provider.name}:${job?.id ?? 'unknown'}`,
-        agentId: settings.openclawAgentId,
-        error: error.message,
-        attempts: job?.attemptsMade ?? 0,
-        maxAttempts: attempts,
-        provider: provider.name,
-        failedAt: new Date(),
+    if (isFinalFailure) {
+      // Summarily executed in front of the other jobs so they will learn.
+      logger.error(
+        {
+          jobId: job.id,
+          provider: provider.name,
+          error: error.message,
+          attempt: envelope.attempt,
+          maxAttempts,
+        },
+        'Job permanently failed — all retries exhausted',
+      );
+
+      if (alertRegistry) {
+        const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
+        const alert: JobAlert = {
+          jobId: traceId,
+          sessionKey: `hook:${provider.name}:${traceId}`,
+          agentId: settings.openclawAgentId,
+          error: error.message,
+          attempts: envelope.attempt,
+          maxAttempts,
+          provider: provider.name,
+          failedAt: new Date(),
+        };
+
+        alertRegistry.sendAll(alert).catch((err) => {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'Alert dispatch failed',
+          );
+        });
+      }
+    } else {
+      // Bad job! Back to the end of the line.
+      logger.warn(
+        {
+          jobId: job.id,
+          provider: provider.name,
+          error: error.message,
+          attempt: envelope.attempt,
+          maxAttempts,
+          action: 'requeue-to-back',
+        },
+        'Job failed — re-enqueueing to back of queue',
+      );
+
+      const retryEnvelope: JobEnvelope = {
+        payload: envelope.payload,
+        attempt: envelope.attempt + 1,
+        originalJobId: envelope.originalJobId ?? job.id ?? undefined,
       };
 
-      // Fire-and-forget — never block the worker
-      alertRegistry.sendAll(alert).catch((err) => {
-        logger.error(
-          { error: err instanceof Error ? err.message : String(err) },
-          'Alert dispatch failed',
-        );
-      });
+      // Re-enqueue to the back — other waiting jobs go first
+      const retryConn = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      const queue = new Queue(buildQueueName(provider.name), { connection: retryConn });
+      queue
+        .add('webhook-event', JSON.stringify(retryEnvelope))
+        .then(() => {
+          logger.info(
+            {
+              jobId: job.id,
+              provider: provider.name,
+              newAttempt: retryEnvelope.attempt,
+              originalJobId: retryEnvelope.originalJobId,
+            },
+            'Job re-enqueued to back of queue',
+          );
+        })
+        .catch((err) => {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err), jobId: job.id },
+            'Failed to re-enqueue job — job is lost',
+          );
+        })
+        .finally(() => {
+          queue.close().catch(() => {});
+          retryConn.quit().catch(() => {});
+        });
     }
   });
 
   logger.info(
-    { provider: provider.name, queue: buildQueueName(provider.name), attempts },
+    { provider: provider.name, queue: buildQueueName(provider.name), maxAttempts },
     'Worker started',
   );
   return worker;
