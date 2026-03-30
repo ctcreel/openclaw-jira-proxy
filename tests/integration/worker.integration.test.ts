@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import type { Job } from 'bullmq';
 
 import type { ProviderConfig } from '../../src/config';
+import { resetSettings } from '../../src/config';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -14,6 +15,10 @@ vi.mock('bullmq', () => ({
 
 vi.mock('ioredis', () => ({
   default: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock('../../src/services/session-monitor.service', () => ({
+  waitForSessionIdle: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { processJob } from '../../src/services/worker.service';
@@ -33,9 +38,11 @@ const provider: ProviderConfig = {
 describe('Worker integration (gateway HTTP)', () => {
   let mockGateway: Server;
   let receivedBodies: string[];
+  let runCounter: number;
 
   beforeAll(() => {
     receivedBodies = [];
+    runCounter = 0;
 
     mockGateway = createServer((req: IncomingMessage, res: ServerResponse) => {
       if (req.method === 'POST' && req.url === '/hooks/agent') {
@@ -43,8 +50,9 @@ describe('Worker integration (gateway HTTP)', () => {
         req.on('data', (chunk: Buffer) => chunks.push(chunk));
         req.on('end', () => {
           receivedBodies.push(Buffer.concat(chunks).toString());
+          runCounter++;
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ ok: true, runId: `run-${runCounter}` }));
         });
       } else {
         res.writeHead(404);
@@ -55,10 +63,13 @@ describe('Worker integration (gateway HTTP)', () => {
     mockGateway.listen(0);
     const port = (mockGateway.address() as AddressInfo).port;
     process.env.OPENCLAW_HOOK_URL = `http://127.0.0.1:${port}/hooks/agent`;
+    process.env.OPENCLAW_AGENT_ID = 'patch';
+    resetSettings();
   });
 
   afterEach(() => {
     receivedBodies = [];
+    runCounter = 0;
   });
 
   afterAll(async () => {

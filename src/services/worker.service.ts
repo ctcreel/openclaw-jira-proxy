@@ -6,6 +6,7 @@ import type { ProviderConfig } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import { resolveAgent } from '../strategies/routing';
+import { waitForSessionIdle } from './session-monitor.service';
 
 const logger = getLogger('worker');
 
@@ -13,7 +14,11 @@ function buildQueueName(providerName: string): string {
   return `webhooks-${providerName}`;
 }
 
-export async function processJob(job: Job<string>, provider: ProviderConfig): Promise<void> {
+export async function processJob(
+  job: Job<string>,
+  provider: ProviderConfig,
+  signal?: AbortSignal,
+): Promise<void> {
   const settings = getSettings();
   logger.info({ jobId: job.id, provider: provider.name }, 'Processing webhook job');
 
@@ -55,9 +60,24 @@ export async function processJob(job: Job<string>, provider: ProviderConfig): Pr
     throw new Error(`Gateway returned ${response.status}: ${body}`);
   }
 
+  const result = (await response.json()) as { runId?: string };
+  const fileSessionKey = `agent:${agentId}:${sessionKey}`;
+
   logger.info(
-    { jobId: job.id, provider: provider.name, status: response.status },
-    'Webhook delivered to gateway',
+    { jobId: job.id, provider: provider.name, runId: result.runId, fileSessionKey },
+    'Webhook delivered — waiting for session idle',
+  );
+
+  await waitForSessionIdle({
+    sessionsFilePath: settings.sessionsFilePath,
+    sessionKey: fileSessionKey,
+    timeoutMs: settings.agentWaitTimeoutMs,
+    signal,
+  });
+
+  logger.info(
+    { jobId: job.id, provider: provider.name, runId: result.runId },
+    'Session idle — job complete',
   );
 }
 
