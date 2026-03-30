@@ -11,7 +11,7 @@ const POLL_INTERVAL_MS = 2_000;
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
 /** A session is "idle" when updatedAt has not changed for this long. */
-const DEFAULT_IDLE_THRESHOLD_MS = 15_000;
+const DEFAULT_IDLE_THRESHOLD_MS = 600_000;
 
 /** Shape of a single session entry in sessions.json. */
 interface SessionEntry {
