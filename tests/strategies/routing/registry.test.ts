@@ -23,7 +23,9 @@ describe('routing registry', () => {
   });
 
   it('should throw for unknown strategy', () => {
-    expect(() => getRoutingStrategy('nonexistent')).toThrow('Unknown routing strategy: nonexistent');
+    expect(() => getRoutingStrategy('nonexistent')).toThrow(
+      'Unknown routing strategy: nonexistent',
+    );
   });
 
   it('should overwrite a strategy with the same name', () => {

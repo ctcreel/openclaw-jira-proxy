@@ -20,7 +20,9 @@ describe('DiscordAlertProvider', () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => vi.clearAllMocks());
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it('should throw if no webhookUrl', () => {
     expect(() => new DiscordAlertProvider({ webhookUrl: '' })).toThrow('requires webhookUrl');
@@ -28,7 +30,9 @@ describe('DiscordAlertProvider', () => {
 
   it('should POST to webhook URL', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    const provider = new DiscordAlertProvider({ webhookUrl: 'https://discord.com/api/webhooks/test' });
+    const provider = new DiscordAlertProvider({
+      webhookUrl: 'https://discord.com/api/webhooks/test',
+    });
 
     await provider.send(makeAlert());
 
@@ -43,14 +47,18 @@ describe('DiscordAlertProvider', () => {
 
   it('should not throw when webhook fails', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 429 });
-    const provider = new DiscordAlertProvider({ webhookUrl: 'https://discord.com/api/webhooks/test' });
+    const provider = new DiscordAlertProvider({
+      webhookUrl: 'https://discord.com/api/webhooks/test',
+    });
 
     await expect(provider.send(makeAlert())).resolves.toBeUndefined();
   });
 
   it('should not throw when fetch rejects', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('network'));
-    const provider = new DiscordAlertProvider({ webhookUrl: 'https://discord.com/api/webhooks/test' });
+    const provider = new DiscordAlertProvider({
+      webhookUrl: 'https://discord.com/api/webhooks/test',
+    });
 
     await expect(provider.send(makeAlert())).resolves.toBeUndefined();
   });

@@ -2,10 +2,10 @@ import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
 
-import type { ProviderConfig } from '../config';
+import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
-import { resolveAgent } from '../strategies/routing';
+import { resolveAgent, resolveFieldPath } from '../strategies/routing';
 import type { AlertRegistry } from './alerts';
 import type { JobAlert } from './alerts';
 import { waitForSessionIdle } from './session-monitor.service';
@@ -51,6 +51,45 @@ export function parseEnvelope(data: string): JobEnvelope {
   return { payload: data, attempt: 1 };
 }
 
+/**
+ * Evaluate model rules against a parsed payload. Returns the model string
+ * from the first matching rule, or undefined if no rules match.
+ *
+ * Example Jira model rules (configured via PROVIDERS_CONFIG):
+ *   - field: "changelog.items[*].field", matches: "status",
+ *     combined with field: "issue.fields.status.name",
+ *     matches: ["Plan", "Ready for Development"] → "anthropic/claude-opus-4-6"
+ *   - All other events → "anthropic/claude-sonnet-4-6"
+ */
+export function resolveModel(
+  payload: unknown,
+  rules: ReadonlyArray<ModelRule> | undefined,
+): string | undefined {
+  if (!rules || rules.length === 0) {
+    return undefined;
+  }
+
+  for (const rule of rules) {
+    const value = resolveFieldPath(payload, rule.field);
+    if (value === undefined) {
+      continue;
+    }
+
+    const matchTargets = Array.isArray(rule.matches) ? rule.matches : [rule.matches];
+    const fieldValues = Array.isArray(value) ? value : [value];
+
+    const matched = fieldValues.some(
+      (fieldValue) => typeof fieldValue === 'string' && matchTargets.includes(fieldValue),
+    );
+
+    if (matched) {
+      return rule.model;
+    }
+  }
+
+  return undefined;
+}
+
 export async function processJob(
   job: Job<string>,
   provider: ProviderConfig,
@@ -87,11 +126,21 @@ export async function processJob(
 
   const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
   const sessionKey = `hook:${provider.name}:${traceId}`;
+  const selectedModel = resolveModel(parsedPayload, provider.modelRules);
+
+  if (selectedModel) {
+    logger.info(
+      { jobId: job.id, provider: provider.name, model: selectedModel },
+      'Model selected by routing rule',
+    );
+  }
+
   const gatewayEnvelope = JSON.stringify({
     message: envelope.payload,
     agentId,
     sessionKey,
     deliver: false,
+    ...(selectedModel ? { model: selectedModel } : {}),
   });
 
   const response = await fetch(settings.openclawHookUrl, {

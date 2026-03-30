@@ -16,9 +16,15 @@ vi.mock('../../src/lib/logging', () => ({
 
 let tempDir: string;
 let sessionsPath: string;
+let transcriptDir: string;
 
 async function writeSessionsFile(data: Record<string, unknown>): Promise<void> {
   await writeFile(sessionsPath, JSON.stringify(data), 'utf-8');
+}
+
+async function writeTranscriptFile(sessionId: string, events: unknown[]): Promise<void> {
+  const content = events.map((event) => JSON.stringify(event)).join('\n');
+  await writeFile(join(transcriptDir, `${sessionId}.jsonl`), content, 'utf-8');
 }
 
 beforeEach(async () => {
@@ -28,6 +34,8 @@ beforeEach(async () => {
   );
   await mkdir(tempDir, { recursive: true });
   sessionsPath = join(tempDir, 'sessions.json');
+  transcriptDir = join(tempDir, 'transcripts');
+  await mkdir(transcriptDir, { recursive: true });
 });
 
 afterEach(() => {
@@ -185,5 +193,114 @@ describe('session-monitor.service', () => {
 
       await expect(promise).resolves.toBeUndefined();
     }, 10_000);
+
+    it('does not declare idle when transcript shows toolResult pending', async () => {
+      const sessionId = 'sess-thinking-001';
+      const now = Date.now();
+
+      await writeSessionsFile({
+        'agent:patch:hook:jira:spe-thinking': {
+          sessionId,
+          updatedAt: now,
+        },
+      });
+
+      // Transcript ends with toolResult — model is thinking.
+      await writeTranscriptFile(sessionId, [
+        { type: 'message', message: { role: 'user' } },
+        { type: 'message', message: { role: 'assistant' } },
+        { type: 'message', message: { role: 'toolResult' } },
+      ]);
+
+      const promise = waitForSessionIdle({
+        sessionsFilePath: sessionsPath,
+        sessionKey: 'agent:patch:hook:jira:spe-thinking',
+        transcriptDir,
+        idleThresholdMs: 1_000,
+        timeoutMs: 5_000,
+      });
+
+      // After 3s, update the transcript to show assistant response → now truly idle.
+      setTimeout(async () => {
+        await writeTranscriptFile(sessionId, [
+          { type: 'message', message: { role: 'user' } },
+          { type: 'message', message: { role: 'assistant' } },
+          { type: 'message', message: { role: 'toolResult' } },
+          { type: 'message', message: { role: 'assistant' } },
+        ]);
+      }, 3_000);
+
+      await expect(promise).resolves.toBeUndefined();
+    }, 15_000);
+
+    it('declares idle normally when transcript shows assistant response', async () => {
+      const sessionId = 'sess-idle-001';
+      const now = Date.now();
+
+      await writeSessionsFile({
+        'agent:patch:hook:jira:spe-idle': {
+          sessionId,
+          updatedAt: now,
+        },
+      });
+
+      // Transcript ends with assistant — model is done.
+      await writeTranscriptFile(sessionId, [
+        { type: 'message', message: { role: 'user' } },
+        { type: 'message', message: { role: 'assistant' } },
+      ]);
+
+      await expect(
+        waitForSessionIdle({
+          sessionsFilePath: sessionsPath,
+          sessionKey: 'agent:patch:hook:jira:spe-idle',
+          transcriptDir,
+          idleThresholdMs: 2_000,
+          timeoutMs: 10_000,
+        }),
+      ).resolves.toBeUndefined();
+    }, 15_000);
+
+    it('falls back to existing behavior when transcript file is missing', async () => {
+      const now = Date.now();
+
+      await writeSessionsFile({
+        'agent:patch:hook:jira:spe-no-transcript': {
+          sessionId: 'sess-missing-001',
+          updatedAt: now,
+        },
+      });
+
+      // No transcript file written — should fall back to updatedAt-only idle detection.
+      await expect(
+        waitForSessionIdle({
+          sessionsFilePath: sessionsPath,
+          sessionKey: 'agent:patch:hook:jira:spe-no-transcript',
+          transcriptDir,
+          idleThresholdMs: 2_000,
+          timeoutMs: 10_000,
+        }),
+      ).resolves.toBeUndefined();
+    }, 15_000);
+
+    it('falls back to existing behavior when transcriptDir is not provided', async () => {
+      const now = Date.now();
+
+      await writeSessionsFile({
+        'agent:patch:hook:jira:spe-no-dir': {
+          sessionId: 'sess-nodir-001',
+          updatedAt: now,
+        },
+      });
+
+      await expect(
+        waitForSessionIdle({
+          sessionsFilePath: sessionsPath,
+          sessionKey: 'agent:patch:hook:jira:spe-no-dir',
+          idleThresholdMs: 2_000,
+          timeoutMs: 10_000,
+        }),
+      ).resolves.toBeUndefined();
+    }, 15_000);
   });
 });

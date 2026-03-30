@@ -24,10 +24,12 @@ vi.mock('../../src/services/session-monitor.service', () => ({
   waitForSessionIdle: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { processJob, parseEnvelope } from '../../src/services/worker.service';
+import { processJob, parseEnvelope, resolveModel } from '../../src/services/worker.service';
 import type { JobEnvelope } from '../../src/services/worker.service';
 import { resetSettings } from '../../src/config';
 import { waitForSessionIdle } from '../../src/services/session-monitor.service';
+
+import type { ModelRule } from '../../src/config';
 
 const testProvider: ProviderConfig = {
   name: 'test-provider',
@@ -300,5 +302,149 @@ describe('parseEnvelope', () => {
     const result = parseEnvelope('not-json');
     expect(result.payload).toBe('not-json');
     expect(result.attempt).toBe(1);
+  });
+});
+
+describe('resolveModel', () => {
+  const statusRules: ModelRule[] = [
+    {
+      field: 'issue.fields.status.name',
+      matches: ['Plan', 'Ready for Development'],
+      model: 'anthropic/claude-opus-4-6',
+    },
+    {
+      field: 'issue.fields.status.name',
+      matches: ['Done', 'In Progress', 'To Do'],
+      model: 'anthropic/claude-sonnet-4-6',
+    },
+  ];
+
+  it('should return matching model for single string match', () => {
+    const payload = { issue: { fields: { status: { name: 'Plan' } } } };
+    expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-6');
+  });
+
+  it('should return matching model for array match', () => {
+    const payload = { issue: { fields: { status: { name: 'Ready for Development' } } } };
+    expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-6');
+  });
+
+  it('should return second rule when first does not match', () => {
+    const payload = { issue: { fields: { status: { name: 'Done' } } } };
+    expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-sonnet-4-6');
+  });
+
+  it('should return undefined when no rules match', () => {
+    const payload = { issue: { fields: { status: { name: 'Unknown' } } } };
+    expect(resolveModel(payload, statusRules)).toBeUndefined();
+  });
+
+  it('should return undefined when rules are undefined', () => {
+    expect(resolveModel({ foo: 'bar' }, undefined)).toBeUndefined();
+  });
+
+  it('should return undefined when rules are empty', () => {
+    expect(resolveModel({ foo: 'bar' }, [])).toBeUndefined();
+  });
+
+  it('should return undefined when field path does not exist', () => {
+    const rules: ModelRule[] = [
+      { field: 'deeply.nested.missing', matches: 'value', model: 'opus' },
+    ];
+    expect(resolveModel({}, rules)).toBeUndefined();
+  });
+
+  it('should match single string in matches against single field value', () => {
+    const rules: ModelRule[] = [{ field: 'action', matches: 'created', model: 'opus' }];
+    expect(resolveModel({ action: 'created' }, rules)).toBe('opus');
+  });
+
+  it('should match when field value is an array containing a match', () => {
+    const rules: ModelRule[] = [{ field: 'tags', matches: 'urgent', model: 'opus' }];
+    expect(resolveModel({ tags: ['urgent', 'bug'] }, rules)).toBe('opus');
+  });
+
+  it('should return first matching rule (priority order)', () => {
+    const rules: ModelRule[] = [
+      { field: 'type', matches: 'critical', model: 'opus' },
+      { field: 'type', matches: 'critical', model: 'sonnet' },
+    ];
+    expect(resolveModel({ type: 'critical' }, rules)).toBe('opus');
+  });
+});
+
+describe('processJob model routing', () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.OPENCLAW_AGENT_ID = 'patch';
+    resetSettings();
+    resetRoutingStrategies();
+    registerRoutingStrategy(fieldEqualsStrategy);
+    registerRoutingStrategy(regexStrategy);
+    registerRoutingStrategy(defaultStrategy);
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('should include model in gateway envelope when rule matches', async () => {
+    mockFetchOk();
+
+    const providerWithModel: ProviderConfig = {
+      ...testProvider,
+      modelRules: [
+        {
+          field: 'issue.fields.status.name',
+          matches: ['Plan', 'Ready for Development'],
+          model: 'anthropic/claude-opus-4-6',
+        },
+      ],
+    };
+
+    await processJob(
+      createFakeJob('{"issue":{"fields":{"status":{"name":"Plan"}}}}'),
+      providerWithModel,
+    );
+
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body.model).toBe('anthropic/claude-opus-4-6');
+  });
+
+  it('should omit model from gateway envelope when no rule matches', async () => {
+    mockFetchOk();
+
+    const providerWithModel: ProviderConfig = {
+      ...testProvider,
+      modelRules: [
+        {
+          field: 'issue.fields.status.name',
+          matches: 'Plan',
+          model: 'anthropic/claude-opus-4-6',
+        },
+      ],
+    };
+
+    await processJob(
+      createFakeJob('{"issue":{"fields":{"status":{"name":"In Progress"}}}}'),
+      providerWithModel,
+    );
+
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body.model).toBeUndefined();
+  });
+
+  it('should omit model when provider has no modelRules', async () => {
+    mockFetchOk();
+
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
+
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body as string);
+    expect(body.model).toBeUndefined();
   });
 });

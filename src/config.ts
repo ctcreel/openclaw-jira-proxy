@@ -2,6 +2,17 @@ import { z } from 'zod';
 
 import { routingConfigSchema } from './strategies/routing';
 
+const modelRuleSchema = z.object({
+  /** Dot-notation field path to match against the webhook payload. */
+  field: z.string().min(1),
+  /** Value(s) the resolved field must match (string or array of strings). */
+  matches: z.union([z.string(), z.array(z.string())]),
+  /** Model identifier to use when this rule matches. */
+  model: z.string().min(1),
+});
+
+export type ModelRule = z.infer<typeof modelRuleSchema>;
+
 const providerSchema = z.object({
   name: z.string().min(1),
   routePath: z.string().min(1),
@@ -9,6 +20,7 @@ const providerSchema = z.object({
   signatureStrategy: z.enum(['websub', 'github']),
   openclawHookUrl: z.string().url(),
   routing: routingConfigSchema,
+  modelRules: z.array(modelRuleSchema).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;

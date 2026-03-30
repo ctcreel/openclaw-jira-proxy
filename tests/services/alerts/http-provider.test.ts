@@ -20,7 +20,9 @@ describe('HttpAlertProvider', () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => vi.clearAllMocks());
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it('should throw if no url', () => {
     expect(() => new HttpAlertProvider({ url: '' })).toThrow('requires url');

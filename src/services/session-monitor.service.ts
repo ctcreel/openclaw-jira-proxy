@@ -15,6 +15,7 @@ const DEFAULT_IDLE_THRESHOLD_MS = 600_000;
 
 /** Shape of a single session entry in sessions.json. */
 interface SessionEntry {
+  readonly sessionId?: string;
   readonly updatedAt?: number;
   readonly status?: string;
 }
@@ -22,12 +23,20 @@ interface SessionEntry {
 /** The top-level sessions.json is a plain key→value map. */
 type SessionsFile = Readonly<Record<string, SessionEntry>>;
 
+/** Shape of a JSONL transcript event (only the fields we inspect). */
+interface TranscriptEvent {
+  readonly type?: string;
+  readonly message?: { readonly role?: string };
+}
+
 /** Options for {@link waitForSessionIdle}. */
 export interface SessionIdleOptions {
   /** Absolute path to sessions.json. */
   readonly sessionsFilePath: string;
   /** The full session key (e.g. `agent:patch:hook:jira:spe-1234`). */
   readonly sessionKey: string;
+  /** Directory containing per-session .jsonl transcript files. */
+  readonly transcriptDir?: string;
   /** How long the session must be unchanged before it is considered idle. */
   readonly idleThresholdMs?: number;
   /** Total timeout (rejects with an error). */
@@ -54,6 +63,55 @@ async function readSessionEntry(
     logger.debug({ error, filePath }, 'Could not read sessions file');
     return undefined;
   }
+}
+
+/**
+ * Read the last message event from a session's JSONL transcript.
+ * Returns the role of the last message, or undefined if unreadable.
+ */
+async function readLastTranscriptRole(
+  transcriptDir: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  try {
+    const filePath = `${transcriptDir}/${sessionId}.jsonl`;
+    const raw = await readFile(filePath, 'utf-8');
+    const lines = raw.trimEnd().split('\n');
+
+    // Walk backwards to find the last message event.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      try {
+        const event = JSON.parse(line) as TranscriptEvent;
+        if (event.type === 'message' && event.message?.role) {
+          return event.message.role;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  } catch (error) {
+    logger.debug({ error, transcriptDir, sessionId }, 'Could not read transcript file');
+    return undefined;
+  }
+}
+
+/**
+ * Returns true when the transcript indicates the model is actively thinking
+ * (last event is a toolResult, meaning the model received data and hasn't
+ * responded yet).
+ */
+async function isModelThinking(
+  transcriptDir: string | undefined,
+  sessionId: string | undefined,
+): Promise<boolean> {
+  if (!transcriptDir || !sessionId) {
+    return false;
+  }
+  const lastRole = await readLastTranscriptRole(transcriptDir, sessionId);
+  return lastRole === 'toolResult';
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -88,6 +146,7 @@ export async function waitForSessionIdle(options: SessionIdleOptions): Promise<v
   const {
     sessionsFilePath,
     sessionKey,
+    transcriptDir,
     idleThresholdMs = DEFAULT_IDLE_THRESHOLD_MS,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     signal,
@@ -97,7 +156,10 @@ export async function waitForSessionIdle(options: SessionIdleOptions): Promise<v
   let lastSeenUpdatedAt: number | undefined;
   let idleSince: number | undefined;
 
-  logger.info({ sessionKey, idleThresholdMs, timeoutMs }, 'Waiting for session idle');
+  logger.info(
+    { sessionKey, idleThresholdMs, timeoutMs, transcriptDir },
+    'Waiting for session idle',
+  );
 
   while (Date.now() < deadline) {
     if (signal?.aborted) {
@@ -122,11 +184,21 @@ export async function waitForSessionIdle(options: SessionIdleOptions): Promise<v
       } else if (idleSince !== undefined) {
         const idleDuration = Date.now() - idleSince;
         if (idleDuration >= idleThresholdMs) {
-          logger.info(
-            { sessionKey, idleDuration, lastSeenUpdatedAt },
-            'Session idle threshold reached',
-          );
-          return;
+          // Before declaring idle, check if the model is still thinking
+          // (last transcript event is a toolResult awaiting model response).
+          const thinking = await isModelThinking(transcriptDir, entry.sessionId);
+          if (thinking) {
+            logger.info(
+              { sessionKey, idleDuration, lastSeenUpdatedAt },
+              'updatedAt stale but model is thinking (toolResult pending) — not idle',
+            );
+          } else {
+            logger.info(
+              { sessionKey, idleDuration, lastSeenUpdatedAt },
+              'Session idle threshold reached',
+            );
+            return;
+          }
         }
       }
     }

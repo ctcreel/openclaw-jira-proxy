@@ -115,7 +115,11 @@ interface DeliveredPayload {
   receivedAt: string;
 }
 
-function createMockGateway(): { server: Server; deliveries: DeliveredPayload[]; getPort: () => number } {
+function createMockGateway(): {
+  server: Server;
+  deliveries: DeliveredPayload[];
+  getPort: () => number;
+} {
   const deliveries: DeliveredPayload[] = [];
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -159,9 +163,7 @@ async function waitForDeliveries(
   const start = Date.now();
   while (deliveries.length < count) {
     if (Date.now() - start > timeoutMs) {
-      throw new Error(
-        `Timed out waiting for ${count} deliveries (got ${deliveries.length})`,
-      );
+      throw new Error(`Timed out waiting for ${count} deliveries (got ${deliveries.length})`);
     }
     await sleep(100);
   }
@@ -185,10 +187,12 @@ describe('E2E: webhook → queue → gateway HTTP delivery', () => {
     // Flush stale completed/failed jobs from previous runs so content-hash dedup works
     const { Queue } = await import('bullmq');
     const IORedis = (await import('ioredis')).default;
-    const flushConn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', { maxRetriesPerRequest: null });
+    const flushConn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', {
+      maxRetriesPerRequest: null,
+    });
     for (const p of TEST_PROVIDERS) {
       const q = new Queue(`webhooks-${p.name}`, { connection: flushConn });
-      await q.drain(true);  // remove delayed jobs
+      await q.drain(true); // remove delayed jobs
       // Remove completed/failed to reset dedup
       const completed = await q.getCompleted(0, 1000);
       const failed = await q.getFailed(0, 1000);
@@ -222,7 +226,9 @@ describe('E2E: webhook → queue → gateway HTTP delivery', () => {
     // Remove completed/failed jobs between tests so content-hash dedup doesn't skip re-enqueues
     const { Queue } = await import('bullmq');
     const IORedis = (await import('ioredis')).default;
-    const conn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', { maxRetriesPerRequest: null });
+    const conn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', {
+      maxRetriesPerRequest: null,
+    });
     for (const p of TEST_PROVIDERS) {
       const q = new Queue(`webhooks-${p.name}`, { connection: conn });
       const completed = await q.getCompleted(0, 1000);
