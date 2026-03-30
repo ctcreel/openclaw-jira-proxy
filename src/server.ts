@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
 import { getLogger } from './lib/logging';
+import { buildAlertRegistry } from './services/alerts';
 import { createWorker } from './services/worker.service';
 import {
   registerRoutingStrategy,
@@ -19,8 +20,9 @@ async function startServer(): Promise<void> {
   registerRoutingStrategy(regexStrategy);
   registerRoutingStrategy(defaultStrategy);
 
+  const alertRegistry = buildAlertRegistry();
   for (const provider of settings.providers) {
-    createWorker(provider);
+    createWorker({ provider, alertRegistry });
   }
   logger.info({ providers: settings.providers.map((p) => p.name) }, 'Workers started');
 

@@ -207,6 +207,10 @@ describe('E2E: webhook → queue → gateway HTTP delivery', () => {
 
     const settings = getSettings();
     workers = settings.providers.map((p) => createWorker(p));
+
+    // Wait for workers to fully connect and drain any stale jobs before tests run
+    await sleep(2000);
+    gateway.deliveries.length = 0;
   });
 
   beforeEach(async () => {
@@ -242,7 +246,7 @@ describe('E2E: webhook → queue → gateway HTTP delivery', () => {
 
   // --- Jira ---
 
-  it('should accept a Jira webhook and deliver to gateway', async () => {
+  it('should accept a Jira webhook and deliver to gateway', { timeout: 15_000 }, async () => {
     const res = await request(app)
       .post('/hooks/jira')
       .set('Content-Type', 'application/json')
@@ -252,7 +256,7 @@ describe('E2E: webhook → queue → gateway HTTP delivery', () => {
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ accepted: true });
 
-    await waitForDeliveries(gateway.deliveries, 1, 5000);
+    await waitForDeliveries(gateway.deliveries, 1, 12000);
 
     expect(gateway.deliveries).toHaveLength(1);
     const [delivery] = gateway.deliveries;

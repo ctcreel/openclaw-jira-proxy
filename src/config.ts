@@ -26,6 +26,8 @@ const settingsSchema = z.object({
   redisUrl: z.string().default('redis://127.0.0.1:6379'),
   maxConcurrentRuns: z.coerce.number().min(1).default(1),
   agentWaitTimeoutMs: z.coerce.number().min(0).default(1_800_000),
+  jobMaxAttempts: z.coerce.number().min(1).default(2),
+  jobBackoffDelayMs: z.coerce.number().min(0).default(5_000),
   sessionsFilePath: z.string().default(''),
   providers: z
     .array(providerSchema)
@@ -65,6 +67,8 @@ export function getSettings(): Settings {
     redisUrl: process.env.REDIS_URL,
     maxConcurrentRuns: process.env.MAX_CONCURRENT_RUNS,
     agentWaitTimeoutMs: process.env.AGENT_WAIT_TIMEOUT_MS,
+    jobMaxAttempts: process.env.JOB_MAX_ATTEMPTS,
+    jobBackoffDelayMs: process.env.JOB_BACKOFF_DELAY_MS,
     sessionsFilePath:
       process.env.SESSIONS_FILE_PATH ||
       `${process.env.HOME}/.openclaw/agents/${process.env.OPENCLAW_AGENT_ID || 'patch'}/sessions/sessions.json`,
