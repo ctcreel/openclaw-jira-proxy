@@ -136,7 +136,7 @@ export async function processJob(
   const template = ruleTemplate ?? provider.messageTemplate;
   const message = template ? await renderTemplate(template, parsedPayload) : envelope.payload;
 
-  const sessionKey = `hook:${provider.name}:${traceId}`;
+  const sessionKey = `agent:${agentId}:hook-${provider.name}-${traceId}`;
 
   logger.info(
     { jobId: job.id, provider: provider.name, sessionKey, agentId, traceId },
