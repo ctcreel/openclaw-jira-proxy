@@ -9,13 +9,10 @@ import { renderTemplate } from '../lib/template/template-engine';
 import { resolveAgent, resolveFieldPath } from '../strategies/routing';
 import type { AlertRegistry } from './alerts';
 import type { JobAlert } from './alerts';
-import { sendToSession } from './gateway-client.service';
+import type { GatewayClient } from './gateway-client';
+import { buildQueueName } from './queue.service';
 
 const logger = getLogger('worker');
-
-function buildQueueName(providerName: string): string {
-  return `webhooks-${providerName}`;
-}
 
 /**
  * Job data envelope. The webhook payload is wrapped with attempt metadata
@@ -94,7 +91,7 @@ export function resolveModel(
 export async function processJob(
   job: Job<string>,
   provider: ProviderConfig,
-  _signal?: AbortSignal,
+  gatewayClient: GatewayClient,
 ): Promise<void> {
   const settings = getSettings();
   const envelope = parseEnvelope(job.data);
@@ -139,42 +136,45 @@ export async function processJob(
   const template = ruleTemplate ?? provider.messageTemplate;
   const message = template ? await renderTemplate(template, parsedPayload) : envelope.payload;
 
-  // Target the agent's main session — trusted delivery, no security fence.
-  const targetSessionKey = `agent:${agentId}:main`;
+  const sessionKey = `hook:${provider.name}:${traceId}`;
 
   logger.info(
-    { jobId: job.id, provider: provider.name, targetSessionKey, traceId },
-    'Delivering rendered prompt via sessions.send',
+    { jobId: job.id, provider: provider.name, sessionKey, agentId, traceId },
+    'Delivering prompt via agent RPC with completion wait',
   );
 
-  await sendToSession({
-    key: targetSessionKey,
-    message,
-    idempotencyKey: `clawndom:${provider.name}:${traceId}`,
-    timeoutMs: 30_000,
-  });
+  const result = await gatewayClient.runAndWait(
+    {
+      message,
+      sessionKey,
+      agentId,
+      model: selectedModel,
+    },
+    settings.agentWaitTimeoutMs,
+  );
+
+  if (result.status === 'error') {
+    throw new Error(`Agent run failed: ${result.error ?? 'unknown error'}`);
+  }
+
+  if (result.status === 'timeout') {
+    throw new Error(`Agent run timed out (runId: ${result.runId})`);
+  }
 
   logger.info(
-    { jobId: job.id, provider: provider.name, targetSessionKey },
-    'Prompt delivered to session — job complete',
+    { jobId: job.id, provider: provider.name, sessionKey, runId: result.runId },
+    'Agent run completed — job complete',
   );
 }
 
 export interface CreateWorkerOptions {
   provider: ProviderConfig;
+  gatewayClient: GatewayClient;
   alertRegistry?: AlertRegistry;
 }
 
-export function createWorker(options: CreateWorkerOptions): Worker<string>;
-export function createWorker(provider: ProviderConfig): Worker<string>;
-export function createWorker(
-  providerOrOptions: ProviderConfig | CreateWorkerOptions,
-): Worker<string> {
-  const isOptions = (v: unknown): v is CreateWorkerOptions =>
-    typeof v === 'object' && v !== null && 'provider' in v;
-
-  const provider = isOptions(providerOrOptions) ? providerOrOptions.provider : providerOrOptions;
-  const alertRegistry = isOptions(providerOrOptions) ? providerOrOptions.alertRegistry : undefined;
+export function createWorker(options: CreateWorkerOptions): Worker<string> {
+  const { provider, gatewayClient, alertRegistry } = options;
 
   const settings = getSettings();
   const redisUrl = settings.redisUrl;
@@ -183,7 +183,7 @@ export function createWorker(
 
   const worker = new Worker<string>(
     buildQueueName(provider.name),
-    (job) => processJob(job, provider),
+    (job) => processJob(job, provider, gatewayClient),
     {
       connection,
       concurrency: 1,

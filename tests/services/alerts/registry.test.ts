@@ -131,4 +131,18 @@ describe('buildAlertRegistry', () => {
     const registry = buildAlertRegistry();
     expect(registry.names).toEqual(expect.arrayContaining(['log', 'slack', 'discord', 'http']));
   });
+
+  it('should add HTTP provider with valid JSON headers', () => {
+    process.env.ALERT_HTTP_URL = 'https://alerts.example.com/webhook';
+    process.env.ALERT_HTTP_HEADERS = JSON.stringify({ Authorization: 'Bearer test' });
+    const registry = buildAlertRegistry();
+    expect(registry.names).toContain('http');
+  });
+
+  it('should add HTTP provider even with invalid JSON headers', () => {
+    process.env.ALERT_HTTP_URL = 'https://alerts.example.com/webhook';
+    process.env.ALERT_HTTP_HEADERS = 'not-json{{{';
+    const registry = buildAlertRegistry();
+    expect(registry.names).toContain('http');
+  });
 });

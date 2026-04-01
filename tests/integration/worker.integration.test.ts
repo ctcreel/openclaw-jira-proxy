@@ -3,6 +3,7 @@ import type { Job } from 'bullmq';
 
 import type { ProviderConfig } from '../../src/config';
 import { resetSettings } from '../../src/config';
+import type { GatewayClient, AgentRunResult } from '../../src/services/gateway-client';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -14,15 +15,20 @@ vi.mock('ioredis', () => ({
   default: vi.fn().mockImplementation(() => ({})),
 }));
 
-// Mock the gateway client so tests don't invoke a real subprocess
-const { mockSendToSession } = vi.hoisted(() => ({
-  mockSendToSession: vi.fn().mockResolvedValue({ runId: 'test-run', status: 'started' }),
-}));
-vi.mock('../../src/services/gateway-client.service', () => ({
-  sendToSession: mockSendToSession,
-}));
-
 import { processJob } from '../../src/services/worker.service';
+
+const mockRunAndWait = vi
+  .fn<[Record<string, unknown>, number], Promise<AgentRunResult>>()
+  .mockResolvedValue({
+    runId: 'integration-run-id',
+    status: 'ok',
+  });
+
+const mockGatewayClient = {
+  runAndWait: mockRunAndWait,
+  connect: vi.fn(),
+  close: vi.fn(),
+} as unknown as GatewayClient;
 
 function createFakeJob(data: string, id = 'integration-job-1'): Job<string> {
   return { id, data } as unknown as Job<string>;
@@ -36,7 +42,7 @@ const provider: ProviderConfig = {
   openclawHookUrl: 'http://unused',
 };
 
-describe('Worker integration (gateway client sendToSession)', () => {
+describe('Worker integration (GatewayClient.runAndWait)', () => {
   beforeAll(() => {
     process.env.OPENCLAW_TOKEN = 'integration-test-token';
     process.env.OPENCLAW_AGENT_ID = 'patch';
@@ -44,7 +50,7 @@ describe('Worker integration (gateway client sendToSession)', () => {
   });
 
   afterEach(() => {
-    mockSendToSession.mockClear();
+    mockRunAndWait.mockClear();
   });
 
   afterAll(() => {
@@ -53,30 +59,36 @@ describe('Worker integration (gateway client sendToSession)', () => {
     resetSettings();
   });
 
-  it('should deliver job message to agent main session via sendToSession', async () => {
+  it('should deliver job message via runAndWait with isolated session key', async () => {
     const payload = '{"event":"updated"}';
 
-    await processJob(createFakeJob(payload), provider);
+    await processJob(createFakeJob(payload), provider, mockGatewayClient);
 
-    expect(mockSendToSession).toHaveBeenCalledOnce();
-    const call = mockSendToSession.mock.calls[0][0];
-    expect(call.key).toBe('agent:patch:main');
-    expect(call.message).toBe(payload);
-  });
-
-  it('should include idempotencyKey in sendToSession call', async () => {
-    await processJob(createFakeJob('{"event":"updated"}', 'job-xyz'), provider);
-
-    const call = mockSendToSession.mock.calls[0][0];
-    expect(call.idempotencyKey).toBe('clawndom:integration-test:job-xyz');
+    expect(mockRunAndWait).toHaveBeenCalledOnce();
+    const call = mockRunAndWait.mock.calls[0];
+    expect(call[0].sessionKey).toBe('hook:integration-test:integration-job-1');
+    expect(call[0].agentId).toBe('patch');
+    expect(call[0].message).toBe(payload);
   });
 
   it('should process multiple jobs sequentially', async () => {
-    await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider);
-    await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider);
+    await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider, mockGatewayClient);
+    await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider, mockGatewayClient);
 
-    expect(mockSendToSession).toHaveBeenCalledTimes(2);
-    expect(mockSendToSession.mock.calls[0][0].message).toBe('{"event":"first"}');
-    expect(mockSendToSession.mock.calls[1][0].message).toBe('{"event":"second"}');
+    expect(mockRunAndWait).toHaveBeenCalledTimes(2);
+    expect(mockRunAndWait.mock.calls[0][0].message).toBe('{"event":"first"}');
+    expect(mockRunAndWait.mock.calls[1][0].message).toBe('{"event":"second"}');
+  });
+
+  it('should propagate error status as thrown error', async () => {
+    mockRunAndWait.mockResolvedValueOnce({
+      runId: 'err-run',
+      status: 'error',
+      error: 'Something broke',
+    });
+
+    await expect(processJob(createFakeJob('{}'), provider, mockGatewayClient)).rejects.toThrow(
+      'Agent run failed: Something broke',
+    );
   });
 });
