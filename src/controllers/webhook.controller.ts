@@ -11,8 +11,12 @@ import { getLogger } from '../lib/logging';
 
 const logger = getLogger('webhook-controller');
 
-/** Dedup window in seconds. Same ticket+status within this window = skip. */
-const DEDUP_TTL_SECONDS = 300;
+/**
+ * Dedup window in seconds. Jira fires multiple webhooks per transition
+ * (status, assignee, rank) within ~2 seconds. A short TTL catches the burst
+ * without blocking legitimate retries or replays.
+ */
+const DEDUP_TTL_SECONDS = 10;
 
 export function createWebhookHandler(provider: ProviderConfig) {
   const strategy = getSignatureStrategy(provider.signatureStrategy);
