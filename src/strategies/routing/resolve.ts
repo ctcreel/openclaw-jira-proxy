@@ -44,6 +44,12 @@ export function resolveAgent(
     return { agentId: routing.default };
   }
 
+  // If routing.default is explicitly null, skip the global fallback
+  if (routing.default === null) {
+    logger.debug('routing:no-match — routing.default is null, skipping global fallback');
+    return null;
+  }
+
   if (globalDefault) {
     logger.debug({ agentId: globalDefault }, 'Using global default agent');
     return { agentId: globalDefault };

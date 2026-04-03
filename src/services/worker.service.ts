@@ -282,11 +282,12 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
         originalJobId: envelope.originalJobId ?? job.id ?? undefined,
       };
 
-      // Re-enqueue to the back — other waiting jobs go first
+      // Re-enqueue to the back with exponential delay — give gateway time to reconnect
+      const delayMs = Math.min(5_000 * Math.pow(2, envelope.attempt - 1), 60_000);
       const retryConn = new IORedis(redisUrl, { maxRetriesPerRequest: null });
       const queue = new Queue(buildQueueName(provider.name), { connection: retryConn });
       queue
-        .add('webhook-event', JSON.stringify(retryEnvelope))
+        .add('webhook-event', JSON.stringify(retryEnvelope), { delay: delayMs })
         .then(() => {
           logger.info(
             {

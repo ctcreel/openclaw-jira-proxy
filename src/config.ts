@@ -36,11 +36,11 @@ const settingsSchema = z.object({
   openclawToken: z.string().min(1),
   openclawHookUrl: z.string().default('http://127.0.0.1:18789/hooks/agent'),
   openclawGatewayWsUrl: z.string().default('ws://127.0.0.1:18789'),
-  openclawAgentId: z.string().default('patch'),
+  openclawAgentId: z.preprocess((v) => (v === '' ? undefined : v), z.string().default('patch')),
   redisUrl: z.string().default('redis://127.0.0.1:6379'),
   maxConcurrentRuns: z.coerce.number().min(1).default(1),
   agentWaitTimeoutMs: z.coerce.number().min(0).default(1_800_000),
-  jobMaxAttempts: z.coerce.number().min(1).default(2),
+  jobMaxAttempts: z.coerce.number().min(1).default(5),
   jobBackoffDelayMs: z.coerce.number().min(0).default(5_000),
   sessionsFilePath: z.string().default(''),
   providers: z

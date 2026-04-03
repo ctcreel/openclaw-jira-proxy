@@ -20,7 +20,7 @@ export type RoutingRule = z.infer<typeof routingRuleSchema>;
 export const routingConfigSchema = z
   .object({
     rules: z.array(routingRuleSchema).default([]),
-    default: z.string().optional(),
+    default: z.string().nullable().optional(),
   })
   .optional();
 

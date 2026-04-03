@@ -100,6 +100,21 @@ def redis_cmd(*args):
     return result.stdout.strip()
 
 
+def unwrap_job_payload(data_raw):
+    """Unwrap BullMQ job data which may be multi-layered JSON strings."""
+    data = json.loads(data_raw)
+    # BullMQ stores data as a JSON string, so first parse may yield a string
+    while isinstance(data, str):
+        data = json.loads(data)
+    # Data might be an envelope {payload, attempt} or raw payload
+    if isinstance(data, dict) and "payload" in data:
+        payload = data["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return payload
+    return data
+
+
 def get_queue_items():
     """Read pending jobs from Redis BullMQ queue with context."""
     items = []
@@ -113,14 +128,7 @@ def get_queue_items():
             items.append({"id": job_id, "context": {"id": "?", "title": "?", "status": "?", "source": "?"}})
             continue
         try:
-            data = json.loads(data_raw)
-            # Data might be an envelope {payload, attempt} or raw payload
-            if isinstance(data, dict) and "payload" in data:
-                payload = json.loads(data["payload"])
-            elif isinstance(data, str):
-                payload = json.loads(data)
-            else:
-                payload = data
+            payload = unwrap_job_payload(data_raw)
             items.append({"id": job_id, "context": extract_context("jira", payload)})
         except Exception:
             items.append({"id": job_id, "context": {"id": "?", "title": "?", "status": "?", "source": "?"}})
@@ -140,13 +148,7 @@ def get_active_job():
     if not data_raw:
         return {"id": job_id, "context": {"id": "?", "title": "?", "status": "?", "source": "?"}}
     try:
-        data = json.loads(data_raw)
-        if isinstance(data, dict) and "payload" in data:
-            payload = json.loads(data["payload"])
-        elif isinstance(data, str):
-            payload = json.loads(data)
-        else:
-            payload = data
+        payload = unwrap_job_payload(data_raw)
         return {"id": job_id, "context": extract_context("jira", payload)}
     except Exception:
         return {"id": job_id, "context": {"id": "?", "title": "?", "status": "?", "source": "?"}}

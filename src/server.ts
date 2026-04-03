@@ -22,6 +22,8 @@ async function startServer(): Promise<void> {
   registerRoutingStrategy(defaultStrategy);
 
   const gatewayClient = new GatewayClient(settings.openclawGatewayWsUrl, settings.openclawToken);
+  // Connect eagerly so pairing/auth errors surface on startup, not on first webhook
+  await gatewayClient.connect();
 
   const alertRegistry = buildAlertRegistry();
   for (const provider of settings.providers) {

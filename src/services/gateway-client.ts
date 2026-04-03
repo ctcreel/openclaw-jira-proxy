@@ -1,7 +1,44 @@
 import { GatewayClient as SdkGatewayClient } from 'openclaw/plugin-sdk/gateway-runtime';
+import { generateKeyPairSync, createHash, createPublicKey } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('gateway-client');
+
+const CLAWNDOM_IDENTITY_PATH = join(
+  process.env.HOME || '/tmp',
+  '.openclaw',
+  'identity',
+  'clawndom-device-auth.json',
+);
+
+function loadClawndomDeviceIdentity(): {
+  deviceId: string;
+  publicKeyPem: string;
+  privateKeyPem: string;
+} {
+  if (existsSync(CLAWNDOM_IDENTITY_PATH)) {
+    return JSON.parse(readFileSync(CLAWNDOM_IDENTITY_PATH, 'utf8'));
+  }
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }) as string;
+  const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+  // Must match gateway's fingerprintPublicKey: SHA256 of raw 32-byte Ed25519 public key
+  const spki = createPublicKey(publicKeyPem).export({ type: 'spki', format: 'der' });
+  const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+  const raw =
+    spki.length === ED25519_SPKI_PREFIX.length + 32 &&
+    spki.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)
+      ? spki.subarray(ED25519_SPKI_PREFIX.length)
+      : spki;
+  const deviceId = createHash('sha256').update(raw).digest('hex');
+  const identity = { deviceId, publicKeyPem, privateKeyPem };
+  mkdirSync(dirname(CLAWNDOM_IDENTITY_PATH), { recursive: true });
+  writeFileSync(CLAWNDOM_IDENTITY_PATH, JSON.stringify(identity, null, 2));
+  logger.info({ deviceId: deviceId.slice(0, 16) }, 'Created new Clawndom device identity');
+  return identity;
+}
 
 export interface AgentRunResult {
   runId: string;
@@ -19,6 +56,9 @@ export interface AgentRunResult {
 export class GatewayClient {
   private client: SdkGatewayClient;
   private started = false;
+  private connected = false;
+  private connectedPromise: Promise<void> | null = null;
+  private resolveConnected: (() => void) | null = null;
 
   constructor(url: string, token: string) {
     this.client = new SdkGatewayClient({
@@ -31,15 +71,23 @@ export class GatewayClient {
       mode: 'backend',
       role: 'operator',
       scopes: ['operator.read', 'operator.write'],
-      // deviceIdentity auto-loaded by SDK via loadOrCreateDeviceIdentity()
+      // Use a separate identity file so Clawndom doesn't collide with the CLI
+      deviceIdentity: loadClawndomDeviceIdentity(),
       onEvent: (): void => {}, // ignore events (tick, presence)
       onHelloOk: (): void => {
         logger.info('Gateway WS connected');
+        this.connected = true;
+        if (this.resolveConnected) {
+          this.resolveConnected();
+          this.resolveConnected = null;
+          this.connectedPromise = null;
+        }
       },
       onConnectError: (err: Error): void => {
         logger.error({ error: err.message }, 'Gateway WS connect error');
       },
       onClose: (_code: number, reason: string): void => {
+        this.connected = false;
         logger.warn({ reason }, 'Gateway WS disconnected');
       },
     });
@@ -49,10 +97,36 @@ export class GatewayClient {
     if (!this.started) {
       this.client.start();
       this.started = true;
-      // Give the SDK client time to complete the handshake
-      // The SDK handles reconnection internally
-      await new Promise<void>((resolve) => setTimeout(resolve, 2000));
     }
+    await this.waitForReady();
+  }
+
+  /**
+   * Wait until the gateway WS is connected and ready.
+   * If already connected, resolves immediately.
+   * Polls with backoff up to 30s total before throwing.
+   */
+  async waitForReady(timeoutMs = 30_000): Promise<void> {
+    if (this.connected) return;
+
+    // Reuse existing promise if someone else is already waiting
+    if (this.connectedPromise) {
+      await this.connectedPromise;
+      return;
+    }
+
+    this.connectedPromise = new Promise<void>((resolve, reject) => {
+      this.resolveConnected = resolve;
+      setTimeout(() => {
+        if (!this.connected) {
+          this.resolveConnected = null;
+          this.connectedPromise = null;
+          reject(new Error(`Gateway WS not ready after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+    });
+
+    await this.connectedPromise;
   }
 
   /**
@@ -73,7 +147,8 @@ export class GatewayClient {
     },
     waitTimeoutMs: number,
   ): Promise<AgentRunResult> {
-    await this.connect();
+    // Ensure gateway WS is open — blocks if reconnecting after a disconnect
+    await this.waitForReady();
 
     // Step 1: trigger the run via `agent` RPC
     const agentResult = await this.client.request<{ runId: string; acceptedAt: string }>('agent', {
