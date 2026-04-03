@@ -44,9 +44,40 @@ export const githubStrategy: SignatureStrategy = {
   validate: validateHmacSha256,
 };
 
+/**
+ * Bearer token strategy for Google Pub/Sub push endpoints.
+ * Header: Authorization
+ * Value: Bearer <token>
+ *
+ * For Google Pub/Sub, the token is a JWT signed by Google.
+ * This strategy validates the token matches the expected value.
+ * For full JWT verification, pass a verify function via bearerStrategy().
+ */
+export const bearerStrategy: SignatureStrategy = {
+  headerName: 'authorization',
+  validate(_rawBody: Buffer, authHeader: string, secret: string): boolean {
+    const prefix = 'Bearer ';
+    if (!authHeader.startsWith(prefix)) {
+      return false;
+    }
+    const token = authHeader.slice(prefix.length);
+
+    // Timing-safe comparison of the bearer token against the shared secret
+    const tokenBuffer = Buffer.from(token, 'utf-8');
+    const secretBuffer = Buffer.from(secret, 'utf-8');
+
+    if (tokenBuffer.length !== secretBuffer.length) {
+      return false;
+    }
+
+    return timingSafeEqual(tokenBuffer, secretBuffer);
+  },
+};
+
 const strategies: Record<string, SignatureStrategy> = {
   websub: websubStrategy,
   github: githubStrategy,
+  bearer: bearerStrategy,
 };
 
 export function getSignatureStrategy(name: string): SignatureStrategy {

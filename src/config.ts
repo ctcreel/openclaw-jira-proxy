@@ -17,7 +17,7 @@ const providerSchema = z.object({
   name: z.string().min(1),
   routePath: z.string().min(1),
   hmacSecret: z.string().min(1),
-  signatureStrategy: z.enum(['websub', 'github']),
+  signatureStrategy: z.enum(['websub', 'github', 'bearer']),
   openclawHookUrl: z.string().url(),
   routing: routingConfigSchema,
   modelRules: z.array(modelRuleSchema).optional(),
