@@ -144,6 +144,7 @@ export class GatewayClient {
       deliver?: boolean;
       channel?: string;
       to?: string;
+      bootstrapContextMode?: 'full' | 'lightweight';
     },
     waitTimeoutMs: number,
   ): Promise<AgentRunResult> {
