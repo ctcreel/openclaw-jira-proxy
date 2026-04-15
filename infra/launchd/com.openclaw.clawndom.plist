@@ -7,7 +7,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>__NODE_BIN__</string>
     <string>__INSTALL_PATH__/dist/server.js</string>
   </array>
 
@@ -15,12 +15,20 @@
   <dict>
     <key>NODE_ENV</key>
     <string>production</string>
-    <key>OPENCLAW_TOKEN</key>
-    <string>__OPENCLAW_TOKEN__</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>USER</key>
+    <string>__USER__</string>
+    <key>PATH</key>
+    <string>__NODE_BIN_DIR__:/usr/local/bin:/usr/bin:/bin</string>
+    <key>OP_SERVICE_ACCOUNT_TOKEN</key>
+    <string>__OP_TOKEN__</string>
     <key>PROVIDERS_CONFIG</key>
     <string>__PROVIDERS_CONFIG__</string>
-    <key>OPENCLAW_GATEWAY_WS_URL</key>
-    <string>ws://127.0.0.1:18789</string>
+    <key>SECRETS_PROVIDERS_CONFIG</key>
+    <string>__SECRETS_PROVIDERS_CONFIG__</string>
+    <key>SECRETS_CONFIG</key>
+    <string>__SECRETS_CONFIG__</string>
     <key>REDIS_URL</key>
     <string>__REDIS_URL__</string>
     <key>PORT</key>
@@ -33,6 +41,9 @@
   <true/>
 
   <key>KeepAlive</key>
+  <true/>
+
+  <key>SessionCreate</key>
   <true/>
 
   <key>StandardOutPath</key>

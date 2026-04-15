@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { routingConfigSchema } from './strategies/routing';
+import { runnerConfigSchema } from './runners/types';
+import { secretBindingSchema, secretProviderConfigSchema } from './secrets/types';
 
 const modelRuleSchema = z.object({
   /** Dot-notation field path to match against the webhook payload. */
@@ -16,12 +18,16 @@ export type ModelRule = z.infer<typeof modelRuleSchema>;
 const providerSchema = z.object({
   name: z.string().min(1),
   routePath: z.string().min(1),
-  hmacSecret: z.string().min(1),
-  signatureStrategy: z.enum(['websub', 'github', 'bearer']),
-  openclawHookUrl: z.string().url(),
+  hmacSecret: z.string().min(1).optional(),
+  signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack']),
+  openclawHookUrl: z.string().url().optional(),
   routing: routingConfigSchema,
   modelRules: z.array(modelRuleSchema).optional(),
   messageTemplate: z.string().optional(),
+  /** Runner configuration. Defaults to openclaw when omitted. */
+  runner: runnerConfigSchema.optional(),
+  /** Logical secret keys this provider needs (resolved by SecretManager). */
+  secrets: z.array(z.string()).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
@@ -33,7 +39,7 @@ const settingsSchema = z.object({
   version: z.string().default('0.2.0'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   logFormat: z.enum(['json', 'human']).default('json'),
-  openclawToken: z.string().min(1),
+  openclawToken: z.string().min(1).optional(),
   openclawHookUrl: z.string().default('http://127.0.0.1:18789/hooks/agent'),
   openclawGatewayWsUrl: z.string().default('ws://127.0.0.1:18789'),
   openclawAgentId: z.preprocess((v) => (v === '' ? undefined : v), z.string().default('patch')),
@@ -46,11 +52,25 @@ const settingsSchema = z.object({
   providers: z
     .array(providerSchema)
     .min(1, 'At least one provider must be configured in PROVIDERS_CONFIG'),
+  /** Secret provider backends to register. */
+  secretProviders: z.array(secretProviderConfigSchema).optional(),
+  /** Secret bindings: map logical keys to vault-specific references. */
+  secrets: z.array(secretBindingSchema).optional(),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
 
 let cachedSettings: Settings | null = null;
+
+function parseJsonEnv(envVar: string): unknown[] | undefined {
+  const raw = process.env[envVar];
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as unknown[];
+  } catch {
+    throw new Error(`${envVar} is not valid JSON`);
+  }
+}
 
 function parseProviders(): ProviderConfig[] {
   const raw = process.env.PROVIDERS_CONFIG;
@@ -88,6 +108,8 @@ export function getSettings(): Settings {
       process.env.SESSIONS_FILE_PATH ||
       `${process.env.HOME}/.openclaw/agents/${process.env.OPENCLAW_AGENT_ID || 'patch'}/sessions/sessions.json`,
     providers: parseProviders(),
+    secretProviders: parseJsonEnv('SECRETS_PROVIDERS_CONFIG'),
+    secrets: parseJsonEnv('SECRETS_CONFIG'),
   });
   return cachedSettings;
 }

@@ -10,14 +10,21 @@ The codebase MUST follow a layered architecture with clear separation of concern
 - **Handlers/Routes** — HTTP request handling, input validation, response formatting
 - **Services** — Business logic orchestration, use case implementation
 - **Domain** — Core business rules, entities, value objects
-- **Infrastructure/Adapters** — Database access, external API clients, file I/O
+- **Infrastructure/Adapters** — Database access, external API clients, file I/O, agent runners
 
 Each layer MUST only depend on layers below it (handlers → services → domain → types). Infrastructure adapters MUST implement domain-defined interfaces.
+
+The `src/runners/` directory is an infrastructure adapter layer. Worker services MUST depend on the `AgentRunner` interface defined in `src/runners/types.ts` — never on a concrete runner class. Concrete runner implementations (`OpenClawRunner`, `ClaudeCliRunner`, etc.) MUST be instantiated only in `src/server.ts` during startup wiring.
 
 #### Scenario: Handler Contains Business Logic
 - **GIVEN** A route handler contains database queries and business rule validation
 - **WHEN** Code review runs
 - **THEN** The reviewer MUST flag it — business logic belongs in the service layer, database access in the infrastructure layer
+
+#### Scenario: Worker Imports Concrete Runner
+- **GIVEN** `worker.service.ts` imports `ClaudeCliRunner` directly
+- **WHEN** Code review runs
+- **THEN** The reviewer MUST flag it — the worker MUST only import the `AgentRunner` interface and `getRunner` from the registry
 
 ### Requirement: Module README Documentation
 
@@ -27,7 +34,7 @@ Each module directory that contains more than 3 files SHOULD include a brief REA
 - The design pattern used (if any)
 - Any important constraints or gotchas
 
-This serves as progressive context disclosure — AI agents read the module README before modifying files in that module.
+This applies to `src/runners/`. The runners README MUST describe the `AgentRunner` interface, how to add a new runner (implement interface + register at startup), and note that concrete runner instantiation belongs in `src/server.ts`, not in services.
 
 #### Scenario: AI Modifies Module Without README
 - **GIVEN** An AI agent needs to modify a file in a module without a README
@@ -36,7 +43,9 @@ This serves as progressive context disclosure — AI agents read the module READ
 
 ### Requirement: No God Objects or God Functions
 
-No single class MUST accumulate more than 5 public methods. No single function MUST accept more than 3 positional parameters (use an options/config object for additional parameters). These limits prevent the accumulation of responsibility that makes code hard for both humans and AI to reason about.
+No single class MUST accumulate more than 5 public methods. No single function MUST accept more than 3 positional parameters (use an options/config object for additional parameters).
+
+`AgentRunner` implementations MUST expose at most: `run`, `connect`, `close`, `isHealthy` — four methods. This limit enforces single-responsibility per runner.
 
 #### Scenario: Class With Too Many Methods
 - **GIVEN** A class has 8 public methods
@@ -47,7 +56,33 @@ No single class MUST accumulate more than 5 public methods. No single function M
 
 Configuration, wiring, and dependencies MUST be explicit — never rely on implicit conventions that an AI agent cannot discover by reading the code. Dependency injection MUST be preferred over service locators or global state. Magic strings MUST be replaced with typed constants or enums.
 
+Runner type names (`"openclaw"`, `"claude-cli"`, `"openai"`, `"bedrock"`, `"null"`) are the sole exception — they are string literals in the Zod discriminated union schema and serve as the canonical definition. All other references to runner type names MUST derive from the schema, not from ad-hoc string comparisons.
+
+Runner registration MUST be explicit at startup: each runner type used by any provider MUST have a corresponding `registerRunner()` call in `src/server.ts`. There MUST be no auto-discovery, no convention-based loading.
+
 #### Scenario: Hidden Configuration Convention
 - **GIVEN** A service reads configuration from a file path determined by an undocumented naming convention
 - **WHEN** An AI agent needs to add a new configuration value
 - **THEN** The agent cannot discover the convention without tribal knowledge, leading to errors
+
+#### Scenario: Implicit Runner Resolution
+- **GIVEN** A runner is instantiated inside the worker based on an env var check rather than registry lookup
+- **WHEN** Code review runs
+- **THEN** The reviewer MUST flag it — all runner resolution MUST go through `getRunner()` from the registry
+
+### Requirement: Strategy Pattern Consistency
+
+The codebase uses the Strategy pattern in three places: signature validation (`src/strategies/signature/`), routing (`src/strategies/routing/`), and agent runners (`src/runners/`). All three MUST follow the same structural conventions:
+
+- A `types.ts` file defining the strategy interface and associated types
+- A `registry.ts` file with `register*`, `get*`, `reset*` functions
+- One file per strategy/runner implementation
+- An `index.ts` barrel export
+- A `README.md` describing the module
+
+New runner implementations MUST follow this pattern without exception. Adding a new runner MUST require only: (1) implementing `AgentRunner`, (2) registering it in `src/server.ts`. No other files MUST be modified.
+
+#### Scenario: New Runner Added Outside Pattern
+- **GIVEN** A developer adds a new runner by adding a case to a switch statement in `worker.service.ts`
+- **WHEN** Code review runs
+- **THEN** The reviewer MUST reject it — the runner MUST be a separate file implementing `AgentRunner` and registered via `registerRunner()`

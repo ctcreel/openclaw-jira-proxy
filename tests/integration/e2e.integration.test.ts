@@ -1,7 +1,7 @@
 /**
- * End-to-end integration test: webhook HTTP → HMAC → BullMQ → worker → GatewayClient.runAndWait
+ * End-to-end integration test: webhook HTTP → HMAC → BullMQ → worker → runner.run
  *
- * Mocked: GatewayClient (runAndWait) — captures deliveries synchronously, no WS connection
+ * Mocked: Runner (captures deliveries synchronously, no WS connection)
  * Real: Express app, HMAC validation, BullMQ queue + worker
  *
  * Each test uses a unique test ID to isolate its deliveries from other tests
@@ -14,13 +14,14 @@ import request from 'supertest';
 import { vi } from 'vitest';
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
-import type { AgentRunResult } from '../../src/services/gateway-client';
+import { registerRunner, resetRunners } from '../../src/runners/registry';
+import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
 
 // -- Delivery capture --
 interface DeliveredPayload {
-  message: string;
+  prompt: string;
   sessionKey: string;
-  agentId?: string;
+  agentId: string;
   model?: string;
   receivedAt: string;
 }
@@ -33,17 +34,24 @@ interface DeliveredPayload {
  */
 const allDeliveries: DeliveredPayload[] = [];
 
-const { mockRunAndWait } = vi.hoisted(() => ({
-  mockRunAndWait: vi.fn(),
-}));
+class CapturingRunner implements AgentRunner {
+  readonly name = 'openclaw';
 
-vi.mock('../../src/services/gateway-client', () => ({
-  GatewayClient: vi.fn().mockImplementation(() => ({
-    runAndWait: mockRunAndWait,
-    connect: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(undefined),
-  })),
-}));
+  async run(options: RunOptions): Promise<RunResult> {
+    allDeliveries.push({
+      prompt: options.prompt,
+      sessionKey: options.sessionKey,
+      agentId: options.agentId,
+      model: options.model,
+      receivedAt: new Date().toISOString(),
+    });
+    return {
+      status: 'ok',
+      runId: `mock-run-${Date.now()}`,
+      renderedPrompt: options.prompt,
+    };
+  }
+}
 
 // -- Secrets --
 const JIRA_SECRET = 'jira-test-hmac-secret-1234';
@@ -84,7 +92,6 @@ function nextTestId(): string {
 }
 
 // -- Sample payloads --
-// Each payload embeds the testId for filtering deliveries per test
 function makeJiraPayload(key = 'SPE-1567'): string {
   return JSON.stringify({
     webhookEvent: 'jira:issue_updated',
@@ -154,11 +161,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Filter deliveries that belong to the current test by checking the _testId in the message. */
 function deliveriesForCurrentTest(): DeliveredPayload[] {
   return allDeliveries.filter((d) => {
     try {
-      const parsed = JSON.parse(d.message);
+      const parsed = JSON.parse(d.prompt);
       return parsed._testId === currentTestId;
     } catch {
       return false;
@@ -180,24 +186,8 @@ async function waitForDeliveries(count: number, timeoutMs = 8000): Promise<Deliv
   }
 }
 
-function setupMockRunAndWait(): void {
-  mockRunAndWait.mockImplementation(
-    (params: { message: string; sessionKey?: string; agentId?: string; model?: string }) => {
-      allDeliveries.push({
-        message: params.message,
-        sessionKey: params.sessionKey ?? 'unknown',
-        agentId: params.agentId,
-        model: params.model,
-        receivedAt: new Date().toISOString(),
-      });
-      const result: AgentRunResult = { runId: `mock-run-${Date.now()}`, status: 'ok' };
-      return Promise.resolve(result);
-    },
-  );
-}
-
 // -- Test suite --
-describe('E2E: webhook → queue → GatewayClient.runAndWait (mock)', () => {
+describe('E2E: webhook → queue → runner.run (mock)', () => {
   let app: import('express').Express;
   let workers: Array<import('bullmq').Worker>;
 
@@ -210,31 +200,32 @@ describe('E2E: webhook → queue → GatewayClient.runAndWait (mock)', () => {
     resetSettings();
     resetQueues();
 
-    setupMockRunAndWait();
+    // Register our capturing runner in the registry
+    resetRunners();
+    registerRunner(new CapturingRunner());
 
     const { createApp } = await import('../../src/app');
     app = createApp();
 
     const { createWorker } = await import('../../src/services/worker.service');
-    const { GatewayClient } = await import('../../src/services/gateway-client');
     const { getSettings } = await import('../../src/config');
     const settings = getSettings();
-    const gatewayClient = new GatewayClient('ws://unused', 'unused');
-    workers = settings.providers.map((p) => createWorker({ provider: p, gatewayClient }));
+    workers = settings.providers.map((p) => createWorker({ provider: p }));
 
     // Let workers connect and settle
     await sleep(500);
   });
 
   beforeEach(() => {
-    // Each test gets a unique ID — no queue draining needed
     currentTestId = nextTestId();
+    // Re-register after global setup.ts resetRunners() in beforeEach
+    resetRunners();
+    registerRunner(new CapturingRunner());
   });
 
   afterAll(async () => {
     if (workers) await Promise.all(workers.map((w) => w.close()));
 
-    // Clean up test-prefixed queues from Redis
     const { Queue } = await import('bullmq');
     const IORedis = (await import('ioredis')).default;
     const { buildQueueName } = await import('../../src/services/queue.service');
@@ -251,11 +242,12 @@ describe('E2E: webhook → queue → GatewayClient.runAndWait (mock)', () => {
     delete process.env.BULLMQ_QUEUE_PREFIX;
     resetSettings();
     resetQueues();
+    resetRunners();
   });
 
   // --- Jira ---
 
-  it('should accept a Jira webhook and deliver via runAndWait', { timeout: 15_000 }, async () => {
+  it('should accept a Jira webhook and deliver via runner', { timeout: 15_000 }, async () => {
     const payload = makeJiraPayload();
     const res = await request(app)
       .post('/hooks/jira')
@@ -270,10 +262,9 @@ describe('E2E: webhook → queue → GatewayClient.runAndWait (mock)', () => {
 
     expect(deliveries).toHaveLength(1);
     const [delivery] = deliveries;
-    // Isolated session key, not agent:patch:main
-    expect(delivery.sessionKey).toMatch(/^hook:jira:/);
+    expect(delivery!.sessionKey).toMatch(/hook-jira-/);
 
-    const forwarded = JSON.parse(delivery.message);
+    const forwarded = JSON.parse(delivery!.prompt);
     expect(forwarded.issue.key).toBe('SPE-1567');
     expect(forwarded.webhookEvent).toBe('jira:issue_updated');
   });
@@ -292,7 +283,7 @@ describe('E2E: webhook → queue → GatewayClient.runAndWait (mock)', () => {
 
     const deliveries = await waitForDeliveries(1, 5000);
 
-    const forwarded = JSON.parse(deliveries[0].message);
+    const forwarded = JSON.parse(deliveries[0]!.prompt);
     expect(forwarded.action).toBe('submitted');
     expect(forwarded.pull_request.number).toBe(1053);
     expect(forwarded.repository.full_name).toBe('SC0RED/Platform-Frontend');
@@ -312,7 +303,7 @@ describe('E2E: webhook → queue → GatewayClient.runAndWait (mock)', () => {
 
     const deliveries = await waitForDeliveries(1, 5000);
 
-    const forwarded = JSON.parse(deliveries[0].message);
+    const forwarded = JSON.parse(deliveries[0]!.prompt);
     expect(forwarded.data.identifier).toBe('ENG-42');
   });
 
@@ -412,13 +403,12 @@ describe('E2E: webhook → queue → GatewayClient.runAndWait (mock)', () => {
     const deliveries = await waitForDeliveries(2, 8000);
 
     expect(deliveries).toHaveLength(2);
-    const keys1 = JSON.parse(deliveries[0].message).issue.key;
-    const keys2 = JSON.parse(deliveries[1].message).issue.key;
+    const keys1 = JSON.parse(deliveries[0]!.prompt).issue.key;
+    const keys2 = JSON.parse(deliveries[1]!.prompt).issue.key;
     expect([keys1, keys2].sort()).toEqual(['SPE-1567', 'SPE-1593']);
 
-    // Verify sequential ordering within the same provider queue
-    const t1 = new Date(deliveries[0].receivedAt).getTime();
-    const t2 = new Date(deliveries[1].receivedAt).getTime();
+    const t1 = new Date(deliveries[0]!.receivedAt).getTime();
+    const t2 = new Date(deliveries[1]!.receivedAt).getTime();
     expect(t1).toBeLessThanOrEqual(t2);
   });
 });

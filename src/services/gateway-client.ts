@@ -93,6 +93,10 @@ export class GatewayClient {
     });
   }
 
+  isConnected(): boolean {
+    return this.connected;
+  }
+
   async connect(): Promise<void> {
     if (!this.started) {
       this.client.start();

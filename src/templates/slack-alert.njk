@@ -1,0 +1,26 @@
+# Slack Alert: Pipeline Failure
+
+{% set channel = event.channel %}{% set env = "unknown" %}{% if channel == "C08V6MV0VNV" %}{% set env = "development" %}{% elif channel == "C08UWMQJFBN" %}{% set env = "testing" %}{% elif channel == "C08UVJDJZTL" %}{% set env = "production" %}{% endif %}
+**Environment:** {{ env }}
+
+{% set blocks = event.blocks %}{% if blocks %}{% for block in blocks %}{% if loop.index == 1 and block.text %}**Alert:** {{ block.text.text }}
+{% endif %}{% if loop.index == 2 and block.text %}**Request ID:** {{ block.text.text }}
+{% endif %}{% if loop.index == 3 and block.text %}**Execution Time:** {{ block.text.text }}
+{% endif %}{% if loop.index == 4 and block.text %}**Timestamps:** {{ block.text.text }}
+{% endif %}{% if loop.index == 5 and block.text %}**Failed Step:** {{ block.text.text }}
+{% endif %}{% if loop.index == 6 and block.type == "rich_text" %}**Exception Stack:**
+{% for element in block.elements %}{% if element.type == "rich_text_preformatted" %}```
+{% for item in element.elements %}{{ item.text }}{% endfor %}
+```
+{% elif element.type == "rich_text_section" %}{% for item in element.elements %}{{ item.text }}{% endfor %}
+{% endif %}{% endfor %}{% endif %}{% if loop.index == 8 and block.text %}**Event JSON:**
+{{ block.text.text }}
+{% endif %}{% endfor %}{% endif %}
+
+---
+
+## Raw Event Payload
+
+```json
+{{ payload }}
+```

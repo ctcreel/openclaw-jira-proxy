@@ -10,20 +10,21 @@ After pushing, check CodeRabbit: `gh pr view --comments`
 
 ## Architecture
 
-Express.js standalone proxy. BullMQ + Redis for job queue. WebSocket to OpenClaw gateway for `agent.wait` RPC.
+Express.js standalone proxy. BullMQ + Redis for job queue. Pluggable runner backends for prompt delivery.
 
 ```
 src/routes/       - HTTP route definitions
 src/controllers/  - Request handling, input validation, HMAC signature verification
 src/services/     - Business logic (queue, worker, gateway client, concurrency gate)
+src/runners/      - Agent runner abstraction (openclaw, claude-cli, openai, bedrock, null)
 src/lib/          - Shared infrastructure (logging, exceptions, utils)
 src/middleware/    - Express middleware (error handler, request logger, validation)
-src/strategies/   - Signature validation strategies (websub, github)
+src/strategies/   - Signature validation strategies (websub, github, bearer, slack)
 ```
 
-Dependencies flow inward: routes -> controllers -> services -> lib.
+Dependencies flow inward: routes -> controllers -> services -> lib. Runners are infrastructure adapters — services depend on the `AgentRunner` interface, never on concrete implementations.
 
-Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, HMAC strategy, and BullMQ queue. Workers wait for `agent.wait` completion before picking up the next job.
+Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, HMAC strategy, and BullMQ queue. Each provider may specify a runner type (`openclaw`, `claude-cli`, `openai`, `bedrock`). Workers wait for `runner.run()` completion before picking up the next job.
 
 ## Rules
 
@@ -47,6 +48,9 @@ Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, H
 | Structured Logging | `src/lib/logging/` |
 | Zod Validation | `src/middleware/validate.ts` |
 | Request Context | `src/lib/logging/context.ts` |
+| Agent Runners | `src/runners/` (strategy pattern) |
+| Secrets Management | `src/secrets/` (strategy pattern — env, 1password, oauth, file providers) |
+| Prompt Observability | `src/services/worker.service.ts` (hash at info, full at debug) |
 
 ## Commands
 
@@ -55,6 +59,7 @@ make dev          # Local server with hot reload
 make check        # Lint + test + security + naming
 make check-all    # Full validation (required before commit)
 make format       # Auto-fix formatting
+make preview-template TEMPLATE=<path> PAYLOAD=<path>  # Preview rendered template
 ```
 
 See `docs/` for detailed guides.

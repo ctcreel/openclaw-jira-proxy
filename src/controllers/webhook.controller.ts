@@ -32,7 +32,23 @@ export function createWebhookHandler(provider: ProviderConfig) {
 
     const rawBody = request.body as Buffer;
 
-    if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret)) {
+    const additionalHeaders: Record<string, string> = {};
+    if (strategy.additionalHeaders) {
+      for (const name of strategy.additionalHeaders) {
+        const value = request.headers[name];
+        if (typeof value === 'string') {
+          additionalHeaders[name] = value;
+        }
+      }
+    }
+
+    if (!provider.hmacSecret) {
+      logger.error({ provider: provider.name }, 'No HMAC secret configured');
+      response.status(500).json({ error: 'Provider misconfigured' });
+      return;
+    }
+
+    if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret, additionalHeaders)) {
       logger.warn({ provider: provider.name }, 'Invalid HMAC signature');
       response.status(401).json({ error: 'Invalid signature' });
       return;
@@ -43,6 +59,20 @@ export function createWebhookHandler(provider: ProviderConfig) {
       parsedPayload = JSON.parse(rawBody.toString('utf-8'));
     } catch {
       parsedPayload = {};
+    }
+
+    // Slack Events API URL verification challenge
+    if (
+      typeof parsedPayload === 'object' &&
+      parsedPayload !== null &&
+      'type' in parsedPayload &&
+      (parsedPayload as Record<string, unknown>).type === 'url_verification' &&
+      'challenge' in parsedPayload
+    ) {
+      const challenge = (parsedPayload as Record<string, unknown>).challenge;
+      logger.info({ provider: provider.name }, 'Slack URL verification challenge received');
+      response.status(200).json({ challenge });
+      return;
     }
 
     const context = extractWebhookContext(provider.name, parsedPayload);

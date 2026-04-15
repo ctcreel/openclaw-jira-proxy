@@ -1,5 +1,7 @@
 import { resetSettings } from '../src/config';
 import { resetLogging } from '../src/lib/logging';
+import { resetRunners } from '../src/runners/registry';
+import { resetSecretProviders } from '../src/secrets/registry';
 
 process.env.NODE_ENV = 'local';
 process.env.OPENCLAW_TOKEN = 'test-openclaw-token';
@@ -17,4 +19,6 @@ process.env.PROVIDERS_CONFIG = JSON.stringify([
 beforeEach(() => {
   resetSettings();
   resetLogging();
+  resetRunners();
+  resetSecretProviders();
 });

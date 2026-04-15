@@ -3,7 +3,8 @@ import type { Job } from 'bullmq';
 
 import type { ProviderConfig } from '../../src/config';
 import { resetSettings } from '../../src/config';
-import type { GatewayClient, AgentRunResult } from '../../src/services/gateway-client';
+import { registerRunner, resetRunners } from '../../src/runners/registry';
+import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -17,18 +18,18 @@ vi.mock('ioredis', () => ({
 
 import { processJob } from '../../src/services/worker.service';
 
-const mockRunAndWait = vi
-  .fn<[Record<string, unknown>, number], Promise<AgentRunResult>>()
-  .mockResolvedValue({
-    runId: 'integration-run-id',
-    status: 'ok',
-  });
+const runSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
+  status: 'ok',
+  runId: 'integration-run-id',
+  renderedPrompt: 'mock',
+});
 
-const mockGatewayClient = {
-  runAndWait: mockRunAndWait,
-  connect: vi.fn(),
-  close: vi.fn(),
-} as unknown as GatewayClient;
+class MockOpenClawRunner implements AgentRunner {
+  readonly name = 'openclaw';
+  async run(options: RunOptions): Promise<RunResult> {
+    return runSpy(options);
+  }
+}
 
 function createFakeJob(data: string, id = 'integration-job-1'): Job<string> {
   return { id, data } as unknown as Job<string>;
@@ -42,52 +43,61 @@ const provider: ProviderConfig = {
   openclawHookUrl: 'http://unused',
 };
 
-describe('Worker integration (GatewayClient.runAndWait)', () => {
+describe('Worker integration (runner registry)', () => {
   beforeAll(() => {
     process.env.OPENCLAW_TOKEN = 'integration-test-token';
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
+    resetRunners();
+    registerRunner(new MockOpenClawRunner());
   });
 
   afterEach(() => {
-    mockRunAndWait.mockClear();
+    runSpy.mockClear();
+  });
+
+  beforeEach(() => {
+    // Re-register after global setup.ts resetRunners() in beforeEach
+    resetRunners();
+    registerRunner(new MockOpenClawRunner());
   });
 
   afterAll(() => {
     delete process.env.OPENCLAW_TOKEN;
     delete process.env.OPENCLAW_AGENT_ID;
     resetSettings();
+    resetRunners();
   });
 
-  it('should deliver job message via runAndWait with isolated session key', async () => {
+  it('should deliver job prompt via runner with isolated session key', async () => {
     const payload = '{"event":"updated"}';
 
-    await processJob(createFakeJob(payload), provider, mockGatewayClient);
+    await processJob(createFakeJob(payload), provider);
 
-    expect(mockRunAndWait).toHaveBeenCalledOnce();
-    const call = mockRunAndWait.mock.calls[0];
-    expect(call[0].sessionKey).toBe('hook:integration-test:integration-job-1');
+    expect(runSpy).toHaveBeenCalledOnce();
+    const call = runSpy.mock.calls[0]!;
+    expect(call[0].sessionKey).toContain('integration-test');
     expect(call[0].agentId).toBe('patch');
-    expect(call[0].message).toBe(payload);
+    expect(call[0].prompt).toBe(payload);
   });
 
   it('should process multiple jobs sequentially', async () => {
-    await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider, mockGatewayClient);
-    await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider, mockGatewayClient);
+    await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider);
+    await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider);
 
-    expect(mockRunAndWait).toHaveBeenCalledTimes(2);
-    expect(mockRunAndWait.mock.calls[0][0].message).toBe('{"event":"first"}');
-    expect(mockRunAndWait.mock.calls[1][0].message).toBe('{"event":"second"}');
+    expect(runSpy).toHaveBeenCalledTimes(2);
+    expect(runSpy.mock.calls[0]![0].prompt).toBe('{"event":"first"}');
+    expect(runSpy.mock.calls[1]![0].prompt).toBe('{"event":"second"}');
   });
 
   it('should propagate error status as thrown error', async () => {
-    mockRunAndWait.mockResolvedValueOnce({
-      runId: 'err-run',
+    runSpy.mockResolvedValueOnce({
       status: 'error',
       error: 'Something broke',
+      renderedPrompt: 'test',
     });
 
-    await expect(processJob(createFakeJob('{}'), provider, mockGatewayClient)).rejects.toThrow(
+    await expect(processJob(createFakeJob('{}'), provider)).rejects.toThrow(
       'Agent run failed: Something broke',
     );
   });

@@ -2,7 +2,14 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export interface SignatureStrategy {
   readonly headerName: string;
-  validate(rawBody: Buffer, signatureHeader: string, secret: string): boolean;
+  /** Additional headers required for validation (e.g., Slack needs the timestamp header). */
+  readonly additionalHeaders?: readonly string[];
+  validate(
+    rawBody: Buffer,
+    signatureHeader: string,
+    secret: string,
+    headers?: Record<string, string>,
+  ): boolean;
 }
 
 function validateHmacSha256(rawBody: Buffer, signatureHeader: string, secret: string): boolean {
@@ -74,10 +81,64 @@ export const bearerStrategy: SignatureStrategy = {
   },
 };
 
+const SLACK_TIMESTAMP_MAX_AGE_SECONDS = 300;
+
+/**
+ * Slack Events API signature verification.
+ * Header: x-slack-signature
+ * Value: v0={hex}
+ * Basestring: v0:{timestamp}:{rawBody}
+ * Also requires x-slack-request-timestamp header for replay protection.
+ */
+export const slackStrategy: SignatureStrategy = {
+  headerName: 'x-slack-signature',
+  additionalHeaders: ['x-slack-request-timestamp'] as const,
+  validate(
+    rawBody: Buffer,
+    signatureHeader: string,
+    secret: string,
+    headers?: Record<string, string>,
+  ): boolean {
+    const prefix = 'v0=';
+    if (!signatureHeader.startsWith(prefix)) {
+      return false;
+    }
+
+    const timestamp = headers?.['x-slack-request-timestamp'];
+    if (!timestamp) {
+      return false;
+    }
+
+    const timestampSeconds = Number(timestamp);
+    if (Number.isNaN(timestampSeconds)) {
+      return false;
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSeconds - timestampSeconds) > SLACK_TIMESTAMP_MAX_AGE_SECONDS) {
+      return false;
+    }
+
+    const basestring = `v0:${timestamp}:${rawBody.toString('utf-8')}`;
+    const computedHex = createHmac('sha256', secret).update(basestring).digest('hex');
+    const expectedSignature = `v0=${computedHex}`;
+
+    const receivedBuffer = Buffer.from(signatureHeader, 'utf-8');
+    const expectedBuffer = Buffer.from(expectedSignature, 'utf-8');
+
+    if (receivedBuffer.length !== expectedBuffer.length) {
+      return false;
+    }
+
+    return timingSafeEqual(receivedBuffer, expectedBuffer);
+  },
+};
+
 const strategies: Record<string, SignatureStrategy> = {
   websub: websubStrategy,
   github: githubStrategy,
   bearer: bearerStrategy,
+  slack: slackStrategy,
 };
 
 export function getSignatureStrategy(name: string): SignatureStrategy {

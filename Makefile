@@ -102,6 +102,13 @@ cdk-deploy: check ## Deploy CDK (requires all checks to pass)
 deploy: cdk-deploy ## Alias for cdk-deploy
 
 # ============================================================================
+# TEMPLATE PREVIEW
+# ============================================================================
+
+preview-template: ## Preview a message template against a sample payload
+	pnpm tsx scripts/preview-template.ts --template $(TEMPLATE) --payload $(PAYLOAD)
+
+# ============================================================================
 # STANDARDS SYNC
 # ============================================================================
 

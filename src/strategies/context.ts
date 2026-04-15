@@ -74,6 +74,41 @@ const githubStrategy: ContextStrategy = {
   },
 };
 
+const SLACK_CHANNEL_ENVIRONMENT: Record<string, string> = {
+  C08V6MV0VNV: 'development',
+  C08UWMQJFBN: 'testing',
+  C08UVJDJZTL: 'production',
+};
+
+const slackStrategy: ContextStrategy = {
+  name: 'slack',
+  extract(payload: unknown): WebhookContext {
+    const messageTimestamp = resolveFieldPath(payload, 'event.ts');
+    const channel = resolveFieldPath(payload, 'event.channel');
+    const blocks = resolveFieldPath(payload, 'event.blocks');
+
+    let title = '?';
+    if (Array.isArray(blocks) && blocks.length > 0) {
+      const firstBlock = blocks[0] as Record<string, unknown>;
+      const text =
+        resolveFieldPath(firstBlock, 'text.text') ?? resolveFieldPath(firstBlock, 'text');
+      if (typeof text === 'string') {
+        title = text.slice(0, 80);
+      }
+    }
+
+    const channelId = typeof channel === 'string' ? channel : '';
+    const environment = SLACK_CHANNEL_ENVIRONMENT[channelId] ?? 'unknown';
+
+    return {
+      id: typeof messageTimestamp === 'string' ? messageTimestamp : '?',
+      title,
+      status: environment,
+      source: 'slack',
+    };
+  },
+};
+
 const fallbackStrategy: ContextStrategy = {
   name: 'unknown',
   extract(_payload: unknown): WebhookContext {
@@ -84,6 +119,7 @@ const fallbackStrategy: ContextStrategy = {
 const strategies: Record<string, ContextStrategy> = {
   jira: jiraStrategy,
   github: githubStrategy,
+  slack: slackStrategy,
 };
 
 export function getContextStrategy(providerName: string): ContextStrategy {

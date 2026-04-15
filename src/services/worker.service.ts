@@ -1,6 +1,7 @@
 import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
+import { createHash } from 'node:crypto';
 
 import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
@@ -11,29 +12,18 @@ import { getDedupRedis } from './dedup.service';
 import { resolveAgent, resolveFieldPath } from '../strategies/routing';
 import type { AlertRegistry } from './alerts';
 import type { JobAlert } from './alerts';
-import type { GatewayClient } from './gateway-client';
+import { getRunner } from '../runners/registry';
 import { buildQueueName } from './queue.service';
 
 const logger = getLogger('worker');
 
-/**
- * Job data envelope. The webhook payload is wrapped with attempt metadata
- * so we can track retries without relying on BullMQ's built-in attempts
- * (which hold the failed job at the front of the queue).
- */
 export interface JobEnvelope {
-  /** Original webhook body (stringified JSON). */
   payload: string;
-  /** Current attempt number (1-indexed). */
   attempt: number;
-  /** Original job ID for traceability across re-enqueues. */
   originalJobId?: string;
 }
 
-/**
- * Wrap a raw payload string into a JobEnvelope for first attempt.
- * If the data is already an envelope (from a re-enqueue), return as-is.
- */
+/** Parse raw job data into an envelope. Re-enqueued jobs already have the envelope shape. */
 export function parseEnvelope(data: string): JobEnvelope {
   try {
     const parsed = JSON.parse(data);
@@ -51,16 +41,6 @@ export function parseEnvelope(data: string): JobEnvelope {
   return { payload: data, attempt: 1 };
 }
 
-/**
- * Evaluate model rules against a parsed payload. Returns the model string
- * from the first matching rule, or undefined if no rules match.
- *
- * Example Jira model rules (configured via PROVIDERS_CONFIG):
- *   - field: "changelog.items[*].field", matches: "status",
- *     combined with field: "issue.fields.status.name",
- *     matches: ["Plan", "Ready for Development"] → "anthropic/claude-opus-4-6"
- *   - All other events → "anthropic/claude-sonnet-4-6"
- */
 export function resolveModel(
   payload: unknown,
   rules: ReadonlyArray<ModelRule> | undefined,
@@ -90,11 +70,7 @@ export function resolveModel(
   return undefined;
 }
 
-export async function processJob(
-  job: Job<string>,
-  provider: ProviderConfig,
-  gatewayClient: GatewayClient,
-): Promise<void> {
+export async function processJob(job: Job<string>, provider: ProviderConfig): Promise<void> {
   const settings = getSettings();
   const envelope = parseEnvelope(job.data);
 
@@ -158,24 +134,43 @@ export async function processJob(
   }
 
   const template = ruleTemplate ?? provider.messageTemplate;
-  const message = template ? await renderTemplate(template, parsedPayload) : envelope.payload;
+  const prompt = template ? await renderTemplate(template, parsedPayload) : envelope.payload;
 
   const sessionKey = `agent:${agentId}:hook-${provider.name}-${traceId}`;
+  const runnerName = provider.runner?.type ?? 'openclaw';
+  const runner = getRunner(runnerName);
 
+  // Prompt observability: hash at info level, full prompt at debug level
+  const promptHash = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
   logger.info(
-    { jobId: job.id, provider: provider.name, sessionKey, agentId, traceId },
-    'Delivering prompt via agent RPC with completion wait',
+    {
+      jobId: job.id,
+      provider: provider.name,
+      runner: runnerName,
+      sessionKey,
+      promptHash,
+      promptLength: prompt.length,
+    },
+    'Agent run delivered',
+  );
+  logger.debug(
+    {
+      jobId: job.id,
+      provider: provider.name,
+      runner: runnerName,
+      sessionKey,
+      prompt,
+    },
+    'Agent run prompt',
   );
 
-  const result = await gatewayClient.runAndWait(
-    {
-      message,
-      sessionKey,
-      agentId,
-      bootstrapContextMode: 'lightweight',
-    },
-    settings.agentWaitTimeoutMs,
-  );
+  const result = await runner.run({
+    prompt,
+    sessionKey,
+    agentId,
+    model: selectedModel,
+    timeoutMs: settings.agentWaitTimeoutMs,
+  });
 
   if (result.status === 'error') {
     throw new Error(`Agent run failed: ${result.error ?? 'unknown error'}`);
@@ -199,12 +194,11 @@ export async function processJob(
 
 export interface CreateWorkerOptions {
   provider: ProviderConfig;
-  gatewayClient: GatewayClient;
   alertRegistry?: AlertRegistry;
 }
 
 export function createWorker(options: CreateWorkerOptions): Worker<string> {
-  const { provider, gatewayClient, alertRegistry } = options;
+  const { provider, alertRegistry } = options;
 
   const settings = getSettings();
   const redisUrl = settings.redisUrl;
@@ -213,7 +207,7 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
 
   const worker = new Worker<string>(
     buildQueueName(provider.name),
-    (job) => processJob(job, provider, gatewayClient),
+    (job) => processJob(job, provider),
     {
       connection,
       concurrency: 1,
@@ -246,7 +240,7 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
         const alert: JobAlert = {
           jobId: traceId,
           sessionKey: `agent:${settings.openclawAgentId}:main`,
-          agentId: settings.openclawAgentId,
+          agentId: settings.openclawAgentId ?? 'unknown',
           error: error.message,
           attempts: envelope.attempt,
           maxAttempts,
@@ -281,7 +275,7 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
         originalJobId: envelope.originalJobId ?? job.id ?? undefined,
       };
 
-      // Re-enqueue to the back with exponential delay — give gateway time to reconnect
+      // Re-enqueue to the back with exponential delay — give runner time to recover
       const delayMs = Math.min(5_000 * Math.pow(2, envelope.attempt - 1), 60_000);
       const retryConn = new IORedis(redisUrl, { maxRetriesPerRequest: null });
       const queue = new Queue(buildQueueName(provider.name), { connection: retryConn });

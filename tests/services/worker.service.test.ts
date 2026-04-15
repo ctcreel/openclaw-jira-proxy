@@ -28,22 +28,25 @@ import { processJob, parseEnvelope, resolveModel } from '../../src/services/work
 import type { JobEnvelope } from '../../src/services/worker.service';
 import { resetSettings } from '../../src/config';
 import { renderTemplate } from '../../src/lib/template/template-engine';
-import type { GatewayClient, AgentRunResult } from '../../src/services/gateway-client';
+import { registerRunner, resetRunners } from '../../src/runners/registry';
+import { NullRunner } from '../../src/runners/null.runner';
+import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
 
 import type { ModelRule } from '../../src/config';
 
-const mockRunAndWait = vi
-  .fn<[Record<string, unknown>, number], Promise<AgentRunResult>>()
-  .mockResolvedValue({
-    runId: 'mock-run-id',
-    status: 'ok',
-  });
+// Track run calls for assertions
+const runSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
+  status: 'ok',
+  runId: 'mock-run-id',
+  renderedPrompt: 'mock-prompt',
+});
 
-const mockGatewayClient = {
-  runAndWait: mockRunAndWait,
-  connect: vi.fn(),
-  close: vi.fn(),
-} as unknown as GatewayClient;
+class SpyRunner implements AgentRunner {
+  readonly name = 'openclaw';
+  async run(options: RunOptions): Promise<RunResult> {
+    return runSpy(options);
+  }
+}
 
 const testProvider: ProviderConfig = {
   name: 'test-provider',
@@ -60,74 +63,71 @@ function createFakeJob(data: string, id = 'test-job-1'): Job<string> {
 describe('processJob', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRunAndWait.mockResolvedValue({ runId: 'mock-run-id', status: 'ok' });
+    runSpy.mockResolvedValue({
+      status: 'ok',
+      runId: 'mock-run-id',
+      renderedPrompt: 'mock-prompt',
+    });
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
     resetRoutingStrategies();
+    resetRunners();
     registerRoutingStrategy(fieldEqualsStrategy);
     registerRoutingStrategy(regexStrategy);
     registerRoutingStrategy(defaultStrategy);
+    registerRunner(new SpyRunner());
   });
 
-  it('should call runAndWait with correct params on success', async () => {
-    await processJob(createFakeJob('{"event":"updated"}'), testProvider, mockGatewayClient);
+  it('should call runner.run with correct params on success', async () => {
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
 
-    expect(mockRunAndWait).toHaveBeenCalledOnce();
-    expect(mockRunAndWait).toHaveBeenCalledWith(
+    expect(runSpy).toHaveBeenCalledOnce();
+    expect(runSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: '{"event":"updated"}',
-        sessionKey: 'hook:test-provider:test-job-1',
+        prompt: '{"event":"updated"}',
         agentId: 'patch',
+        sessionKey: expect.stringContaining('hook-test-provider-'),
       }),
-      expect.any(Number),
     );
   });
 
-  it('should use isolated session key (hook:<provider>:<traceId>)', async () => {
-    await processJob(createFakeJob('{"event":"updated"}'), testProvider, mockGatewayClient);
-
-    const call = mockRunAndWait.mock.calls[0];
-    expect(call[0].sessionKey).toBe('hook:test-provider:test-job-1');
-  });
-
-  it('should throw when runAndWait returns error status', async () => {
-    mockRunAndWait.mockResolvedValueOnce({
-      runId: 'err-run',
+  it('should throw when runner returns error status', async () => {
+    runSpy.mockResolvedValueOnce({
       status: 'error',
       error: 'Agent crashed',
+      renderedPrompt: 'test',
     });
 
-    await expect(processJob(createFakeJob('{}'), testProvider, mockGatewayClient)).rejects.toThrow(
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
       'Agent run failed: Agent crashed',
     );
   });
 
-  it('should throw when runAndWait returns timeout status', async () => {
-    mockRunAndWait.mockResolvedValueOnce({
-      runId: 'timeout-run',
+  it('should throw when runner returns timeout status', async () => {
+    runSpy.mockResolvedValueOnce({
       status: 'timeout',
+      runId: 'timeout-run',
+      renderedPrompt: 'test',
     });
 
-    await expect(processJob(createFakeJob('{}'), testProvider, mockGatewayClient)).rejects.toThrow(
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
       'Agent run timed out (runId: timeout-run)',
     );
   });
 
-  it('should throw when runAndWait rejects', async () => {
-    mockRunAndWait.mockRejectedValueOnce(new Error('Gateway WS closed'));
+  it('should throw when runner rejects', async () => {
+    runSpy.mockRejectedValueOnce(new Error('Connection lost'));
 
-    await expect(processJob(createFakeJob('{}'), testProvider, mockGatewayClient)).rejects.toThrow(
-      'Gateway WS closed',
-    );
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow('Connection lost');
   });
 
-  it('should forward the raw job data as message', async () => {
+  it('should forward the raw job data as prompt', async () => {
     const payload = '{"issue":{"key":"SPE-1567"}}';
 
-    await processJob(createFakeJob(payload), testProvider, mockGatewayClient);
+    await processJob(createFakeJob(payload), testProvider);
 
-    const call = mockRunAndWait.mock.calls[0];
-    expect(call[0].message).toBe(payload);
+    const call = runSpy.mock.calls[0]!;
+    expect(call[0].prompt).toBe(payload);
   });
 
   it('should route to correct agent when field-equals rule matches', async () => {
@@ -149,10 +149,9 @@ describe('processJob', () => {
     await processJob(
       createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Patches"}}}}'),
       providerWithRouting,
-      mockGatewayClient,
     );
 
-    const call = mockRunAndWait.mock.calls[0];
+    const call = runSpy.mock.calls[0]!;
     expect(call[0].agentId).toBe('patch');
   });
 
@@ -175,10 +174,9 @@ describe('processJob', () => {
     await processJob(
       createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Someone Else"}}}}'),
       providerWithRouting,
-      mockGatewayClient,
     );
 
-    const call = mockRunAndWait.mock.calls[0];
+    const call = runSpy.mock.calls[0]!;
     expect(call[0].agentId).toBe('main');
   });
 
@@ -198,16 +196,13 @@ describe('processJob', () => {
             agentId: 'ghost',
           },
         ],
+        default: null,
       },
     };
 
-    await processJob(
-      createFakeJob('{"issue":{"fields":{}}}'),
-      providerNoDefault,
-      mockGatewayClient,
-    );
+    await processJob(createFakeJob('{"issue":{"fields":{}}}'), providerNoDefault);
 
-    expect(mockRunAndWait).not.toHaveBeenCalled();
+    expect(runSpy).not.toHaveBeenCalled();
 
     process.env.OPENCLAW_AGENT_ID = originalAgentId;
     resetSettings();
@@ -220,19 +215,47 @@ describe('processJob', () => {
       originalJobId: 'original-42',
     };
 
-    await processJob(createFakeJob(JSON.stringify(envelope)), testProvider, mockGatewayClient);
+    await processJob(createFakeJob(JSON.stringify(envelope)), testProvider);
 
-    const call = mockRunAndWait.mock.calls[0];
-    expect(call[0].message).toBe('{"issue":{"key":"SPE-1234"}}');
-    expect(call[0].sessionKey).toBe('hook:test-provider:original-42');
+    const call = runSpy.mock.calls[0]!;
+    expect(call[0].prompt).toBe('{"issue":{"key":"SPE-1234"}}');
+    expect(call[0].sessionKey).toContain('original-42');
   });
 
-  it('should pass agentWaitTimeoutMs to runAndWait', async () => {
-    await processJob(createFakeJob('{"event":"test"}'), testProvider, mockGatewayClient);
+  it('should pass agentWaitTimeoutMs to runner', async () => {
+    await processJob(createFakeJob('{"event":"test"}'), testProvider);
 
-    const call = mockRunAndWait.mock.calls[0];
+    const call = runSpy.mock.calls[0]!;
     // Default agentWaitTimeoutMs is 1_800_000
-    expect(call[1]).toBe(1_800_000);
+    expect(call[0].timeoutMs).toBe(1_800_000);
+  });
+
+  it('should use provider runner type when configured', async () => {
+    // Register a custom runner to verify provider-level runner resolution
+    const customRunSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
+      status: 'ok',
+      runId: 'custom-run',
+      renderedPrompt: 'test',
+    });
+
+    class CustomRunner implements AgentRunner {
+      readonly name = 'openai';
+      async run(options: RunOptions): Promise<RunResult> {
+        return customRunSpy(options);
+      }
+    }
+
+    registerRunner(new CustomRunner());
+
+    const providerWithRunner: ProviderConfig = {
+      ...testProvider,
+      runner: { type: 'openai', model: 'gpt-4o', apiKey: 'test-key' },
+    };
+
+    await processJob(createFakeJob('{"event":"test"}'), providerWithRunner);
+
+    // Should have used the openai runner, not the default openclaw spy
+    expect(customRunSpy).toHaveBeenCalledOnce();
   });
 });
 
@@ -339,16 +362,22 @@ describe('resolveModel', () => {
 describe('processJob model routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRunAndWait.mockResolvedValue({ runId: 'mock-run-id', status: 'ok' });
+    runSpy.mockResolvedValue({
+      status: 'ok',
+      runId: 'mock-run-id',
+      renderedPrompt: 'mock-prompt',
+    });
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
     resetRoutingStrategies();
+    resetRunners();
     registerRoutingStrategy(fieldEqualsStrategy);
     registerRoutingStrategy(regexStrategy);
     registerRoutingStrategy(defaultStrategy);
+    registerRunner(new SpyRunner());
   });
 
-  it('should pass model to runAndWait when model rule matches', async () => {
+  it('should pass model to runner when model rule matches', async () => {
     const providerWithModel: ProviderConfig = {
       ...testProvider,
       modelRules: [
@@ -363,11 +392,10 @@ describe('processJob model routing', () => {
     await processJob(
       createFakeJob('{"issue":{"fields":{"status":{"name":"Plan"}}}}'),
       providerWithModel,
-      mockGatewayClient,
     );
 
-    expect(mockRunAndWait).toHaveBeenCalledOnce();
-    const call = mockRunAndWait.mock.calls[0];
+    expect(runSpy).toHaveBeenCalledOnce();
+    const call = runSpy.mock.calls[0]!;
     expect(call[0].model).toBe('anthropic/claude-opus-4-6');
   });
 
@@ -386,19 +414,18 @@ describe('processJob model routing', () => {
     await processJob(
       createFakeJob('{"issue":{"fields":{"status":{"name":"In Progress"}}}}'),
       providerWithModel,
-      mockGatewayClient,
     );
 
-    expect(mockRunAndWait).toHaveBeenCalledOnce();
-    const call = mockRunAndWait.mock.calls[0];
+    expect(runSpy).toHaveBeenCalledOnce();
+    const call = runSpy.mock.calls[0]!;
     expect(call[0].model).toBeUndefined();
   });
 
   it('should pass undefined model when provider has no modelRules', async () => {
-    await processJob(createFakeJob('{"event":"updated"}'), testProvider, mockGatewayClient);
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
 
-    expect(mockRunAndWait).toHaveBeenCalledOnce();
-    const call = mockRunAndWait.mock.calls[0];
+    expect(runSpy).toHaveBeenCalledOnce();
+    const call = runSpy.mock.calls[0]!;
     expect(call[0].model).toBeUndefined();
   });
 });
@@ -406,16 +433,22 @@ describe('processJob model routing', () => {
 describe('processJob message templates', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRunAndWait.mockResolvedValue({ runId: 'mock-run-id', status: 'ok' });
+    runSpy.mockResolvedValue({
+      status: 'ok',
+      runId: 'mock-run-id',
+      renderedPrompt: 'mock-prompt',
+    });
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
     resetRoutingStrategies();
+    resetRunners();
     registerRoutingStrategy(fieldEqualsStrategy);
     registerRoutingStrategy(regexStrategy);
     registerRoutingStrategy(defaultStrategy);
+    registerRunner(new SpyRunner());
   });
 
-  it('should use rendered template as message when provider has messageTemplate', async () => {
+  it('should use rendered template as prompt when provider has messageTemplate', async () => {
     vi.mocked(renderTemplate).mockResolvedValueOnce('rendered provider template');
 
     const providerWithTemplate: ProviderConfig = {
@@ -423,17 +456,13 @@ describe('processJob message templates', () => {
       messageTemplate: 'Issue {{ issue.key }}',
     };
 
-    await processJob(
-      createFakeJob('{"issue":{"key":"SPE-100"}}'),
-      providerWithTemplate,
-      mockGatewayClient,
-    );
+    await processJob(createFakeJob('{"issue":{"key":"SPE-100"}}'), providerWithTemplate);
 
     expect(renderTemplate).toHaveBeenCalledWith('Issue {{ issue.key }}', {
       issue: { key: 'SPE-100' },
     });
-    const call = mockRunAndWait.mock.calls[0];
-    expect(call[0].message).toBe('rendered provider template');
+    const call = runSpy.mock.calls[0]!;
+    expect(call[0].prompt).toBe('rendered provider template');
   });
 
   it('should prefer routing rule messageTemplate over provider messageTemplate', async () => {
@@ -455,18 +484,18 @@ describe('processJob message templates', () => {
       },
     };
 
-    await processJob(createFakeJob('{"type":"bug"}'), providerWithBoth, mockGatewayClient);
+    await processJob(createFakeJob('{"type":"bug"}'), providerWithBoth);
 
     expect(renderTemplate).toHaveBeenCalledWith('rule template {{ type }}', { type: 'bug' });
-    const call = mockRunAndWait.mock.calls[0];
-    expect(call[0].message).toBe('rendered rule template');
+    const call = runSpy.mock.calls[0]!;
+    expect(call[0].prompt).toBe('rendered rule template');
   });
 
   it('should use raw payload when no template is configured', async () => {
-    await processJob(createFakeJob('{"event":"updated"}'), testProvider, mockGatewayClient);
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
 
     expect(renderTemplate).not.toHaveBeenCalled();
-    const call = mockRunAndWait.mock.calls[0];
-    expect(call[0].message).toBe('{"event":"updated"}');
+    const call = runSpy.mock.calls[0]!;
+    expect(call[0].prompt).toBe('{"event":"updated"}');
   });
 });
