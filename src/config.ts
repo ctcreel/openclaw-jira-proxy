@@ -68,6 +68,8 @@ const settingsSchema = z.object({
   configDir: z.string().default(join(homedir(), '.clawndom', 'agents')),
   /** Agents Clawndom should load from Git at startup. */
   agents: z.array(agentEntrySchema).default([]),
+  /** Bearer token agents use to call POST /api/tasks. */
+  agentToken: z.string().optional(),
   /** Secret provider backends to register. */
   secretProviders: z.array(secretProviderConfigSchema).optional(),
   /** Secret bindings: map logical keys to vault-specific references. */
@@ -126,6 +128,7 @@ export function getSettings(): Settings {
     providers: parseProviders(),
     configDir: process.env.CLAWNDOM_CONFIG_DIR,
     agents: parseJsonEnv('AGENTS_CONFIG'),
+    agentToken: process.env.CLAWNDOM_AGENT_TOKEN,
     secretProviders: parseJsonEnv('SECRETS_PROVIDERS_CONFIG'),
     secrets: parseJsonEnv('SECRETS_CONFIG'),
   });

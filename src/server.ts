@@ -5,6 +5,7 @@ import { getLogger } from './lib/logging';
 import { loadAgents } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
 import { GatewayClient } from './services/gateway-client';
+import { createTaskWorker } from './services/task-worker.service';
 import { createWorker } from './services/worker.service';
 import { registerRunner } from './runners/registry';
 import { NullRunner } from './runners/null.runner';
@@ -135,6 +136,15 @@ async function startServer(): Promise<void> {
     createWorker({ provider, agents, alertRegistry });
   }
   logger.info({ providers: settings.providers.map((p) => p.name) }, 'Workers started');
+
+  // Task workers — one per agent that declares internal routing rules
+  const taskWorkers = agents.map((agent) => createTaskWorker(agent)).filter((w) => w !== null);
+  if (taskWorkers.length > 0) {
+    logger.info(
+      { agents: taskWorkers.length },
+      'Task workers started for agents with internal routing rules',
+    );
+  }
 
   const app = createApp(agents);
   const port = settings.port;
