@@ -1,8 +1,11 @@
+import { createHash, randomUUID } from 'node:crypto';
+
 import type { Request, Response } from 'express';
 
 import type { ProviderConfig } from '../config';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import { getDedupRedis } from '../services/dedup.service';
+import { getEventBus } from '../services/event-bus.service';
 import { getProviderQueue } from '../services/queue.service';
 import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents } from '../strategies/routing';
@@ -18,14 +21,41 @@ const logger = getLogger('webhook-controller');
  */
 const DEDUP_TTL_SECONDS = 10;
 
+function hashHeaders(headers: Request['headers']): string {
+  const material = Object.entries(headers)
+    .map(([k, v]) => `${k}:${Array.isArray(v) ? v.join(',') : (v ?? '')}`)
+    .sort()
+    .join('\n');
+  return createHash('sha256').update(material).digest('hex').slice(0, 12);
+}
+
 export function createWebhookHandler(provider: ProviderConfig, agents: readonly ResolvedAgent[]) {
   const strategy = getSignatureStrategy(provider.signatureStrategy);
 
   return async (request: Request, response: Response): Promise<void> => {
+    const traceId = randomUUID();
+    const events = getEventBus();
+    const rawHeadersHash = hashHeaders(request.headers);
+
+    events.publish({
+      type: 'webhook.received',
+      timestamp: Date.now(),
+      traceId,
+      provider: provider.name,
+      rawHeadersHash,
+    });
+
     const signatureHeader = request.headers[strategy.headerName];
 
     if (typeof signatureHeader !== 'string') {
       logger.warn({ provider: provider.name }, `Missing ${strategy.headerName} header`);
+      events.publish({
+        type: 'webhook.rejected',
+        timestamp: Date.now(),
+        traceId,
+        provider: provider.name,
+        reason: 'missing-signature',
+      });
       response.status(401).json({ error: 'Missing signature' });
       return;
     }
@@ -50,6 +80,13 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
 
     if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret, additionalHeaders)) {
       logger.warn({ provider: provider.name }, 'Invalid HMAC signature');
+      events.publish({
+        type: 'webhook.rejected',
+        timestamp: Date.now(),
+        traceId,
+        provider: provider.name,
+        reason: 'invalid-signature',
+      });
       response.status(401).json({ error: 'Invalid signature' });
       return;
     }
@@ -85,6 +122,13 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
         { provider: provider.name, contextId: context.id, contextStatus: context.status },
         'No routing match — not enqueueing',
       );
+      events.publish({
+        type: 'webhook.rejected',
+        timestamp: Date.now(),
+        traceId,
+        provider: provider.name,
+        reason: 'no-routing-match',
+      });
       response.status(202).json({ accepted: true, routed: false });
       return;
     }
@@ -101,13 +145,40 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
           { provider: provider.name, contextId: context.id, contextStatus: context.status },
           'Duplicate — already enqueued, skipping',
         );
+        events.publish({
+          type: 'webhook.rejected',
+          timestamp: Date.now(),
+          traceId,
+          provider: provider.name,
+          reason: 'duplicate',
+        });
         response.status(202).json({ accepted: true, duplicate: true });
         return;
       }
     }
 
     const queue = getProviderQueue(provider.name);
-    await queue.add('webhook-event', rawBody.toString('utf-8'));
+    const job = await queue.add('webhook-event', rawBody.toString('utf-8'));
+
+    events.publish({
+      type: 'webhook.accepted',
+      timestamp: Date.now(),
+      traceId,
+      provider: provider.name,
+      contextId: context.id,
+      contextTitle: context.title,
+      contextStatus: context.status,
+    });
+
+    events.publish({
+      type: 'job.queued',
+      timestamp: Date.now(),
+      traceId,
+      jobId: String(job.id ?? 'unknown'),
+      provider: provider.name,
+      contextId: context.id,
+      contextTitle: context.title,
+    });
 
     logger.info(
       {

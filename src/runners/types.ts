@@ -15,6 +15,10 @@ export interface RunOptions {
   model?: string;
   /** Maximum time (ms) the runner may take before the caller treats it as timed out. */
   timeoutMs: number;
+  /** Trace identifier used for SSE event correlation. */
+  traceId?: string;
+  /** Job identifier used for SSE event correlation. */
+  jobId?: string;
 }
 
 export interface RunResult {
