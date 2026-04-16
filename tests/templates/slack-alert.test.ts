@@ -62,7 +62,7 @@ describe('slack-alert template', () => {
 
   it('should render the template with a sample payload', async () => {
     const template = await loadTemplate();
-    const result = await renderTemplate(template, samplePayload);
+    const result = await renderTemplate(template, samplePayload, __dirname);
 
     expect(result).toContain('production');
     expect(result).toContain('[PRODUCTION] Pipeline failure: invoice-processing');
@@ -74,7 +74,7 @@ describe('slack-alert template', () => {
 
   it('should include the raw payload JSON', async () => {
     const template = await loadTemplate();
-    const result = await renderTemplate(template, samplePayload);
+    const result = await renderTemplate(template, samplePayload, __dirname);
 
     expect(result).toContain('"type": "event_callback"');
     expect(result).toContain('```json');
@@ -87,7 +87,7 @@ describe('slack-alert template', () => {
       ...samplePayload,
       event: { ...samplePayload.event, channel: 'C08V6MV0VNV' },
     };
-    const result = await renderTemplate(template, devPayload);
+    const result = await renderTemplate(template, devPayload, __dirname);
     expect(result).toContain('development');
   });
 
@@ -97,7 +97,7 @@ describe('slack-alert template', () => {
       type: 'event_callback',
       event: { type: 'message', ts: '1.0', channel: 'C08V6MV0VNV' },
     };
-    const result = await renderTemplate(template, minimalPayload);
+    const result = await renderTemplate(template, minimalPayload, __dirname);
     expect(result).toContain('development');
     expect(result).toContain('Raw Event Payload');
   });

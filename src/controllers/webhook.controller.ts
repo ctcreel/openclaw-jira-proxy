@@ -1,11 +1,11 @@
 import type { Request, Response } from 'express';
 
 import type { ProviderConfig } from '../config';
-import { getSettings } from '../config';
+import type { ResolvedAgent } from '../services/agent-loader.service';
 import { getDedupRedis } from '../services/dedup.service';
 import { getProviderQueue } from '../services/queue.service';
 import { extractWebhookContext } from '../strategies/context';
-import { resolveAgent } from '../strategies/routing';
+import { resolveAgentFromAgents } from '../strategies/routing';
 import { getSignatureStrategy } from '../strategies/signature';
 import { getLogger } from '../lib/logging';
 
@@ -18,7 +18,7 @@ const logger = getLogger('webhook-controller');
  */
 const DEDUP_TTL_SECONDS = 10;
 
-export function createWebhookHandler(provider: ProviderConfig) {
+export function createWebhookHandler(provider: ProviderConfig, agents: readonly ResolvedAgent[]) {
   const strategy = getSignatureStrategy(provider.signatureStrategy);
 
   return async (request: Request, response: Response): Promise<void> => {
@@ -78,8 +78,7 @@ export function createWebhookHandler(provider: ProviderConfig) {
     const context = extractWebhookContext(provider.name, parsedPayload);
 
     // Check routing BEFORE enqueueing — don't queue events that will be skipped
-    const settings = getSettings();
-    const resolved = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
+    const resolved = resolveAgentFromAgents(parsedPayload, provider.name, agents);
 
     if (resolved === null) {
       logger.info(

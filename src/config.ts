@@ -1,10 +1,12 @@
+import { homedir } from 'os';
+import { join } from 'path';
+
 import { z } from 'zod';
 
-import { routingConfigSchema } from './strategies/routing';
 import { runnerConfigSchema } from './runners/types';
 import { secretBindingSchema, secretProviderConfigSchema } from './secrets/types';
 
-const modelRuleSchema = z.object({
+export const modelRuleSchema = z.object({
   /** Dot-notation field path to match against the webhook payload. */
   field: z.string().min(1),
   /** Value(s) the resolved field must match (string or array of strings). */
@@ -21,9 +23,6 @@ const providerSchema = z.object({
   hmacSecret: z.string().min(1).optional(),
   signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack']),
   openclawHookUrl: z.string().url().optional(),
-  routing: routingConfigSchema,
-  modelRules: z.array(modelRuleSchema).optional(),
-  messageTemplate: z.string().optional(),
   /** Runner configuration. Defaults to openclaw when omitted. */
   runner: runnerConfigSchema.optional(),
   /** Logical secret keys this provider needs (resolved by SecretManager). */
@@ -31,6 +30,19 @@ const providerSchema = z.object({
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
+
+export const agentEntrySchema = z.object({
+  /** Logical agent name (matches the `agentId` referenced in routing rules). */
+  name: z.string().min(1),
+  /** Git URL — cloned once per unique repo at startup. */
+  repo: z.string().min(1),
+  /** Optional subdirectory inside the repo. Useful for monorepos. */
+  path: z.string().optional(),
+  /** Optional branch, tag, or commit SHA. Defaults to the repo's default branch. */
+  ref: z.string().optional(),
+});
+
+export type AgentEntry = z.infer<typeof agentEntrySchema>;
 
 const settingsSchema = z.object({
   nodeEnv: z.enum(['local', 'development', 'testing', 'demo', 'production']).default('development'),
@@ -52,6 +64,10 @@ const settingsSchema = z.object({
   providers: z
     .array(providerSchema)
     .min(1, 'At least one provider must be configured in PROVIDERS_CONFIG'),
+  /** Local directory where agent repos are cloned. */
+  configDir: z.string().default(join(homedir(), '.clawndom', 'agents')),
+  /** Agents Clawndom should load from Git at startup. */
+  agents: z.array(agentEntrySchema).default([]),
   /** Secret provider backends to register. */
   secretProviders: z.array(secretProviderConfigSchema).optional(),
   /** Secret bindings: map logical keys to vault-specific references. */
@@ -108,6 +124,8 @@ export function getSettings(): Settings {
       process.env.SESSIONS_FILE_PATH ||
       `${process.env.HOME}/.openclaw/agents/${process.env.OPENCLAW_AGENT_ID || 'patch'}/sessions/sessions.json`,
     providers: parseProviders(),
+    configDir: process.env.CLAWNDOM_CONFIG_DIR,
+    agents: parseJsonEnv('AGENTS_CONFIG'),
     secretProviders: parseJsonEnv('SECRETS_PROVIDERS_CONFIG'),
     secrets: parseJsonEnv('SECRETS_CONFIG'),
   });

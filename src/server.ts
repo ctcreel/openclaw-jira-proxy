@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
 import { getLogger } from './lib/logging';
+import { loadAgents } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
 import { GatewayClient } from './services/gateway-client';
 import { createWorker } from './services/worker.service';
@@ -121,14 +122,21 @@ async function startServer(): Promise<void> {
     }
   }
 
+  // ── Agents ───────────────────────────────────────────────────────────
+  const agents = await loadAgents(settings.agents, settings.configDir);
+  logger.info(
+    { agents: agents.map((agent) => ({ name: agent.name, dir: agent.dir })) },
+    'Agents loaded',
+  );
+
   // ── Workers + HTTP ───────────────────────────────────────────────────
   const alertRegistry = buildAlertRegistry();
   for (const provider of settings.providers) {
-    createWorker({ provider, alertRegistry });
+    createWorker({ provider, agents, alertRegistry });
   }
   logger.info({ providers: settings.providers.map((p) => p.name) }, 'Workers started');
 
-  const app = createApp();
+  const app = createApp(agents);
   const port = settings.port;
 
   app.listen(port, () => {

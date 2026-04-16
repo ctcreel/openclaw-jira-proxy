@@ -16,6 +16,7 @@ import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
 import { registerRunner, resetRunners } from '../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
+import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 
 // -- Delivery capture --
 interface DeliveredPayload {
@@ -80,6 +81,22 @@ const TEST_PROVIDERS = [
     hmacSecret: LINEAR_SECRET,
     signatureStrategy: 'websub',
     openclawHookUrl: 'http://unused',
+  },
+];
+
+// -- Catch-all test agent: every provider routes to this agent --
+const TEST_AGENTS: ResolvedAgent[] = [
+  {
+    name: 'patch',
+    dir: '/tmp/clawndom-e2e-agent',
+    config: {
+      routing: {
+        jira: { rules: [{ condition: { all_of: [] } }] },
+        github: { rules: [{ condition: { all_of: [] } }] },
+        linear: { rules: [{ condition: { all_of: [] } }] },
+      },
+      modelRules: {},
+    },
   },
 ];
 
@@ -205,12 +222,12 @@ describe('E2E: webhook → queue → runner.run (mock)', () => {
     registerRunner(new CapturingRunner());
 
     const { createApp } = await import('../../src/app');
-    app = createApp();
+    app = createApp(TEST_AGENTS);
 
     const { createWorker } = await import('../../src/services/worker.service');
     const { getSettings } = await import('../../src/config');
     const settings = getSettings();
-    workers = settings.providers.map((p) => createWorker({ provider: p }));
+    workers = settings.providers.map((p) => createWorker({ provider: p, agents: TEST_AGENTS }));
 
     // Let workers connect and settle
     await sleep(500);
