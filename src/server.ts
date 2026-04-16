@@ -4,12 +4,10 @@ import { getSettings } from './config';
 import { getLogger } from './lib/logging';
 import { loadAgents } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
-import { GatewayClient } from './services/gateway-client';
 import { createTaskWorker } from './services/task-worker.service';
 import { createWorker } from './services/worker.service';
 import { registerRunner } from './runners/registry';
 import { NullRunner } from './runners/null.runner';
-import { OpenClawRunner } from './runners/openclaw.runner';
 import { ClaudeCliRunner } from './runners/claude-cli.runner';
 import { OpenAiRunner } from './runners/openai.runner';
 import { BedrockRunner } from './runners/bedrock.runner';
@@ -78,6 +76,10 @@ async function startServer(): Promise<void> {
     if (!token) {
       throw new Error('OPENCLAW_TOKEN is required when any provider uses the openclaw runner');
     }
+    // Dynamic import so the openclaw SDK package isn't pulled in on hosts
+    // that only use claude-cli / openai / bedrock runners.
+    const { GatewayClient } = await import('./services/gateway-client');
+    const { OpenClawRunner } = await import('./runners/openclaw.runner');
     const gatewayClient = new GatewayClient(settings.openclawGatewayWsUrl, token);
     const openclawRunner = new OpenClawRunner(gatewayClient);
     registerRunner(openclawRunner);
