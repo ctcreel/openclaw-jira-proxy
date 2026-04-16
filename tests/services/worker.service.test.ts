@@ -2,13 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Job } from 'bullmq';
 
 import type { ProviderConfig } from '../../src/config';
-import {
-  registerRoutingStrategy,
-  resetRoutingStrategies,
-  fieldEqualsStrategy,
-  regexStrategy,
-  defaultStrategy,
-} from '../../src/strategies/routing';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -70,11 +63,7 @@ describe('processJob', () => {
     });
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
-    resetRoutingStrategies();
     resetRunners();
-    registerRoutingStrategy(fieldEqualsStrategy);
-    registerRoutingStrategy(regexStrategy);
-    registerRoutingStrategy(defaultStrategy);
     registerRunner(new SpyRunner());
   });
 
@@ -136,9 +125,9 @@ describe('processJob', () => {
       routing: {
         rules: [
           {
-            strategy: 'field-equals',
-            field: 'issue.fields.assignee.displayName',
-            value: 'Patches',
+            condition: {
+              equals: { field: 'issue.fields.assignee.displayName', value: 'Patches' },
+            },
             agentId: 'patch',
           },
         ],
@@ -161,9 +150,9 @@ describe('processJob', () => {
       routing: {
         rules: [
           {
-            strategy: 'field-equals',
-            field: 'issue.fields.assignee.displayName',
-            value: 'Patches',
+            condition: {
+              equals: { field: 'issue.fields.assignee.displayName', value: 'Patches' },
+            },
             agentId: 'patch',
           },
         ],
@@ -190,9 +179,9 @@ describe('processJob', () => {
       routing: {
         rules: [
           {
-            strategy: 'field-equals',
-            field: 'issue.fields.assignee.displayName',
-            value: 'Nobody',
+            condition: {
+              equals: { field: 'issue.fields.assignee.displayName', value: 'Nobody' },
+            },
             agentId: 'ghost',
           },
         ],
@@ -369,11 +358,7 @@ describe('processJob model routing', () => {
     });
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
-    resetRoutingStrategies();
     resetRunners();
-    registerRoutingStrategy(fieldEqualsStrategy);
-    registerRoutingStrategy(regexStrategy);
-    registerRoutingStrategy(defaultStrategy);
     registerRunner(new SpyRunner());
   });
 
@@ -440,11 +425,7 @@ describe('processJob message templates', () => {
     });
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
-    resetRoutingStrategies();
     resetRunners();
-    registerRoutingStrategy(fieldEqualsStrategy);
-    registerRoutingStrategy(regexStrategy);
-    registerRoutingStrategy(defaultStrategy);
     registerRunner(new SpyRunner());
   });
 
@@ -474,9 +455,7 @@ describe('processJob message templates', () => {
       routing: {
         rules: [
           {
-            strategy: 'field-equals',
-            field: 'type',
-            value: 'bug',
+            condition: { equals: { field: 'type', value: 'bug' } },
             agentId: 'patch',
             messageTemplate: 'rule template {{ type }}',
           },

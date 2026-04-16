@@ -1,16 +1,9 @@
 import { z } from 'zod';
 
-export interface RoutingStrategy {
-  readonly name: string;
-  evaluate(payload: unknown, rule: RoutingRule): string | null;
-}
+import { conditionSchema } from './condition';
 
 export const routingRuleSchema = z.object({
-  strategy: z.string().min(1),
-  field: z.string().optional(),
-  value: z.string().optional(),
-  pattern: z.string().optional(),
-  flags: z.string().optional(),
+  condition: conditionSchema,
   agentId: z.string().min(1),
   messageTemplate: z.string().optional(),
 });

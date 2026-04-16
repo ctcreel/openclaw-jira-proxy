@@ -5,12 +5,6 @@ import { getLogger } from './lib/logging';
 import { buildAlertRegistry } from './services/alerts';
 import { GatewayClient } from './services/gateway-client';
 import { createWorker } from './services/worker.service';
-import {
-  registerRoutingStrategy,
-  fieldEqualsStrategy,
-  regexStrategy,
-  defaultStrategy,
-} from './strategies/routing';
 import { registerRunner } from './runners/registry';
 import { NullRunner } from './runners/null.runner';
 import { OpenClawRunner } from './runners/openclaw.runner';
@@ -29,10 +23,6 @@ async function startServer(): Promise<void> {
   setupLogging();
   const logger = getLogger('server');
   const settings = getSettings();
-
-  registerRoutingStrategy(fieldEqualsStrategy);
-  registerRoutingStrategy(regexStrategy);
-  registerRoutingStrategy(defaultStrategy);
 
   // ── Secrets ──────────────────────────────────────────────────────────
   // Register secret providers (env is always available)
