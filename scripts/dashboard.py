@@ -1,22 +1,40 @@
 #!/usr/bin/env python3
 """
-Clawndom Dashboard — real-time view of webhook processing.
+Clawndom Dashboard — live view of webhook processing via SSE.
 
-Usage: python3 scripts/dashboard.py
-       python3 scripts/dashboard.py --once  (single snapshot, no refresh)
+Consumes the typed event stream from /api/events (SPE-1706) and renders a
+terminal dashboard. No Redis access, no log-file tail — everything comes
+off the wire.
+
+Usage:
+    CLAWNDOM_URL=https://clawndom.tail708f46.ts.net python3 scripts/dashboard.py
+    python3 scripts/dashboard.py --once          # single snapshot (prints then exits)
+    python3 scripts/dashboard.py --url http://localhost:8793
+
+Env vars:
+    CLAWNDOM_URL   Base URL of the Clawndom instance (default: http://127.0.0.1:8793)
+    CLAWNDOM_TOKEN Optional bearer token if /api/events ever grows auth
 """
 
+import argparse
 import json
 import os
-import subprocess
+import signal
 import sys
+import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
+from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
-LOG_FILE = "/usr/local/var/log/clawndom.log"
-HEALTH_URL = "http://127.0.0.1:8793/api/health"
-REFRESH_SECONDS = 5
+DEFAULT_URL = "http://127.0.0.1:8793"
+HEALTH_REFRESH_SECONDS = 10
+RECENT_MAX = 12
+ACTIVE_STALE_SECONDS = 30  # treat a runner as "live" only if it emitted within this window
 
+# ANSI
 CLEAR = "\033[2J\033[H"
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -28,350 +46,417 @@ MAGENTA = "\033[35m"
 RESET = "\033[0m"
 
 
-# ── Data sources ──
+# ── Shared state ──────────────────────────────────────────────────────
+class State:
+    """Mutable state updated by the SSE reader, read by the renderer."""
 
-def get_health():
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "--max-time", "2", HEALTH_URL],
-            capture_output=True, text=True,
-        )
-        return json.loads(result.stdout).get("status", "unknown")
-    except Exception:
-        return "unreachable"
-
-
-def redis_cmd(*args):
-    result = subprocess.run(
-        ["redis-cli"] + list(args),
-        capture_output=True, text=True,
-    )
-    return result.stdout.strip()
-
-
-def get_queue_names():
-    """Discover all BullMQ webhook queues from Redis."""
-    keys = redis_cmd("KEYS", "bull:webhooks-*:wait")
-    if not keys:
-        return []
-    return [k.rsplit(":wait", 1)[0] for k in keys.split("\n") if k.strip()]
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.health: str = "unknown"
+        self.health_checked_at: float = 0.0
+        # traceId → latest context from webhook.accepted
+        self.trace_context: dict[str, dict[str, str]] = {}
+        # jobId → traceId (populated by job.queued / job.started)
+        self.job_trace: dict[str, str] = {}
+        # jobId → queued job dict (cleared on job.started or job.failed/completed)
+        self.queued: dict[str, dict[str, Any]] = {}
+        # jobId → active job dict
+        self.active: dict[str, dict[str, Any]] = {}
+        # recent outcomes, newest first
+        self.recent: deque[dict[str, Any]] = deque(maxlen=RECENT_MAX)
+        # wall-clock of last SSE event received
+        self.last_event_at: float = 0.0
+        # Whether the SSE reader is connected
+        self.sse_connected: bool = False
+        self.sse_error: str = ""
 
 
-def unwrap_job_payload(data_raw):
-    """Unwrap BullMQ job data which may be multi-layered JSON strings."""
-    data = json.loads(data_raw)
-    while isinstance(data, str):
-        data = json.loads(data)
-    if isinstance(data, dict) and "payload" in data:
-        payload = data["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        return payload
-    return data
+STATE = State()
 
 
-def get_queue_items():
-    """Read pending jobs from all discovered Redis BullMQ queues."""
-    items = []
-    for queue_key in get_queue_names():
-        provider = queue_key.split("webhooks-", 1)[-1] if "webhooks-" in queue_key else "?"
-        job_ids = redis_cmd("LRANGE", f"{queue_key}:wait", "0", "-1").split("\n")
-        job_ids = [j.strip() for j in job_ids if j.strip()]
+# ── Event handlers ───────────────────────────────────────────────────
+def handle_event(event_type: str, payload: dict[str, Any]) -> None:
+    trace_id = payload.get("traceId", "")
+    job_id = payload.get("jobId", "")
 
-        for job_id in job_ids[:20]:
-            data_raw = redis_cmd("HGET", f"{queue_key}:{job_id}", "data")
-            if not data_raw:
-                items.append({"id": job_id, "provider": provider,
-                              "context": {"id": "?", "title": "?", "status": "?"}})
-                continue
-            try:
-                payload = unwrap_job_payload(data_raw)
-                items.append({"id": job_id, "provider": provider,
-                              "context": extract_context_from_payload(provider, payload)})
-            except Exception:
-                items.append({"id": job_id, "provider": provider,
-                              "context": {"id": "?", "title": "?", "status": "?"}})
-    return items
+    with STATE.lock:
+        STATE.last_event_at = time.time()
+
+        if event_type == "webhook.accepted":
+            STATE.trace_context[trace_id] = {
+                "id": payload.get("contextId", "?"),
+                "title": payload.get("contextTitle", "?"),
+                "status": payload.get("contextStatus", "?"),
+                "provider": payload.get("provider", "?"),
+            }
+
+        elif event_type == "webhook.rejected":
+            STATE.recent.appendleft(
+                {
+                    "kind": "rejected",
+                    "time": payload.get("timestamp", 0),
+                    "provider": payload.get("provider", "?"),
+                    "reason": payload.get("reason", "?"),
+                }
+            )
+
+        elif event_type == "job.queued":
+            STATE.job_trace[job_id] = trace_id
+            STATE.queued[job_id] = {
+                "provider": payload.get("provider", "?"),
+                "title": payload.get("contextTitle", "?"),
+                "context_id": payload.get("contextId", "?"),
+                "queued_at": payload.get("timestamp", 0),
+            }
+
+        elif event_type == "job.requeued":
+            STATE.job_trace[job_id] = trace_id
+            # Track in queued again so display shows the retry
+            STATE.queued[job_id] = {
+                "provider": payload.get("provider", "?"),
+                "title": STATE.queued.get(job_id, {}).get("title", "?"),
+                "context_id": STATE.queued.get(job_id, {}).get("context_id", "?"),
+                "queued_at": payload.get("timestamp", 0),
+                "attempt": payload.get("attempt", 1),
+            }
+
+        elif event_type == "job.started":
+            STATE.job_trace[job_id] = trace_id
+            STATE.queued.pop(job_id, None)
+            STATE.active[job_id] = {
+                "started_at": payload.get("timestamp", 0),
+                "agent_id": payload.get("agentId", "?"),
+                "template": payload.get("template"),
+                "runner": payload.get("runner", "?"),
+                "model": payload.get("model"),
+                "provider": payload.get("provider", "?"),
+                "phase": "starting",
+                "tool": "",
+                "latest": "",
+                "last_event_at": time.time(),
+                "turns": 0,
+                "cost": 0.0,
+            }
+
+        elif event_type == "runner.assistant_text":
+            if job_id in STATE.active:
+                STATE.active[job_id]["phase"] = "thinking"
+                STATE.active[job_id]["latest"] = payload.get("text", "")[:120]
+                STATE.active[job_id]["last_event_at"] = time.time()
+
+        elif event_type == "runner.tool_call":
+            if job_id in STATE.active:
+                tool = payload.get("tool", "?")
+                STATE.active[job_id]["tool"] = tool
+                STATE.active[job_id]["phase"] = f"tool: {tool}"
+                STATE.active[job_id]["last_event_at"] = time.time()
+
+        elif event_type == "runner.result":
+            if job_id in STATE.active:
+                STATE.active[job_id]["turns"] = payload.get("turns", 0)
+                STATE.active[job_id]["cost"] = payload.get("costUsd", 0.0)
+                STATE.active[job_id]["phase"] = "finishing"
+                STATE.active[job_id]["last_event_at"] = time.time()
+
+        elif event_type == "job.completed":
+            state = STATE.active.pop(job_id, None)
+            ctx = STATE.trace_context.get(trace_id, {})
+            STATE.recent.appendleft(
+                {
+                    "kind": "completed",
+                    "time": payload.get("timestamp", 0),
+                    "job_id": job_id,
+                    "context": ctx,
+                    "duration_ms": payload.get("durationMs", 0),
+                    "turns": state.get("turns", 0) if state else 0,
+                    "cost": state.get("cost", 0.0) if state else 0.0,
+                    "agent_id": state.get("agent_id", "?") if state else "?",
+                }
+            )
+
+        elif event_type == "job.failed":
+            ctx = STATE.trace_context.get(trace_id, {})
+            if payload.get("final"):
+                STATE.active.pop(job_id, None)
+                STATE.recent.appendleft(
+                    {
+                        "kind": "failed",
+                        "time": payload.get("timestamp", 0),
+                        "job_id": job_id,
+                        "context": ctx,
+                        "error": payload.get("error", "")[:60],
+                        "attempt": payload.get("attempt", 0),
+                    }
+                )
+            # Non-final failures will be followed by a job.requeued event
 
 
-def get_active_jobs():
-    """Read currently active jobs from all queues."""
-    active = []
-    for queue_key in get_queue_names():
-        provider = queue_key.split("webhooks-", 1)[-1] if "webhooks-" in queue_key else "?"
-        job_ids = redis_cmd("LRANGE", f"{queue_key}:active", "0", "0").split("\n")
-        job_ids = [j.strip() for j in job_ids if j.strip()]
-        if not job_ids:
-            continue
-        job_id = job_ids[0]
-        data_raw = redis_cmd("HGET", f"{queue_key}:{job_id}", "data")
-        if not data_raw:
-            active.append({"id": job_id, "provider": provider,
-                           "context": {"id": "?", "title": "?", "status": "?"}})
-            continue
+# ── SSE reader ───────────────────────────────────────────────────────
+def stream_events(url: str, stop_event: threading.Event) -> None:
+    """Run the SSE reader in its own thread, auto-reconnecting on drop."""
+    backoff = 1.0
+    while not stop_event.is_set():
         try:
-            payload = unwrap_job_payload(data_raw)
-            active.append({"id": job_id, "provider": provider,
-                           "context": extract_context_from_payload(provider, payload)})
-        except Exception:
-            active.append({"id": job_id, "provider": provider,
-                           "context": {"id": "?", "title": "?", "status": "?"}})
-    return active
+            request = urllib_request.Request(
+                f"{url}/api/events",
+                headers={"Accept": "text/event-stream", "Cache-Control": "no-cache"},
+            )
+            token = os.environ.get("CLAWNDOM_TOKEN")
+            if token:
+                request.add_header("Authorization", f"Bearer {token}")
+
+            with urllib_request.urlopen(request, timeout=None) as stream:
+                with STATE.lock:
+                    STATE.sse_connected = True
+                    STATE.sse_error = ""
+                backoff = 1.0
+                parse_sse_stream(stream, stop_event)
+
+        except (urllib_error.URLError, OSError) as exc:
+            with STATE.lock:
+                STATE.sse_connected = False
+                STATE.sse_error = f"{exc}"
+        except Exception as exc:  # defensive — don't kill the thread on parse errors
+            with STATE.lock:
+                STATE.sse_connected = False
+                STATE.sse_error = f"{exc}"
+
+        if stop_event.is_set():
+            return
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 15.0)
 
 
-def extract_context_from_payload(provider, payload):
-    """Extract display context from a webhook payload. Provider-agnostic fallback."""
-    if not isinstance(payload, dict):
-        return {"id": "?", "title": "?", "status": "?"}
+def parse_sse_stream(stream: Any, stop_event: threading.Event) -> None:
+    """Parse SSE framing: `event: foo\\ndata: {...}\\n\\n`."""
+    current_event = "message"
+    current_data: list[str] = []
 
-    # Jira
-    issue = payload.get("issue", {})
-    if issue:
-        fields = issue.get("fields", {})
-        return {
-            "id": issue.get("key", "?"),
-            "title": (fields.get("summary", "?") or "?")[:60],
-            "status": fields.get("status", {}).get("name", "?"),
-        }
+    for raw in stream:
+        if stop_event.is_set():
+            return
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
 
-    # GitHub
-    pr = payload.get("pull_request")
-    gh_issue = payload.get("issue")
-    repo = payload.get("repository", {}).get("full_name", "")
-    if pr:
-        return {
-            "id": f"{repo}#{pr.get('number', '?')}",
-            "title": (pr.get("title", "?") or "?")[:60],
-            "status": payload.get("action", "?"),
-        }
-    if gh_issue:
-        return {
-            "id": f"{repo}#{gh_issue.get('number', '?')}",
-            "title": (gh_issue.get("title", "?") or "?")[:60],
-            "status": payload.get("action", "?"),
-        }
-
-    # Generic fallback
-    return {"id": "?", "title": "?", "status": "?"}
-
-
-# ── Log parsing ──
-
-def parse_log_tail(n=500):
-    """Parse the last N lines of the clawndom log into structured records."""
-    try:
-        result = subprocess.run(["tail", f"-{n}", LOG_FILE], capture_output=True, text=True)
-        entries = []
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return entries
-    except Exception:
-        return []
-
-
-def get_completed_jobs(entries, n=8):
-    """Extract recently completed/failed jobs from log entries."""
-    contexts = {}
-    completions = {}
-
-    for d in entries:
-        job_id = d.get("jobId")
-        if not job_id:
+        if line == "":
+            if current_data:
+                payload_text = "\n".join(current_data)
+                try:
+                    payload = json.loads(payload_text)
+                except json.JSONDecodeError:
+                    payload = {}
+                handle_event(current_event, payload)
+            current_event = "message"
+            current_data = []
             continue
-        msg = d.get("msg", "")
-        if "Webhook context" in msg:
-            contexts[job_id] = {
-                "id": d.get("contextId", "?"),
-                "title": d.get("contextTitle", "?"),
-                "status": d.get("contextStatus", "?"),
-            }
-        elif "Routing matched" in msg:
-            if job_id in contexts:
-                contexts[job_id]["template"] = d.get("template", "")
-        elif "Agent run completed" in msg:
-            completions[job_id] = {"time": d.get("time", 0), "result": "completed"}
-        elif "permanently failed" in msg:
-            completions[job_id] = {
-                "time": d.get("time", 0), "result": "failed",
-                "error": d.get("error", "")[:40],
-            }
-        elif "no-match" in msg and "skipping" in msg or "No routing match" in msg:
-            completions[job_id] = {"time": d.get("time", 0), "result": "skipped"}
 
-    results = []
-    for job_id, comp in sorted(completions.items(), key=lambda x: x[1]["time"], reverse=True)[:n]:
-        ctx = contexts.get(job_id, {"id": "?", "title": "?", "status": "?"})
-        results.append({"job_id": job_id, "context": ctx, **comp})
-    return results
+        if line.startswith(":"):
+            # Comment frame (keepalive). Still counts as a heartbeat.
+            with STATE.lock:
+                STATE.last_event_at = time.time()
+            continue
+
+        if line.startswith("event:"):
+            current_event = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            current_data.append(line[len("data:") :].lstrip())
 
 
-def get_runner_activity(entries):
-    """Extract current runner activity from log stream events."""
-    info = {
-        "active": False,
-        "phase": "",
-        "latest": "",
-        "elapsed": "",
-        "tool": "",
-        "turns": 0,
-        "cost": 0,
-    }
-
-    spawn_time = None
-    last_event_time = None
-
-    for d in entries:
-        msg = d.get("msg", "")
-        event = d.get("event", "")
-        t = d.get("time", 0)
-
-        if "Spawning Claude CLI" in msg:
-            spawn_time = t
-            info["phase"] = "starting"
-            info["latest"] = ""
-            info["tool"] = ""
-
-        if event == "assistant_text":
-            last_event_time = t
-            info["latest"] = msg.strip()[:100]
-            info["phase"] = "thinking"
-
-        elif event == "tool_call":
-            last_event_time = t
-            info["tool"] = d.get("tool", "?")
-            info["phase"] = f"using {info['tool']}"
-
-        elif event == "result":
-            info["phase"] = "done"
-            info["turns"] = d.get("turns", 0)
-            info["cost"] = d.get("cost", 0)
-            last_event_time = t
-
-        if "Claude CLI completed" in msg:
-            info["active"] = False
-            info["phase"] = "done"
-        elif "Claude CLI failed" in msg:
-            info["active"] = False
-            info["phase"] = "failed"
-
-    if spawn_time and last_event_time:
-        age_seconds = (time.time() * 1000 - last_event_time) / 1000
-        info["active"] = age_seconds < 30
-
-        elapsed_ms = last_event_time - spawn_time
-        m, s = divmod(int(elapsed_ms / 1000), 60)
-        info["elapsed"] = f"{m}m {s}s"
-
-    return info if spawn_time else None
+# ── Health polling ───────────────────────────────────────────────────
+def refresh_health(url: str) -> None:
+    """Poll /api/health and stash the result. Cheap, bounded at HEALTH_REFRESH_SECONDS."""
+    try:
+        with urllib_request.urlopen(f"{url}/api/health", timeout=3) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        status = body.get("status", "unknown")
+    except Exception:
+        status = "unreachable"
+    with STATE.lock:
+        STATE.health = status
+        STATE.health_checked_at = time.time()
 
 
-def format_time(epoch_ms):
+# ── Render ───────────────────────────────────────────────────────────
+def format_time(epoch_ms: int) -> str:
     if not epoch_ms:
         return ""
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).astimezone().strftime("%H:%M")
+    return (
+        datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+        .astimezone()
+        .strftime("%H:%M:%S")
+    )
 
 
-# ── Render ──
+def health_color(status: str) -> str:
+    if status == "healthy":
+        return GREEN
+    if status == "degraded":
+        return YELLOW
+    return RED
 
-def render(once=False):
-    health = get_health()
-    active_jobs = get_active_jobs()
-    queue = get_queue_items()
-    entries = parse_log_tail(500)
-    completed = get_completed_jobs(entries, 8)
-    activity = get_runner_activity(entries)
-    now = datetime.now().strftime("%H:%M:%S")
 
-    hc = GREEN if health == "healthy" else (YELLOW if health == "degraded" else RED)
-    lines = []
-    lines.append(f"{BOLD}{'═' * 74}{RESET}")
-    lines.append(f"{BOLD}  CLAWNDOM{RESET}   {hc}{health}{RESET}   "
-                 f"Active: {CYAN}{len(active_jobs)}{RESET}   "
-                 f"Queue: {YELLOW}{len(queue)}{RESET}   "
-                 f"{DIM}{now}{RESET}")
-    lines.append(f"{BOLD}{'═' * 74}{RESET}")
+def render(url: str) -> str:
+    with STATE.lock:
+        health = STATE.health
+        active = list(STATE.active.items())
+        queued = list(STATE.queued.items())
+        recent = list(STATE.recent)
+        trace_context = STATE.trace_context.copy()
+        job_trace = STATE.job_trace.copy()
+        sse_connected = STATE.sse_connected
+        sse_error = STATE.sse_error
+
+    lines: list[str] = []
+    now_text = datetime.now().strftime("%H:%M:%S")
+    hc = health_color(health)
+    sse_state = f"{GREEN}SSE{RESET}" if sse_connected else f"{RED}SSE down{RESET}"
+
+    lines.append(f"{BOLD}{'═' * 80}{RESET}")
+    lines.append(
+        f"{BOLD}  CLAWNDOM{RESET}   {hc}{health}{RESET}   {sse_state}   "
+        f"Active: {CYAN}{len(active)}{RESET}   "
+        f"Queued: {YELLOW}{len(queued)}{RESET}   "
+        f"{DIM}{url}   {now_text}{RESET}"
+    )
+    lines.append(f"{BOLD}{'═' * 80}{RESET}")
+
+    if not sse_connected and sse_error:
+        lines.append(f"  {RED}SSE reader error: {sse_error[:70]}{RESET}")
 
     # ── ACTIVE ──
     lines.append("")
-    if active_jobs:
-        for job in active_jobs:
-            ctx = job["context"]
-            phase = f"{CYAN}processing{RESET}"
-            elapsed = ""
+    if active:
+        for job_id, job in active:
+            trace_id = job_trace.get(job_id, "")
+            ctx = trace_context.get(trace_id, {"id": "?", "title": "?", "status": "?"})
+            elapsed_seconds = (time.time() * 1000 - job["started_at"]) / 1000
+            elapsed_text = (
+                f"{int(elapsed_seconds // 60)}m {int(elapsed_seconds % 60)}s"
+                if elapsed_seconds > 60
+                else f"{int(elapsed_seconds)}s"
+            )
+            is_stale = (time.time() - job["last_event_at"]) > ACTIVE_STALE_SECONDS
+            phase = job["phase"]
+            phase_color = YELLOW if is_stale else CYAN
+            model = job.get("model")
+            model_suffix = f" {DIM}[{model}]{RESET}" if model else ""
+            stale_marker = f" {DIM}(no runner events for {ACTIVE_STALE_SECONDS}s){RESET}" if is_stale else ""
 
-            if activity and activity["phase"] and activity["phase"] != "done":
-                phase = f"{CYAN}{activity['phase']}{RESET}"
-                if activity["elapsed"]:
-                    elapsed = f" {DIM}({activity['elapsed']}){RESET}"
-
-            lines.append(f"  {GREEN}▶{RESET}  {BOLD}{ctx['id']}{RESET}  [{ctx['status']}]  {phase}{elapsed}")
-            lines.append(f"     {ctx['title']}")
-            if activity and activity["latest"] and activity["phase"] != "done":
-                lines.append(f"     {DIM}{activity['latest'][:70]}{RESET}")
+            lines.append(
+                f"  {GREEN}▶{RESET}  {BOLD}{ctx['id']:<14}{RESET}"
+                f"[{ctx.get('status', '?')}]  → {job['agent_id']}{model_suffix}  "
+                f"{phase_color}{phase}{RESET}  {DIM}({elapsed_text}){RESET}{stale_marker}"
+            )
+            title = ctx.get("title") or "?"
+            if title != "?":
+                lines.append(f"     {DIM}{title[:72]}{RESET}")
+            latest = job.get("latest", "")
+            if latest:
+                lines.append(f"     {DIM}{latest[:72]}{RESET}")
     else:
-        lines.append(f"  {DIM}No active job — idle{RESET}")
+        lines.append(f"  {DIM}No active jobs — idle{RESET}")
 
-    # ── QUEUE ──
-    if queue:
+    # ── QUEUED ──
+    if queued:
         lines.append("")
-        lines.append(f"  {BOLD}QUEUE{RESET} {DIM}({len(queue)} waiting){RESET}")
-        for i, item in enumerate(queue[:10]):
-            ctx = item["context"]
-            num = f"{i + 1}."
-            lines.append(f"  {DIM}{num:>4}{RESET}  {ctx['id']:<12} [{ctx['status'][:20]}]  {ctx['title'][:40]}")
+        lines.append(f"  {BOLD}QUEUED{RESET} {DIM}({len(queued)} waiting){RESET}")
+        for job_id, job in queued[:8]:
+            attempt_suffix = f" {DIM}retry {job['attempt']}{RESET}" if job.get("attempt") else ""
+            lines.append(
+                f"     {job['context_id']:<14} {DIM}{job['provider']}{RESET}  "
+                f"{(job.get('title') or '?')[:50]}{attempt_suffix}"
+            )
 
     # ── RECENT ──
-    if completed:
+    if recent:
         lines.append("")
         lines.append(f"  {BOLD}RECENT{RESET}")
-        for item in completed:
-            ctx = item["context"]
-            result = item.get("result", "?")
-            t = format_time(item.get("time"))
-
-            if result == "completed":
+        for item in recent:
+            kind = item["kind"]
+            t = format_time(item.get("time", 0))
+            if kind == "completed":
                 icon = f"{GREEN}✓{RESET}"
-            elif result == "failed":
+                ctx = item.get("context", {})
+                duration_seconds = item.get("duration_ms", 0) / 1000
+                detail = (
+                    f"{duration_seconds:.1f}s  {item.get('turns', 0)} turns  "
+                    f"${item.get('cost', 0.0):.3f}"
+                )
+                cid = ctx.get("id", "?")
+                title = (ctx.get("title") or "?")[:40]
+                lines.append(f"  {icon}  {t}  {cid:<14} {title:<42} {DIM}{detail}{RESET}")
+            elif kind == "failed":
                 icon = f"{RED}✗{RESET}"
-            elif result == "skipped":
+                ctx = item.get("context", {})
+                cid = ctx.get("id", "?")
+                title = (ctx.get("title") or "?")[:40]
+                error = item.get("error", "")
+                lines.append(
+                    f"  {icon}  {t}  {cid:<14} {title:<42} {RED}{error[:30]}{RESET}"
+                )
+            elif kind == "rejected":
                 icon = f"{DIM}–{RESET}"
-            else:
-                icon = " "
-
-            err = ""
-            if result == "failed" and item.get("error"):
-                err = f"  {RED}{item['error'][:30]}{RESET}"
-
-            cid = ctx.get("id", "")
-            title = ctx.get("title", "")
-            if cid == "?" and title == "?":
-                continue
-
-            lines.append(f"  {icon}  {t:>5}  {cid:<12} {title[:45]}{err}")
+                reason = item.get("reason", "?")
+                provider = item.get("provider", "?")
+                lines.append(
+                    f"  {icon}  {t}  {DIM}{provider:<14} {reason}{RESET}"
+                )
 
     lines.append("")
-    if not once:
-        lines.append(f"  {DIM}Refreshing every {REFRESH_SECONDS}s  |  Ctrl+C to exit{RESET}")
+    lines.append(f"  {DIM}Ctrl+C to exit.{RESET}")
 
-    print(CLEAR + "\n".join(lines))
+    return CLEAR + "\n".join(lines) + "\n"
 
 
-def main():
-    once = "--once" in sys.argv
+# ── Main loop ────────────────────────────────────────────────────────
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true", help="print one snapshot then exit")
+    parser.add_argument(
+        "--url",
+        default=os.environ.get("CLAWNDOM_URL", DEFAULT_URL),
+        help="base URL (default: $CLAWNDOM_URL or http://127.0.0.1:8793)",
+    )
+    parser.add_argument(
+        "--interval", type=float, default=1.0, help="render refresh interval in seconds"
+    )
+    args = parser.parse_args()
+
+    url = args.url.rstrip("/")
+
+    if args.once:
+        # One-shot: fetch health synchronously, render whatever state we have.
+        refresh_health(url)
+        sys.stdout.write(render(url))
+        sys.stdout.flush()
+        return 0
+
+    stop_event = threading.Event()
+
+    def handle_sigint(_signum: int, _frame: Any) -> None:
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, handle_sigint)
+    signal.signal(signal.SIGTERM, handle_sigint)
+
+    sse_thread = threading.Thread(target=stream_events, args=(url, stop_event), daemon=True)
+    sse_thread.start()
+
+    refresh_health(url)
+    last_health = time.time()
+
     try:
-        while True:
-            render(once)
-            if once:
-                break
-            time.sleep(REFRESH_SECONDS)
-    except KeyboardInterrupt:
+        while not stop_event.is_set():
+            if time.time() - last_health > HEALTH_REFRESH_SECONDS:
+                refresh_health(url)
+                last_health = time.time()
+            sys.stdout.write(render(url))
+            sys.stdout.flush()
+            stop_event.wait(args.interval)
+    finally:
         print(f"\n{DIM}Dashboard stopped.{RESET}")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
