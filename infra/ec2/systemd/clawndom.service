@@ -1,0 +1,27 @@
+[Unit]
+Description=Clawndom webhook proxy
+After=network-online.target redis-server.service tailscaled.service
+Wants=network-online.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=clawndom
+Group=clawndom
+WorkingDirectory=/opt/clawndom
+EnvironmentFile=/etc/clawndom/clawndom.env
+ExecStart=/usr/bin/node /opt/clawndom/dist/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/clawndom/clawndom.log
+StandardError=append:/var/log/clawndom/clawndom.log
+
+# Hardening — narrow the blast radius if the process is compromised
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/clawndom /var/log/clawndom
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

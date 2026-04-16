@@ -1,0 +1,13 @@
+[Unit]
+Description=Pull latest agent repos for Clawndom
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=clawndom
+Group=clawndom
+Environment=CLAWNDOM_CONFIG_DIR=/home/clawndom/.clawndom/agents
+ExecStart=/opt/clawndom/scripts/sync-agents.sh
+StandardOutput=append:/var/log/clawndom/sync-agents.log
+StandardError=append:/var/log/clawndom/sync-agents.log

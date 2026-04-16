@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Clawndom host — single t3.small EC2 in sc0red-dev, reachable via
+  Tailscale only. Runs clawndom + Redis + Claude CLI under systemd.
+  Deployed from the clawndom repo on every push to main via GitHub
+  Actions (see .github/workflows/deploy-ec2.yml).
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.small, t3.medium, t4g.small, t4g.medium]
+  UbuntuAmiParameter:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Ubuntu 24.04 LTS AMI resolved from the Canonical-published SSM param.
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair for EC2 access (bootstrap + emergency admin).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Target VPC (typically the sc0red-dev default VPC).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet inside the chosen VPC — Tailscale needs outbound internet.
+  AdminCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR allowed to SSH. Leave wide open only if you also rely on
+      Tailscale SSH; narrow to your office IP for safety-in-depth.
+
+Resources:
+  ClawndomSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Clawndom — Tailscale outbound + narrow SSH
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminCidr
+          Description: SSH (admin)
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Outbound (Tailscale, package install, Claude API, GitHub)
+      Tags:
+        - Key: Service
+          Value: clawndom
+        - Key: Environment
+          Value: dev
+
+  ClawndomInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Service
+          Value: clawndom
+
+  ClawndomInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ClawndomInstanceRole
+
+  ClawndomInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref UbuntuAmiParameter
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !GetAtt ClawndomSecurityGroup.GroupId
+      IamInstanceProfile: !Ref ClawndomInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: clawndom
+        - Key: Service
+          Value: clawndom
+        - Key: Environment
+          Value: dev
+
+  ClawndomEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref ClawndomInstance
+      Tags:
+        - Key: Service
+          Value: clawndom
+
+Outputs:
+  InstanceId:
+    Value: !Ref ClawndomInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+  InstancePublicIp:
+    Value: !Ref ClawndomEip
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIp'
+  SecurityGroupId:
+    Value: !GetAtt ClawndomSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
