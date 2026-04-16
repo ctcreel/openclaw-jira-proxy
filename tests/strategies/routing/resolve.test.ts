@@ -1,126 +1,97 @@
 import { describe, it, expect } from 'vitest';
 
-import { resolveAgent } from '../../../src/strategies/routing';
-import type { RoutingConfig } from '../../../src/strategies/routing';
+import { resolveAgentFromAgents } from '../../../src/strategies/routing';
+import type { ResolvedAgent } from '../../../src/services/agent-loader.service';
+import type { Condition } from '../../../src/strategies/routing';
 
-describe('resolveAgent', () => {
-  it('should return global default when routing is undefined', () => {
-    expect(resolveAgent({}, undefined, 'patch')).toEqual({ agentId: 'patch' });
+function agent(
+  name: string,
+  providerName: string,
+  rules: Array<{ condition: Condition; messageTemplate?: string; name?: string }>,
+  dir = `/agents/${name}`,
+): ResolvedAgent {
+  return {
+    name,
+    dir,
+    config: {
+      routing: { [providerName]: { rules } },
+      modelRules: {},
+    },
+  };
+}
+
+describe('resolveAgentFromAgents', () => {
+  it('returns null when no agents are configured', () => {
+    expect(resolveAgentFromAgents({}, 'jira', [])).toBeNull();
   });
 
-  it('should return routing default when rules are empty', () => {
-    const routing: RoutingConfig = { rules: [], default: 'main' };
-    expect(resolveAgent({}, routing, 'patch')).toEqual({ agentId: 'main' });
+  it('returns null when no agent has rules for the provider', () => {
+    const agents = [agent('patch', 'slack', [{ condition: { all_of: [] } }])];
+    expect(resolveAgentFromAgents({}, 'jira', agents)).toBeNull();
   });
 
-  it('should return first matching rule agentId', () => {
-    const routing: RoutingConfig = {
-      rules: [
+  it('returns null when no rule matches across any agent', () => {
+    const agents = [
+      agent('patch', 'jira', [{ condition: { equals: { field: 'assignee', value: 'Patches' } } }]),
+      agent('scarlett', 'jira', [
+        { condition: { equals: { field: 'assignee', value: 'Scarlett' } } },
+      ]),
+    ];
+    expect(resolveAgentFromAgents({ assignee: 'Nobody' }, 'jira', agents)).toBeNull();
+  });
+
+  it('routes to the first matching rule inside the first agent', () => {
+    const agents = [
+      agent('patch', 'jira', [
         {
           condition: { equals: { field: 'assignee', value: 'Patches' } },
-          agentId: 'patch',
+          messageTemplate: 'templates/jira.md',
         },
-        {
-          condition: { matches: { field: 'event', pattern: '.*' } },
-          agentId: 'main',
-        },
-      ],
-      default: 'fallback',
-    };
+      ]),
+    ];
 
-    const payload = { assignee: 'Patches', event: 'updated' };
-    expect(resolveAgent(payload, routing, 'global')).toEqual({
+    const resolved = resolveAgentFromAgents({ assignee: 'Patches' }, 'jira', agents);
+    expect(resolved).toEqual({
       agentId: 'patch',
+      agentDir: '/agents/patch',
+      messageTemplate: 'templates/jira.md',
+    });
+  });
+
+  it('walks agents in order — first agent with a matching rule wins', () => {
+    const agents = [
+      agent('patch', 'jira', [{ condition: { equals: { field: 'assignee', value: 'Patches' } } }]),
+      agent('scarlett', 'jira', [{ condition: { all_of: [] } }]),
+    ];
+
+    expect(resolveAgentFromAgents({ assignee: 'Someone Else' }, 'jira', agents)).toEqual({
+      agentId: 'scarlett',
+      agentDir: '/agents/scarlett',
       messageTemplate: undefined,
     });
   });
 
-  it('should skip non-matching rules and use second match', () => {
-    const routing: RoutingConfig = {
-      rules: [
+  it('evaluates rules within an agent in order — first rule wins', () => {
+    const agents = [
+      agent('patch', 'jira', [
         {
-          condition: { equals: { field: 'assignee', value: 'Nobody' } },
-          agentId: 'ghost',
-        },
-        {
-          condition: { matches: { field: 'event', pattern: '^updated$' } },
-          agentId: 'main',
-        },
-      ],
-    };
-
-    const payload = { assignee: 'Patches', event: 'updated' };
-    expect(resolveAgent(payload, routing, 'global')).toEqual({
-      agentId: 'main',
-      messageTemplate: undefined,
-    });
-  });
-
-  it('should fall through to routing default when no rules match', () => {
-    const routing: RoutingConfig = {
-      rules: [
-        {
-          condition: { equals: { field: 'assignee', value: 'Nobody' } },
-          agentId: 'ghost',
-        },
-      ],
-      default: 'fallback',
-    };
-
-    expect(resolveAgent({ assignee: 'Patches' }, routing, 'global')).toEqual({
-      agentId: 'fallback',
-    });
-  });
-
-  it('should fall through to global default when no rules match and no routing default', () => {
-    const routing: RoutingConfig = {
-      rules: [
-        {
-          condition: { equals: { field: 'assignee', value: 'Nobody' } },
-          agentId: 'ghost',
-        },
-      ],
-    };
-
-    expect(resolveAgent({ assignee: 'Patches' }, routing, 'global')).toEqual({ agentId: 'global' });
-  });
-
-  it('should return null when nothing matches and no defaults exist', () => {
-    const routing: RoutingConfig = {
-      rules: [
-        {
-          condition: { equals: { field: 'assignee', value: 'Nobody' } },
-          agentId: 'ghost',
-        },
-      ],
-    };
-
-    expect(resolveAgent({ assignee: 'Patches' }, routing, '')).toBeNull();
-  });
-
-  it('should support an empty all_of condition as a catch-all rule', () => {
-    const routing: RoutingConfig = {
-      rules: [
-        {
-          condition: { equals: { field: 'assignee', value: 'Nobody' } },
-          agentId: 'ghost',
+          condition: { equals: { field: 'issuetype', value: 'Bug' } },
+          messageTemplate: 'bug.md',
         },
         {
           condition: { all_of: [] },
-          agentId: 'catch-all',
+          messageTemplate: 'catch-all.md',
         },
-      ],
-    };
+      ]),
+    ];
 
-    expect(resolveAgent({ assignee: 'Patches' }, routing, 'global')).toEqual({
-      agentId: 'catch-all',
-      messageTemplate: undefined,
-    });
+    const resolved = resolveAgentFromAgents({ issuetype: 'Bug' }, 'jira', agents);
+    expect(resolved?.messageTemplate).toBe('bug.md');
   });
 
-  it('should route on composite all_of (AND) conditions', () => {
-    const routing: RoutingConfig = {
-      rules: [
+  it('supports composite conditions (all_of + in)', () => {
+    const agents = [
+      agent('patch', 'jira', [
         {
           condition: {
             all_of: [
@@ -128,50 +99,32 @@ describe('resolveAgent', () => {
               { in: { field: 'status', values: ['Plan', 'Planning'] } },
             ],
           },
-          agentId: 'patch',
         },
-      ],
-      default: 'main',
-    };
+      ]),
+    ];
 
-    expect(resolveAgent({ issuetype: 'Bug', status: 'Planning' }, routing, 'global')).toEqual({
+    expect(
+      resolveAgentFromAgents({ issuetype: 'Bug', status: 'Planning' }, 'jira', agents),
+    ).toEqual({
       agentId: 'patch',
+      agentDir: '/agents/patch',
       messageTemplate: undefined,
     });
 
-    expect(resolveAgent({ issuetype: 'Bug', status: 'Done' }, routing, 'global')).toEqual({
-      agentId: 'main',
-    });
+    expect(resolveAgentFromAgents({ issuetype: 'Bug', status: 'Done' }, 'jira', agents)).toBeNull();
   });
 
-  it('should include messageTemplate from matched rule', () => {
-    const routing: RoutingConfig = {
-      rules: [
-        {
-          condition: { equals: { field: 'assignee', value: 'Patches' } },
-          agentId: 'patch',
-          messageTemplate: 'Issue {{ issue.key }} assigned',
-        },
-      ],
-    };
+  it('surfaces the matched agent directory in the result', () => {
+    const agents = [
+      agent(
+        'patch',
+        'jira',
+        [{ condition: { all_of: [] } }],
+        '/opt/clawndom/agents/the-agency/workspaces/patch',
+      ),
+    ];
 
-    expect(resolveAgent({ assignee: 'Patches' }, routing, 'global')).toEqual({
-      agentId: 'patch',
-      messageTemplate: 'Issue {{ issue.key }} assigned',
-    });
-  });
-
-  it('should skip global fallback when routing.default is explicitly null', () => {
-    const routing: RoutingConfig = {
-      rules: [
-        {
-          condition: { equals: { field: 'assignee', value: 'Nobody' } },
-          agentId: 'ghost',
-        },
-      ],
-      default: null,
-    };
-
-    expect(resolveAgent({ assignee: 'Patches' }, routing, 'global')).toBeNull();
+    const resolved = resolveAgentFromAgents({}, 'jira', agents);
+    expect(resolved?.agentDir).toBe('/opt/clawndom/agents/the-agency/workspaces/patch');
   });
 });

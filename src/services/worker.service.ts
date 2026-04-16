@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
@@ -9,7 +12,8 @@ import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { extractWebhookContext } from '../strategies/context';
 import { getDedupRedis } from './dedup.service';
-import { resolveAgent, resolveFieldPath } from '../strategies/routing';
+import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
+import type { ResolvedAgent } from './agent-loader.service';
 import type { AlertRegistry } from './alerts';
 import type { JobAlert } from './alerts';
 import { getRunner } from '../runners/registry';
@@ -70,7 +74,11 @@ export function resolveModel(
   return undefined;
 }
 
-export async function processJob(job: Job<string>, provider: ProviderConfig): Promise<void> {
+export async function processJob(
+  job: Job<string>,
+  provider: ProviderConfig,
+  agents: readonly ResolvedAgent[],
+): Promise<void> {
   const settings = getSettings();
   const envelope = parseEnvelope(job.data);
 
@@ -104,7 +112,7 @@ export async function processJob(job: Job<string>, provider: ProviderConfig): Pr
     'Webhook context',
   );
 
-  const resolved = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
+  const resolved = resolveAgentFromAgents(parsedPayload, provider.name, agents);
   if (resolved === null) {
     logger.warn(
       { jobId: job.id, provider: provider.name },
@@ -112,19 +120,17 @@ export async function processJob(job: Job<string>, provider: ProviderConfig): Pr
     );
     return;
   }
-  const { agentId, messageTemplate: ruleTemplate } = resolved;
-
-  // Extract template filename for logging
-  const templateMatch = ruleTemplate?.match(/jira-[^.]+\.md/);
-  const templateName = templateMatch ? templateMatch[0] : (ruleTemplate ?? 'default');
+  const { agentId, agentDir, messageTemplate: templatePath } = resolved;
 
   logger.info(
-    { jobId: job.id, provider: provider.name, template: templateName, agentId },
+    { jobId: job.id, provider: provider.name, template: templatePath, agentId },
     'Routing matched',
   );
 
   const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
-  const selectedModel = resolveModel(parsedPayload, provider.modelRules);
+  const matchedAgent = agents.find((agent) => agent.name === agentId)!;
+  const modelRules = matchedAgent.config.modelRules[provider.name];
+  const selectedModel = resolveModel(parsedPayload, modelRules);
 
   if (selectedModel) {
     logger.info(
@@ -133,8 +139,13 @@ export async function processJob(job: Job<string>, provider: ProviderConfig): Pr
     );
   }
 
-  const template = ruleTemplate ?? provider.messageTemplate;
-  const prompt = template ? await renderTemplate(template, parsedPayload) : envelope.payload;
+  let prompt: string;
+  if (templatePath) {
+    const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
+    prompt = await renderTemplate(templateContent, parsedPayload, agentDir);
+  } else {
+    prompt = envelope.payload;
+  }
 
   const sessionKey = `agent:${agentId}:hook-${provider.name}-${traceId}`;
   const runnerName = provider.runner?.type ?? 'openclaw';
@@ -194,11 +205,12 @@ export async function processJob(job: Job<string>, provider: ProviderConfig): Pr
 
 export interface CreateWorkerOptions {
   provider: ProviderConfig;
+  agents: readonly ResolvedAgent[];
   alertRegistry?: AlertRegistry;
 }
 
 export function createWorker(options: CreateWorkerOptions): Worker<string> {
-  const { provider, alertRegistry } = options;
+  const { provider, agents, alertRegistry } = options;
 
   const settings = getSettings();
   const redisUrl = settings.redisUrl;
@@ -207,7 +219,7 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
 
   const worker = new Worker<string>(
     buildQueueName(provider.name),
-    (job) => processJob(job, provider),
+    (job) => processJob(job, provider, agents),
     {
       connection,
       concurrency: 1,
@@ -239,8 +251,8 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
         const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
         const alert: JobAlert = {
           jobId: traceId,
-          sessionKey: `agent:${settings.openclawAgentId}:main`,
-          agentId: settings.openclawAgentId ?? 'unknown',
+          sessionKey: `agent:unknown:main`,
+          agentId: 'unknown',
           error: error.message,
           attempts: envelope.attempt,
           maxAttempts,

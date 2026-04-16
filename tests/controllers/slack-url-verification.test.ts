@@ -43,7 +43,7 @@ describe('Slack URL verification', () => {
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = computeSlackSignature(secret, timestamp, payload);
 
-    const app = createApp();
+    const app = createApp([]);
     const response = await supertest(app)
       .post('/hooks/slack')
       .set('Content-Type', 'application/json')
@@ -62,7 +62,7 @@ describe('Slack URL verification', () => {
     });
     const timestamp = String(Math.floor(Date.now() / 1000));
 
-    const app = createApp();
+    const app = createApp([]);
     const response = await supertest(app)
       .post('/hooks/slack')
       .set('Content-Type', 'application/json')
@@ -86,7 +86,7 @@ describe('Slack URL verification', () => {
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = computeSlackSignature(secret, timestamp, payload);
 
-    const app = createApp();
+    const app = createApp([]);
     const response = await supertest(app)
       .post('/hooks/slack')
       .set('Content-Type', 'application/json')

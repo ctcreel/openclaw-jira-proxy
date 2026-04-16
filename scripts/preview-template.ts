@@ -10,6 +10,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { renderTemplate } from '../src/lib/template/template-engine';
 
 interface ParsedArgs {
@@ -61,7 +62,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const rendered = await renderTemplate(templateContent, parsedPayload);
+  const baseDir = dirname(resolve(args.template));
+  const rendered = await renderTemplate(templateContent, parsedPayload, baseDir);
   process.stdout.write(rendered);
 }
 

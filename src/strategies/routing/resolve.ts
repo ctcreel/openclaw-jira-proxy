@@ -1,58 +1,41 @@
 import { getLogger } from '../../lib/logging';
+import type { ResolvedAgent } from '../../services/agent-loader.service';
 import { evaluateCondition } from './condition';
-import type { RoutingConfig } from './types';
 
 const logger = getLogger('routing');
 
 export interface ResolvedRoute {
   agentId: string;
+  agentDir: string;
   messageTemplate?: string;
 }
 
 /**
- * Resolve which agent should receive this webhook payload.
- *
- * Evaluation order:
- * 1. Routing rules in array order (first match wins)
- * 2. routing.default fallback
- * 3. globalDefault (OPENCLAW_AGENT_ID)
- * 4. null (no match — caller should skip forwarding)
+ * Walk the configured agents in order; for each agent, evaluate its routing
+ * rules for this provider. First match wins. No match returns null — the
+ * caller logs `routing:no-match` and skips forwarding.
  */
-export function resolveAgent(
+export function resolveAgentFromAgents(
   payload: unknown,
-  routing: RoutingConfig | undefined,
-  globalDefault: string,
+  providerName: string,
+  agents: readonly ResolvedAgent[],
 ): ResolvedRoute | null {
-  if (!routing || routing.rules.length === 0) {
-    if (routing?.default) {
-      return { agentId: routing.default };
+  for (const agent of agents) {
+    const providerRouting = agent.config.routing[providerName];
+    if (providerRouting === undefined) {
+      continue;
     }
-    return globalDefault ? { agentId: globalDefault } : null;
-  }
-
-  for (const rule of routing.rules) {
-    if (evaluateCondition(payload, rule.condition)) {
-      logger.debug({ agentId: rule.agentId }, 'Routing rule matched');
-      return { agentId: rule.agentId, messageTemplate: rule.messageTemplate };
+    for (const rule of providerRouting.rules) {
+      if (evaluateCondition(payload, rule.condition)) {
+        logger.debug({ agentId: agent.name, rule: rule.name }, 'Routing rule matched');
+        return {
+          agentId: agent.name,
+          agentDir: agent.dir,
+          messageTemplate: rule.messageTemplate,
+        };
+      }
     }
   }
-
-  if (routing.default) {
-    logger.debug({ agentId: routing.default }, 'Using routing default');
-    return { agentId: routing.default };
-  }
-
-  // If routing.default is explicitly null, skip the global fallback
-  if (routing.default === null) {
-    logger.debug('routing:no-match — routing.default is null, skipping global fallback');
-    return null;
-  }
-
-  if (globalDefault) {
-    logger.debug({ agentId: globalDefault }, 'Using global default agent');
-    return { agentId: globalDefault };
-  }
-
-  logger.warn('routing:no-match — no routing rules matched and no default configured');
+  logger.warn({ providerName }, 'routing:no-match — no agent rule matched');
   return null;
 }

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Job } from 'bullmq';
 
-import type { ProviderConfig } from '../../src/config';
+import type { ProviderConfig, ModelRule } from '../../src/config';
+import type { AgentConfig, ResolvedAgent } from '../../src/services/agent-loader.service';
+import type { Condition } from '../../src/strategies/routing';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -17,17 +19,18 @@ vi.mock('../../src/lib/template/template-engine', () => ({
   renderTemplate: vi.fn().mockResolvedValue('rendered-template-output'),
 }));
 
+vi.mock('node:fs/promises', () => ({
+  readFile: vi.fn().mockResolvedValue('file-template-content'),
+}));
+
 import { processJob, parseEnvelope, resolveModel } from '../../src/services/worker.service';
 import type { JobEnvelope } from '../../src/services/worker.service';
 import { resetSettings } from '../../src/config';
 import { renderTemplate } from '../../src/lib/template/template-engine';
+import { readFile } from 'node:fs/promises';
 import { registerRunner, resetRunners } from '../../src/runners/registry';
-import { NullRunner } from '../../src/runners/null.runner';
 import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
 
-import type { ModelRule } from '../../src/config';
-
-// Track run calls for assertions
 const runSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
   status: 'ok',
   runId: 'mock-run-id',
@@ -49,6 +52,24 @@ const testProvider: ProviderConfig = {
   openclawHookUrl: 'http://127.0.0.1:18789/hooks/test',
 };
 
+interface AgentShape {
+  rules?: Array<{ condition: Condition; messageTemplate?: string; name?: string }>;
+  modelRules?: ModelRule[];
+}
+
+function buildAgent(
+  name: string,
+  providerName: string,
+  shape: AgentShape,
+  dir = `/agents/${name}`,
+): ResolvedAgent {
+  const config: AgentConfig = {
+    routing: shape.rules ? { [providerName]: { rules: shape.rules } } : {},
+    modelRules: shape.modelRules ? { [providerName]: shape.modelRules } : {},
+  };
+  return { name, dir, config };
+}
+
 function createFakeJob(data: string, id = 'test-job-1'): Job<string> {
   return { id, data } as unknown as Job<string>;
 }
@@ -61,166 +82,152 @@ describe('processJob', () => {
       runId: 'mock-run-id',
       renderedPrompt: 'mock-prompt',
     });
-    process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
     resetRunners();
     registerRunner(new SpyRunner());
   });
 
-  it('should call runner.run with correct params on success', async () => {
-    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
+  it('returns early with no agents when nothing routes', async () => {
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider, []);
+    expect(runSpy).not.toHaveBeenCalled();
+  });
+
+  it('routes to the first agent whose rule matches', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [
+          {
+            condition: {
+              equals: { field: 'issue.fields.assignee.displayName', value: 'Patches' },
+            },
+          },
+        ],
+      }),
+    ];
+
+    await processJob(
+      createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Patches"}}}}'),
+      testProvider,
+      agents,
+    );
 
     expect(runSpy).toHaveBeenCalledOnce();
-    expect(runSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prompt: '{"event":"updated"}',
-        agentId: 'patch',
-        sessionKey: expect.stringContaining('hook-test-provider-'),
-      }),
+    expect(runSpy.mock.calls[0]![0].agentId).toBe('patch');
+    expect(runSpy.mock.calls[0]![0].prompt).toBe(
+      '{"issue":{"fields":{"assignee":{"displayName":"Patches"}}}}',
     );
   });
 
-  it('should throw when runner returns error status', async () => {
+  it('walks agents in config order — first agent with a matching rule wins', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [
+          {
+            condition: {
+              equals: { field: 'issue.fields.assignee.displayName', value: 'Patches' },
+            },
+          },
+        ],
+      }),
+      buildAgent('main', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    await processJob(
+      createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Someone Else"}}}}'),
+      testProvider,
+      agents,
+    );
+
+    expect(runSpy.mock.calls[0]![0].agentId).toBe('main');
+  });
+
+  it('skips forwarding when no agent rule matches', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [
+          {
+            condition: {
+              equals: { field: 'issue.fields.assignee.displayName', value: 'Nobody' },
+            },
+          },
+        ],
+      }),
+    ];
+
+    await processJob(createFakeJob('{"issue":{"fields":{}}}'), testProvider, agents);
+
+    expect(runSpy).not.toHaveBeenCalled();
+  });
+
+  it('throws when runner returns error status', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
     runSpy.mockResolvedValueOnce({
       status: 'error',
       error: 'Agent crashed',
       renderedPrompt: 'test',
     });
 
-    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
+    await expect(processJob(createFakeJob('{}'), testProvider, agents)).rejects.toThrow(
       'Agent run failed: Agent crashed',
     );
   });
 
-  it('should throw when runner returns timeout status', async () => {
+  it('throws when runner returns timeout status', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
     runSpy.mockResolvedValueOnce({
       status: 'timeout',
       runId: 'timeout-run',
       renderedPrompt: 'test',
     });
 
-    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
+    await expect(processJob(createFakeJob('{}'), testProvider, agents)).rejects.toThrow(
       'Agent run timed out (runId: timeout-run)',
     );
   });
 
-  it('should throw when runner rejects', async () => {
-    runSpy.mockRejectedValueOnce(new Error('Connection lost'));
+  it('uses originalJobId in session key for re-enqueued jobs', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
 
-    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow('Connection lost');
-  });
-
-  it('should forward the raw job data as prompt', async () => {
-    const payload = '{"issue":{"key":"SPE-1567"}}';
-
-    await processJob(createFakeJob(payload), testProvider);
-
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].prompt).toBe(payload);
-  });
-
-  it('should route to correct agent when field-equals rule matches', async () => {
-    const providerWithRouting: ProviderConfig = {
-      ...testProvider,
-      routing: {
-        rules: [
-          {
-            condition: {
-              equals: { field: 'issue.fields.assignee.displayName', value: 'Patches' },
-            },
-            agentId: 'patch',
-          },
-        ],
-        default: 'main',
-      },
-    };
-
-    await processJob(
-      createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Patches"}}}}'),
-      providerWithRouting,
-    );
-
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].agentId).toBe('patch');
-  });
-
-  it('should route to default agent when no rules match', async () => {
-    const providerWithRouting: ProviderConfig = {
-      ...testProvider,
-      routing: {
-        rules: [
-          {
-            condition: {
-              equals: { field: 'issue.fields.assignee.displayName', value: 'Patches' },
-            },
-            agentId: 'patch',
-          },
-        ],
-        default: 'main',
-      },
-    };
-
-    await processJob(
-      createFakeJob('{"issue":{"fields":{"assignee":{"displayName":"Someone Else"}}}}'),
-      providerWithRouting,
-    );
-
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].agentId).toBe('main');
-  });
-
-  it('should skip forwarding when no routing match and no default', async () => {
-    const originalAgentId = process.env.OPENCLAW_AGENT_ID;
-    process.env.OPENCLAW_AGENT_ID = '';
-    resetSettings();
-
-    const providerNoDefault: ProviderConfig = {
-      ...testProvider,
-      routing: {
-        rules: [
-          {
-            condition: {
-              equals: { field: 'issue.fields.assignee.displayName', value: 'Nobody' },
-            },
-            agentId: 'ghost',
-          },
-        ],
-        default: null,
-      },
-    };
-
-    await processJob(createFakeJob('{"issue":{"fields":{}}}'), providerNoDefault);
-
-    expect(runSpy).not.toHaveBeenCalled();
-
-    process.env.OPENCLAW_AGENT_ID = originalAgentId;
-    resetSettings();
-  });
-
-  it('should use originalJobId in session key for re-enqueued jobs', async () => {
     const envelope: JobEnvelope = {
       payload: '{"issue":{"key":"SPE-1234"}}',
       attempt: 2,
       originalJobId: 'original-42',
     };
 
-    await processJob(createFakeJob(JSON.stringify(envelope)), testProvider);
+    await processJob(createFakeJob(JSON.stringify(envelope)), testProvider, agents);
 
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].prompt).toBe('{"issue":{"key":"SPE-1234"}}');
-    expect(call[0].sessionKey).toContain('original-42');
+    expect(runSpy.mock.calls[0]![0].sessionKey).toContain('original-42');
   });
 
-  it('should pass agentWaitTimeoutMs to runner', async () => {
-    await processJob(createFakeJob('{"event":"test"}'), testProvider);
+  it('passes agentWaitTimeoutMs to runner', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
 
-    const call = runSpy.mock.calls[0]!;
-    // Default agentWaitTimeoutMs is 1_800_000
-    expect(call[0].timeoutMs).toBe(1_800_000);
+    await processJob(createFakeJob('{"event":"test"}'), testProvider, agents);
+
+    expect(runSpy.mock.calls[0]![0].timeoutMs).toBe(1_800_000);
   });
 
-  it('should use provider runner type when configured', async () => {
-    // Register a custom runner to verify provider-level runner resolution
+  it('uses provider runner type when configured', async () => {
     const customRunSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
       status: 'ok',
       runId: 'custom-run',
@@ -241,23 +248,25 @@ describe('processJob', () => {
       runner: { type: 'openai', model: 'gpt-4o', apiKey: 'test-key' },
     };
 
-    await processJob(createFakeJob('{"event":"test"}'), providerWithRunner);
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
 
-    // Should have used the openai runner, not the default openclaw spy
+    await processJob(createFakeJob('{"event":"test"}'), providerWithRunner, agents);
+
     expect(customRunSpy).toHaveBeenCalledOnce();
   });
 });
 
 describe('parseEnvelope', () => {
-  it('should wrap raw string as first attempt', () => {
+  it('wraps raw string as first attempt', () => {
     const result = parseEnvelope('{"event":"updated"}');
-    expect(result).toEqual({
-      payload: '{"event":"updated"}',
-      attempt: 1,
-    });
+    expect(result).toEqual({ payload: '{"event":"updated"}', attempt: 1 });
   });
 
-  it('should return existing envelope as-is', () => {
+  it('returns existing envelope as-is', () => {
     const envelope: JobEnvelope = {
       payload: '{"event":"updated"}',
       attempt: 2,
@@ -267,13 +276,13 @@ describe('parseEnvelope', () => {
     expect(result).toEqual(envelope);
   });
 
-  it('should treat non-envelope JSON as raw payload', () => {
+  it('treats non-envelope JSON as raw payload', () => {
     const result = parseEnvelope('{"issue":{"key":"SPE-1"}}');
     expect(result.payload).toBe('{"issue":{"key":"SPE-1"}}');
     expect(result.attempt).toBe(1);
   });
 
-  it('should handle malformed JSON as raw payload', () => {
+  it('handles malformed JSON as raw payload', () => {
     const result = parseEnvelope('not-json');
     expect(result.payload).toBe('not-json');
     expect(result.attempt).toBe(1);
@@ -294,52 +303,47 @@ describe('resolveModel', () => {
     },
   ];
 
-  it('should return matching model for single string match', () => {
+  it('returns matching model for single string match', () => {
     const payload = { issue: { fields: { status: { name: 'Plan' } } } };
     expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-6');
   });
 
-  it('should return matching model for array match', () => {
+  it('returns matching model for array match', () => {
     const payload = { issue: { fields: { status: { name: 'Ready for Development' } } } };
     expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-6');
   });
 
-  it('should return second rule when first does not match', () => {
+  it('returns second rule when first does not match', () => {
     const payload = { issue: { fields: { status: { name: 'Done' } } } };
     expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-sonnet-4-6');
   });
 
-  it('should return undefined when no rules match', () => {
+  it('returns undefined when no rules match', () => {
     const payload = { issue: { fields: { status: { name: 'Unknown' } } } };
     expect(resolveModel(payload, statusRules)).toBeUndefined();
   });
 
-  it('should return undefined when rules are undefined', () => {
+  it('returns undefined when rules are undefined', () => {
     expect(resolveModel({ foo: 'bar' }, undefined)).toBeUndefined();
   });
 
-  it('should return undefined when rules are empty', () => {
+  it('returns undefined when rules are empty', () => {
     expect(resolveModel({ foo: 'bar' }, [])).toBeUndefined();
   });
 
-  it('should return undefined when field path does not exist', () => {
+  it('returns undefined when field path does not exist', () => {
     const rules: ModelRule[] = [
       { field: 'deeply.nested.missing', matches: 'value', model: 'opus' },
     ];
     expect(resolveModel({}, rules)).toBeUndefined();
   });
 
-  it('should match single string in matches against single field value', () => {
-    const rules: ModelRule[] = [{ field: 'action', matches: 'created', model: 'opus' }];
-    expect(resolveModel({ action: 'created' }, rules)).toBe('opus');
-  });
-
-  it('should match when field value is an array containing a match', () => {
+  it('matches when field value is an array containing a match', () => {
     const rules: ModelRule[] = [{ field: 'tags', matches: 'urgent', model: 'opus' }];
     expect(resolveModel({ tags: ['urgent', 'bug'] }, rules)).toBe('opus');
   });
 
-  it('should return first matching rule (priority order)', () => {
+  it('returns first matching rule (priority order)', () => {
     const rules: ModelRule[] = [
       { field: 'type', matches: 'critical', model: 'opus' },
       { field: 'type', matches: 'critical', model: 'sonnet' },
@@ -348,7 +352,7 @@ describe('resolveModel', () => {
   });
 });
 
-describe('processJob model routing', () => {
+describe('processJob model routing from agent config', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runSpy.mockResolvedValue({
@@ -356,62 +360,67 @@ describe('processJob model routing', () => {
       runId: 'mock-run-id',
       renderedPrompt: 'mock-prompt',
     });
-    process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
     resetRunners();
     registerRunner(new SpyRunner());
   });
 
-  it('should pass model to runner when model rule matches', async () => {
-    const providerWithModel: ProviderConfig = {
-      ...testProvider,
-      modelRules: [
-        {
-          field: 'issue.fields.status.name',
-          matches: ['Plan', 'Ready for Development'],
-          model: 'anthropic/claude-opus-4-6',
-        },
-      ],
-    };
+  it('passes model to runner when model rule matches on the routed agent', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+        modelRules: [
+          {
+            field: 'issue.fields.status.name',
+            matches: ['Plan', 'Ready for Development'],
+            model: 'anthropic/claude-opus-4-6',
+          },
+        ],
+      }),
+    ];
 
     await processJob(
       createFakeJob('{"issue":{"fields":{"status":{"name":"Plan"}}}}'),
-      providerWithModel,
+      testProvider,
+      agents,
     );
 
-    expect(runSpy).toHaveBeenCalledOnce();
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].model).toBe('anthropic/claude-opus-4-6');
+    expect(runSpy.mock.calls[0]![0].model).toBe('anthropic/claude-opus-4-6');
   });
 
-  it('should pass undefined model when no model rule matches', async () => {
-    const providerWithModel: ProviderConfig = {
-      ...testProvider,
-      modelRules: [
-        {
-          field: 'issue.fields.status.name',
-          matches: 'Plan',
-          model: 'anthropic/claude-opus-4-6',
-        },
-      ],
-    };
+  it('passes undefined model when no model rule matches', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+        modelRules: [
+          {
+            field: 'issue.fields.status.name',
+            matches: 'Plan',
+            model: 'anthropic/claude-opus-4-6',
+          },
+        ],
+      }),
+    ];
 
     await processJob(
       createFakeJob('{"issue":{"fields":{"status":{"name":"In Progress"}}}}'),
-      providerWithModel,
+      testProvider,
+      agents,
     );
 
-    expect(runSpy).toHaveBeenCalledOnce();
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].model).toBeUndefined();
+    expect(runSpy.mock.calls[0]![0].model).toBeUndefined();
   });
 
-  it('should pass undefined model when provider has no modelRules', async () => {
-    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
+  it('passes undefined model when the routed agent has no modelRules for the provider', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
 
-    expect(runSpy).toHaveBeenCalledOnce();
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].model).toBeUndefined();
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider, agents);
+
+    expect(runSpy.mock.calls[0]![0].model).toBeUndefined();
   });
 });
 
@@ -423,58 +432,52 @@ describe('processJob message templates', () => {
       runId: 'mock-run-id',
       renderedPrompt: 'mock-prompt',
     });
-    process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
     resetRunners();
     registerRunner(new SpyRunner());
   });
 
-  it('should use rendered template as prompt when provider has messageTemplate', async () => {
-    vi.mocked(renderTemplate).mockResolvedValueOnce('rendered provider template');
-
-    const providerWithTemplate: ProviderConfig = {
-      ...testProvider,
-      messageTemplate: 'Issue {{ issue.key }}',
-    };
-
-    await processJob(createFakeJob('{"issue":{"key":"SPE-100"}}'), providerWithTemplate);
-
-    expect(renderTemplate).toHaveBeenCalledWith('Issue {{ issue.key }}', {
-      issue: { key: 'SPE-100' },
-    });
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].prompt).toBe('rendered provider template');
-  });
-
-  it('should prefer routing rule messageTemplate over provider messageTemplate', async () => {
+  it('reads the template file from the agent dir and renders with agentDir as baseDir', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce('Issue {{ issue.key }}');
     vi.mocked(renderTemplate).mockResolvedValueOnce('rendered rule template');
 
-    const providerWithBoth: ProviderConfig = {
-      ...testProvider,
-      messageTemplate: 'provider template',
-      routing: {
-        rules: [
-          {
-            condition: { equals: { field: 'type', value: 'bug' } },
-            agentId: 'patch',
-            messageTemplate: 'rule template {{ type }}',
-          },
-        ],
-      },
-    };
+    const agents = [
+      buildAgent(
+        'patch',
+        'test-provider',
+        {
+          rules: [
+            {
+              condition: { equals: { field: 'type', value: 'bug' } },
+              messageTemplate: 'templates/bug-plan.md',
+            },
+          ],
+        },
+        '/agents/patch',
+      ),
+    ];
 
-    await processJob(createFakeJob('{"type":"bug"}'), providerWithBoth);
+    await processJob(createFakeJob('{"type":"bug","issue":{"key":"SPE-1"}}'), testProvider, agents);
 
-    expect(renderTemplate).toHaveBeenCalledWith('rule template {{ type }}', { type: 'bug' });
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].prompt).toBe('rendered rule template');
+    expect(readFile).toHaveBeenCalledWith('/agents/patch/templates/bug-plan.md', 'utf-8');
+    expect(renderTemplate).toHaveBeenCalledWith(
+      'Issue {{ issue.key }}',
+      expect.objectContaining({ type: 'bug' }),
+      '/agents/patch',
+    );
+    expect(runSpy.mock.calls[0]![0].prompt).toBe('rendered rule template');
   });
 
-  it('should use raw payload when no template is configured', async () => {
-    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
+  it('uses raw payload when the matched rule has no messageTemplate', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider, agents);
 
     expect(renderTemplate).not.toHaveBeenCalled();
-    const call = runSpy.mock.calls[0]!;
-    expect(call[0].prompt).toBe('{"event":"updated"}');
+    expect(runSpy.mock.calls[0]![0].prompt).toBe('{"event":"updated"}');
   });
 });

@@ -4,7 +4,7 @@ import supertest from 'supertest';
 import { createApp } from '../../src/app';
 
 describe('GET /api/health', () => {
-  const app = createApp();
+  const app = createApp([]);
 
   it('should return 200 with healthy status', async () => {
     const response = await supertest(app).get('/api/health');

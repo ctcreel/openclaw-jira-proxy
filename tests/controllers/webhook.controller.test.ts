@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import supertest from 'supertest';
 
 import { createApp } from '../../src/app';
+import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 
 vi.mock('../../src/services/queue.service', () => ({
   getProviderQueue: vi.fn(() => ({
@@ -15,8 +16,19 @@ function computeSignature(body: string, secret: string): string {
   return `sha256=${hex}`;
 }
 
+const CATCH_ALL_AGENTS: ResolvedAgent[] = [
+  {
+    name: 'patch',
+    dir: '/tmp/clawndom-test-agent',
+    config: {
+      routing: { 'test-provider': { rules: [{ condition: { all_of: [] } }] } },
+      modelRules: {},
+    },
+  },
+];
+
 describe('Webhook Controller', () => {
-  const app = createApp();
+  const app = createApp(CATCH_ALL_AGENTS);
   const secret = 'test-hmac-secret';
   const payload = JSON.stringify({ event: 'test_event' });
 
