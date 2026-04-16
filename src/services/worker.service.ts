@@ -16,6 +16,7 @@ import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing'
 import type { ResolvedAgent } from './agent-loader.service';
 import type { AlertRegistry } from './alerts';
 import type { JobAlert } from './alerts';
+import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
 import { buildQueueName } from './queue.service';
 
@@ -127,7 +128,9 @@ export async function processJob(
     'Routing matched',
   );
 
-  const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
+  const jobIdString = String(job.id ?? 'unknown');
+  const traceId = envelope.originalJobId ?? jobIdString;
+  const events = getEventBus();
   const matchedAgent = agents.find((agent) => agent.name === agentId)!;
   const modelRules = matchedAgent.config.modelRules[provider.name];
   const selectedModel = resolveModel(parsedPayload, modelRules);
@@ -175,12 +178,27 @@ export async function processJob(
     'Agent run prompt',
   );
 
+  const jobStartedAt = Date.now();
+  events.publish({
+    type: 'job.started',
+    timestamp: jobStartedAt,
+    traceId,
+    jobId: jobIdString,
+    provider: provider.name,
+    agentId,
+    template: templatePath,
+    runner: runnerName,
+    model: selectedModel,
+  });
+
   const result = await runner.run({
     prompt,
     sessionKey,
     agentId,
     model: selectedModel,
     timeoutMs: settings.agentWaitTimeoutMs,
+    traceId,
+    jobId: jobIdString,
   });
 
   if (result.status === 'error') {
@@ -196,6 +214,16 @@ export async function processJob(
     const dedupKey = `clawndom:dedup:${provider.name}:${webhookContext.id}:${webhookContext.status}`;
     await getDedupRedis().del(dedupKey);
   }
+
+  events.publish({
+    type: 'job.completed',
+    timestamp: Date.now(),
+    traceId,
+    jobId: jobIdString,
+    provider: provider.name,
+    durationMs: Date.now() - jobStartedAt,
+    runId: result.runId ?? 'unknown',
+  });
 
   logger.info(
     { jobId: job.id, provider: provider.name, sessionKey, runId: result.runId },
@@ -233,6 +261,19 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
 
     const envelope = parseEnvelope(job.data);
     const isFinalFailure = envelope.attempt >= maxAttempts;
+    const traceId = envelope.originalJobId ?? String(job.id ?? 'unknown');
+    const jobIdString = String(job.id ?? 'unknown');
+
+    getEventBus().publish({
+      type: 'job.failed',
+      timestamp: Date.now(),
+      traceId,
+      jobId: jobIdString,
+      provider: provider.name,
+      error: error.message,
+      attempt: envelope.attempt,
+      final: isFinalFailure,
+    });
 
     if (isFinalFailure) {
       // Summarily executed in front of the other jobs so they will learn.
@@ -248,7 +289,6 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
       );
 
       if (alertRegistry) {
-        const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
         const alert: JobAlert = {
           jobId: traceId,
           sessionKey: `agent:unknown:main`,
@@ -293,7 +333,7 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
       const queue = new Queue(buildQueueName(provider.name), { connection: retryConn });
       queue
         .add('webhook-event', JSON.stringify(retryEnvelope), { delay: delayMs })
-        .then(() => {
+        .then((requeued) => {
           logger.info(
             {
               jobId: job.id,
@@ -303,6 +343,15 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
             },
             'Job re-enqueued to back of queue',
           );
+          getEventBus().publish({
+            type: 'job.requeued',
+            timestamp: Date.now(),
+            traceId,
+            jobId: String(requeued.id ?? 'unknown'),
+            provider: provider.name,
+            attempt: retryEnvelope.attempt,
+            originalJobId: String(retryEnvelope.originalJobId ?? jobIdString),
+          });
         })
         .catch((err) => {
           logger.error(

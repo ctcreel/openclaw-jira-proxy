@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { getLogger } from '../lib/logging';
+import { getEventBus } from '../services/event-bus.service';
 import type { AgentRunner, RunOptions, RunResult, ClaudeCliRunnerConfig } from './types';
 
 const logger = getLogger('runner:claude-cli');
@@ -30,8 +31,15 @@ class TokenManager {
   }
 }
 
-function emitStreamEvent(runId: string, event: Record<string, unknown>): void {
+function emitStreamEvent(
+  runId: string,
+  traceId: string | undefined,
+  jobId: string | undefined,
+  event: Record<string, unknown>,
+): void {
   const type = event.type as string | undefined;
+  const bus = getEventBus();
+  const timestamp = Date.now();
 
   if (type === 'assistant' && event.message) {
     const message = event.message as Record<string, unknown>;
@@ -41,11 +49,32 @@ function emitStreamEvent(runId: string, event: Record<string, unknown>): void {
       if (block.type === 'text' && typeof block.text === 'string') {
         const preview = block.text.length > 200 ? block.text.slice(0, 200) + '...' : block.text;
         logger.info({ runId, event: 'assistant_text' }, preview);
+        if (traceId && jobId) {
+          bus.publish({
+            type: 'runner.assistant_text',
+            timestamp,
+            traceId,
+            jobId,
+            runId,
+            text: block.text,
+          });
+        }
       } else if (block.type === 'tool_use') {
         logger.info(
           { runId, event: 'tool_call', tool: block.name },
           `Tool: ${block.name as string}`,
         );
+        if (traceId && jobId) {
+          bus.publish({
+            type: 'runner.tool_call',
+            timestamp,
+            traceId,
+            jobId,
+            runId,
+            tool: String(block.name),
+            args: block.input,
+          });
+        }
       }
     }
   } else if (type === 'result') {
@@ -53,6 +82,17 @@ function emitStreamEvent(runId: string, event: Record<string, unknown>): void {
       { runId, event: 'result', turns: event.num_turns, cost: event.total_cost_usd },
       `Run finished — ${event.num_turns} turns, $${event.total_cost_usd}`,
     );
+    if (traceId && jobId) {
+      bus.publish({
+        type: 'runner.result',
+        timestamp,
+        traceId,
+        jobId,
+        runId,
+        turns: Number(event.num_turns ?? 0),
+        costUsd: Number(event.total_cost_usd ?? 0),
+      });
+    }
   }
 }
 
@@ -147,7 +187,7 @@ export class ClaudeCliRunner implements AgentRunner {
           if (!line.trim()) continue;
           try {
             const event = JSON.parse(line) as Record<string, unknown>;
-            emitStreamEvent(runId, event);
+            emitStreamEvent(runId, options.traceId, options.jobId, event);
           } catch {
             // Not valid JSON — skip
           }

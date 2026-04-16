@@ -7,7 +7,7 @@ import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 
 vi.mock('../../src/services/queue.service', () => ({
   getProviderQueue: vi.fn(() => ({
-    add: vi.fn().mockResolvedValue(undefined),
+    add: vi.fn().mockResolvedValue({ id: 'test-job' }),
   })),
 }));
 
