@@ -1,7 +1,13 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import { getLogger } from '../lib/logging';
 import { getEventBus } from '../services/event-bus.service';
 import type { AgentRunner, RunOptions, RunResult, ClaudeCliRunnerConfig } from './types';
+
+const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 
 const logger = getLogger('runner:claude-cli');
 
@@ -119,7 +125,9 @@ export class ClaudeCliRunner implements AgentRunner {
   }
 
   isHealthy(): boolean {
-    return this.tokenManager.getToken() !== undefined;
+    // Env-var injected token (Mac plist path) OR file-based credentials
+    // written by `claude login` (Linux / EC2 path). Either is authoritative.
+    return this.tokenManager.getToken() !== undefined || existsSync(CREDENTIALS_PATH);
   }
 
   async run(options: RunOptions): Promise<RunResult> {
