@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic git pull of Clawndom agent repos
+Requires=clawndom-sync-agents.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
