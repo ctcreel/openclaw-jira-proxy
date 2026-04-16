@@ -181,14 +181,24 @@ When the global limit is reached, workers from all provider queues MUST wait unt
 
 ### Requirement: Agent Routing
 
-The proxy MUST support configurable, per-provider routing rules that determine which OpenClaw agent receives each webhook event. Routing MUST use a Strategy pattern — each rule specifies a strategy name, a field path into the parsed payload, a match criterion, and a target `agentId`.
+The proxy MUST support configurable, per-provider routing rules that determine which OpenClaw agent receives each webhook event. Each rule carries a `condition` — a recursive predicate tree — and a target `agentId`. A single evaluator function walks the tree; there is no strategy registry and no runtime string-keyed dispatch.
 
-**Built-in strategies:**
-- **`field-equals`** — Exact string match on a resolved field value. MUST support dot-notation field paths (e.g., `issue.fields.assignee.displayName`). If the resolved value is an array, the rule matches if ANY element equals the target value.
-- **`regex`** — Regular expression match on a resolved field value. MUST support an optional `flags` field (e.g., `"i"` for case-insensitive). If the resolved value is an array, the rule matches if ANY element matches the pattern.
-- **`default`** — Always matches. Used as the fallback. Takes no field or match criterion — only an `agentId`.
+**Leaf matchers** — atomic predicates over a field value resolved via dot-notation path:
+- **`equals`** — Exact string match. `{ equals: { field, value } }`. If the resolved value is an array, the leaf matches if ANY element equals the target.
+- **`in`** — Membership in a list. `{ in: { field, values } }`. If the resolved value is an array, the leaf matches if ANY element appears in `values`.
+- **`matches`** — Regular expression match, with optional `flags`. `{ matches: { field, pattern, flags? } }`. If the resolved value is an array, the leaf matches if ANY element matches.
+- **`exists`** — The field is present and not `undefined` and not `null`. `{ exists: { field } }`.
 
-**Evaluation order:** Rules MUST be evaluated in array order. The first rule whose strategy returns a non-null `agentId` wins. If no rule matches and no `default` entry exists, the provider-level `defaultAgentId` is used. If that is also absent, the global `OPENCLAW_AGENT_ID` env var is used.
+For all leaf matchers, if the resolved value is `undefined` or `null`, the leaf returns `false`.
+
+**Composite operators** — structural Boolean combinators; arbitrarily nestable:
+- **`all_of`** — AND. `{ all_of: [child, ...] }`. Empty list evaluates to `true` (vacuous truth).
+- **`any_of`** — OR. `{ any_of: [child, ...] }`. Empty list evaluates to `false`.
+- **`not`** — Negation. `{ not: child }` — exactly one child.
+
+**Parse-time validation:** The condition schema is a recursive Zod union. Invalid regex patterns and invalid regex flags MUST fail at config load, not at evaluation time.
+
+**Evaluation order:** Rules MUST be evaluated in array order. The first rule whose condition evaluates to `true` wins. If no rule matches and no `default` entry exists, the provider-level `defaultAgentId` is used. If that is also absent, the global `OPENCLAW_AGENT_ID` env var is used.
 
 **Configuration:** Routing rules are defined per-provider in `PROVIDERS_CONFIG`:
 
@@ -200,40 +210,46 @@ The proxy MUST support configurable, per-provider routing rules that determine w
   "signatureStrategy": "websub",
   "routing": {
     "rules": [
-      { "strategy": "field-equals", "field": "issue.fields.assignee.displayName", "value": "Patches", "agentId": "patch" },
-      { "strategy": "regex", "field": "webhookEvent", "pattern": "^comment_", "flags": "i", "agentId": "main" }
+      {
+        "condition": {
+          "all_of": [
+            { "equals": { "field": "issue.fields.issuetype.name", "value": "Bug" } },
+            { "in": { "field": "issue.fields.status.name", "values": ["Plan", "Planning"] } }
+          ]
+        },
+        "agentId": "patch"
+      },
+      {
+        "condition": { "matches": { "field": "webhookEvent", "pattern": "^comment_", "flags": "i" } },
+        "agentId": "main"
+      }
     ],
     "default": "patch"
   }
 }
 ```
 
-If `routing` is omitted from a provider config, the provider MUST use the global `OPENCLAW_AGENT_ID` for all events (backward compatible).
+If `routing` is omitted from a provider config, the provider MUST use the global `OPENCLAW_AGENT_ID` for all events.
 
-**Strategy interface:**
-```typescript
-interface RoutingStrategy {
-  readonly name: string;
-  evaluate(payload: unknown, rule: RoutingRule): string | null;
-}
-```
-
-Strategies MUST be registered in a routing strategy registry (mirroring the signature strategy registry pattern). Adding a new strategy MUST require only: (1) implementing the interface, (2) registering it by name.
-
-#### Scenario: Field-Equals Match
+#### Scenario: Equals Match
 - **GIVEN** A Jira webhook where `issue.fields.assignee.displayName` is `"Patches"`
-- **WHEN** A `field-equals` rule matches on that field with value `"Patches"` and agentId `"patch"`
+- **WHEN** A rule has `condition: { equals: { field: "issue.fields.assignee.displayName", value: "Patches" } }` and `agentId: "patch"`
 - **THEN** The event MUST be routed to agent `"patch"`
 
 #### Scenario: Regex Match on Event Type
 - **GIVEN** A Jira webhook where `webhookEvent` is `"jira:issue_updated"`
-- **WHEN** A `regex` rule matches on `webhookEvent` with pattern `"^jira:issue_updated$"` and agentId `"patch"`
+- **WHEN** A rule has `condition: { matches: { field: "webhookEvent", pattern: "^jira:issue_updated$" } }` and `agentId: "patch"`
 - **THEN** The event MUST be routed to agent `"patch"`
 
 #### Scenario: Array Field Match
 - **GIVEN** A Jira webhook where `issue.fields.labels` is `["infra", "urgent"]`
-- **WHEN** A `regex` rule matches on `issue.fields.labels` with pattern `"infra"` and agentId `"sasha"`
+- **WHEN** A rule has `condition: { matches: { field: "issue.fields.labels", pattern: "infra" } }` and `agentId: "sasha"`
 - **THEN** The event MUST be routed to agent `"sasha"` (matched on array element `"infra"`)
+
+#### Scenario: Composite AND Match
+- **GIVEN** A Jira webhook where `issue.fields.issuetype.name` is `"Bug"` and `issue.fields.status.name` is `"Planning"`
+- **WHEN** A rule's `all_of` composite requires both an `equals` on issuetype and an `in` match on status against `["Plan", "Planning"]`
+- **THEN** The event MUST be routed to the rule's `agentId`
 
 #### Scenario: First Match Wins
 - **GIVEN** Two rules: rule 1 matches assignee → agent `"patch"`, rule 2 matches event type → agent `"main"`
@@ -245,7 +261,7 @@ Strategies MUST be registered in a routing strategy registry (mirroring the sign
 - **WHEN** The event is processed
 - **THEN** The event MUST be routed to agent `"patch"` via the default fallback
 
-#### Scenario: No Routing Config — Backward Compatible
+#### Scenario: No Routing Config — Global Default
 - **GIVEN** A provider config with no `routing` key
 - **WHEN** The event is processed
 - **THEN** The event MUST be routed using the global `OPENCLAW_AGENT_ID`
@@ -254,6 +270,11 @@ Strategies MUST be registered in a routing strategy registry (mirroring the sign
 - **GIVEN** Routing rules that don't match and no `routing.default` and no global `OPENCLAW_AGENT_ID`
 - **WHEN** The event is processed
 - **THEN** The job MUST complete without forwarding and log a `routing:no-match` warning
+
+#### Scenario: Invalid Regex — Parse-Time Failure
+- **GIVEN** A routing rule with `condition: { matches: { field: "x", pattern: "[" } }`
+- **WHEN** The config is loaded
+- **THEN** Schema validation MUST fail; the server MUST not start with a malformed pattern
 
 ### Requirement: Event Forwarding
 

@@ -1,5 +1,5 @@
 import { getLogger } from '../../lib/logging';
-import { getRoutingStrategy } from './registry';
+import { evaluateCondition } from './condition';
 import type { RoutingConfig } from './types';
 
 const logger = getLogger('routing');
@@ -31,11 +31,9 @@ export function resolveAgent(
   }
 
   for (const rule of routing.rules) {
-    const strategy = getRoutingStrategy(rule.strategy);
-    const agentId = strategy.evaluate(payload, rule);
-    if (agentId !== null) {
-      logger.debug({ strategy: rule.strategy, field: rule.field, agentId }, 'Routing rule matched');
-      return { agentId, messageTemplate: rule.messageTemplate };
+    if (evaluateCondition(payload, rule.condition)) {
+      logger.debug({ agentId: rule.agentId }, 'Routing rule matched');
+      return { agentId: rule.agentId, messageTemplate: rule.messageTemplate };
     }
   }
 

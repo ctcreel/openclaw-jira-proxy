@@ -1,23 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-import {
-  registerRoutingStrategy,
-  resetRoutingStrategies,
-  fieldEqualsStrategy,
-  regexStrategy,
-  defaultStrategy,
-  resolveAgent,
-} from '../../../src/strategies/routing';
+import { resolveAgent } from '../../../src/strategies/routing';
 import type { RoutingConfig } from '../../../src/strategies/routing';
 
 describe('resolveAgent', () => {
-  beforeEach(() => {
-    resetRoutingStrategies();
-    registerRoutingStrategy(fieldEqualsStrategy);
-    registerRoutingStrategy(regexStrategy);
-    registerRoutingStrategy(defaultStrategy);
-  });
-
   it('should return global default when routing is undefined', () => {
     expect(resolveAgent({}, undefined, 'patch')).toEqual({ agentId: 'patch' });
   });
@@ -31,15 +17,11 @@ describe('resolveAgent', () => {
     const routing: RoutingConfig = {
       rules: [
         {
-          strategy: 'field-equals',
-          field: 'assignee',
-          value: 'Patches',
+          condition: { equals: { field: 'assignee', value: 'Patches' } },
           agentId: 'patch',
         },
         {
-          strategy: 'regex',
-          field: 'event',
-          pattern: '.*',
+          condition: { matches: { field: 'event', pattern: '.*' } },
           agentId: 'main',
         },
       ],
@@ -57,15 +39,11 @@ describe('resolveAgent', () => {
     const routing: RoutingConfig = {
       rules: [
         {
-          strategy: 'field-equals',
-          field: 'assignee',
-          value: 'Nobody',
+          condition: { equals: { field: 'assignee', value: 'Nobody' } },
           agentId: 'ghost',
         },
         {
-          strategy: 'regex',
-          field: 'event',
-          pattern: '^updated$',
+          condition: { matches: { field: 'event', pattern: '^updated$' } },
           agentId: 'main',
         },
       ],
@@ -82,9 +60,7 @@ describe('resolveAgent', () => {
     const routing: RoutingConfig = {
       rules: [
         {
-          strategy: 'field-equals',
-          field: 'assignee',
-          value: 'Nobody',
+          condition: { equals: { field: 'assignee', value: 'Nobody' } },
           agentId: 'ghost',
         },
       ],
@@ -100,9 +76,7 @@ describe('resolveAgent', () => {
     const routing: RoutingConfig = {
       rules: [
         {
-          strategy: 'field-equals',
-          field: 'assignee',
-          value: 'Nobody',
+          condition: { equals: { field: 'assignee', value: 'Nobody' } },
           agentId: 'ghost',
         },
       ],
@@ -115,9 +89,7 @@ describe('resolveAgent', () => {
     const routing: RoutingConfig = {
       rules: [
         {
-          strategy: 'field-equals',
-          field: 'assignee',
-          value: 'Nobody',
+          condition: { equals: { field: 'assignee', value: 'Nobody' } },
           agentId: 'ghost',
         },
       ],
@@ -126,17 +98,15 @@ describe('resolveAgent', () => {
     expect(resolveAgent({ assignee: 'Patches' }, routing, '')).toBeNull();
   });
 
-  it('should support the default strategy as a catch-all rule', () => {
+  it('should support an empty all_of condition as a catch-all rule', () => {
     const routing: RoutingConfig = {
       rules: [
         {
-          strategy: 'field-equals',
-          field: 'assignee',
-          value: 'Nobody',
+          condition: { equals: { field: 'assignee', value: 'Nobody' } },
           agentId: 'ghost',
         },
         {
-          strategy: 'default',
+          condition: { all_of: [] },
           agentId: 'catch-all',
         },
       ],
@@ -148,13 +118,37 @@ describe('resolveAgent', () => {
     });
   });
 
+  it('should route on composite all_of (AND) conditions', () => {
+    const routing: RoutingConfig = {
+      rules: [
+        {
+          condition: {
+            all_of: [
+              { equals: { field: 'issuetype', value: 'Bug' } },
+              { in: { field: 'status', values: ['Plan', 'Planning'] } },
+            ],
+          },
+          agentId: 'patch',
+        },
+      ],
+      default: 'main',
+    };
+
+    expect(resolveAgent({ issuetype: 'Bug', status: 'Planning' }, routing, 'global')).toEqual({
+      agentId: 'patch',
+      messageTemplate: undefined,
+    });
+
+    expect(resolveAgent({ issuetype: 'Bug', status: 'Done' }, routing, 'global')).toEqual({
+      agentId: 'main',
+    });
+  });
+
   it('should include messageTemplate from matched rule', () => {
     const routing: RoutingConfig = {
       rules: [
         {
-          strategy: 'field-equals',
-          field: 'assignee',
-          value: 'Patches',
+          condition: { equals: { field: 'assignee', value: 'Patches' } },
           agentId: 'patch',
           messageTemplate: 'Issue {{ issue.key }} assigned',
         },
@@ -165,5 +159,19 @@ describe('resolveAgent', () => {
       agentId: 'patch',
       messageTemplate: 'Issue {{ issue.key }} assigned',
     });
+  });
+
+  it('should skip global fallback when routing.default is explicitly null', () => {
+    const routing: RoutingConfig = {
+      rules: [
+        {
+          condition: { equals: { field: 'assignee', value: 'Nobody' } },
+          agentId: 'ghost',
+        },
+      ],
+      default: null,
+    };
+
+    expect(resolveAgent({ assignee: 'Patches' }, routing, 'global')).toBeNull();
   });
 });
