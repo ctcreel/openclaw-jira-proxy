@@ -11,7 +11,6 @@ import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { extractWebhookContext } from '../strategies/context';
-import { getDedupRedis } from './dedup.service';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { ResolvedAgent } from './agent-loader.service';
 import type { AlertRegistry } from './alerts';
@@ -209,11 +208,13 @@ export async function processJob(
     throw new Error(`Agent run timed out (runId: ${result.runId})`);
   }
 
-  // Clear dedup key so the same ticket+status can be re-triggered if needed
-  if (webhookContext.id !== '?') {
-    const dedupKey = `clawndom:dedup:${provider.name}:${webhookContext.id}:${webhookContext.status}`;
-    await getDedupRedis().del(dedupKey);
-  }
+  // Dedup key intentionally NOT cleared here — let it expire naturally per
+  // dedupTtlSeconds. Clearing it on completion lets Jira's webhook fan-out
+  // (e.g. comment-added events that fire with the issue's prior status
+  // snapshot ~1-2s after a transition) re-trigger Patch on the same
+  // ticket+status, which costs a wasted Claude run. To re-trigger
+  // intentionally, transition the ticket out of and back into the status
+  // — the new event is past the dedup window.
 
   events.publish({
     type: 'job.completed',

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 
 import type { ProviderConfig } from '../config';
+import { getSettings } from '../config';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import { getDedupRedis } from '../services/dedup.service';
 import { getEventBus } from '../services/event-bus.service';
@@ -13,13 +14,6 @@ import { getSignatureStrategy } from '../strategies/signature';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('webhook-controller');
-
-/**
- * Dedup window in seconds. Jira fires multiple webhooks per transition
- * (status, assignee, rank) within ~2 seconds. A short TTL catches the burst
- * without blocking legitimate retries or replays.
- */
-const DEDUP_TTL_SECONDS = 10;
 
 function hashHeaders(headers: Request['headers']): string {
   const material = Object.entries(headers)
@@ -138,7 +132,13 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
     // Only the first one for a given ticket+status should be enqueued.
     if (context.id !== '?') {
       const dedupKey = `clawndom:dedup:${provider.name}:${context.id}:${context.status}`;
-      const isNew = await getDedupRedis().set(dedupKey, '1', 'EX', DEDUP_TTL_SECONDS, 'NX');
+      const isNew = await getDedupRedis().set(
+        dedupKey,
+        '1',
+        'EX',
+        getSettings().dedupTtlSeconds,
+        'NX',
+      );
 
       if (isNew === null) {
         logger.info(
