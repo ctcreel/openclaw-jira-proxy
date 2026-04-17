@@ -60,6 +60,8 @@ const settingsSchema = z.object({
   agentWaitTimeoutMs: z.coerce.number().min(0).default(1_800_000),
   jobMaxAttempts: z.coerce.number().min(1).default(5),
   jobBackoffDelayMs: z.coerce.number().min(0).default(5_000),
+  /** Webhook dedup window: same provider+contextId+contextStatus inside this window is dropped. */
+  dedupTtlSeconds: z.coerce.number().min(1).default(60),
   sessionsFilePath: z.string().default(''),
   providers: z
     .array(providerSchema)
@@ -122,6 +124,7 @@ export function getSettings(): Settings {
     agentWaitTimeoutMs: process.env.AGENT_WAIT_TIMEOUT_MS,
     jobMaxAttempts: process.env.JOB_MAX_ATTEMPTS,
     jobBackoffDelayMs: process.env.JOB_BACKOFF_DELAY_MS,
+    dedupTtlSeconds: process.env.DEDUP_TTL_SECONDS,
     sessionsFilePath:
       process.env.SESSIONS_FILE_PATH ||
       `${process.env.HOME}/.openclaw/agents/${process.env.OPENCLAW_AGENT_ID || 'patch'}/sessions/sessions.json`,
