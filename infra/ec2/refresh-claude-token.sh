@@ -17,12 +17,11 @@
 set -euo pipefail
 
 CREDS="${CLAUDE_CREDENTIALS_PATH:-/home/clawndom/.claude/.credentials.json}"
-LOG="${CLAUDE_REFRESH_LOG:-/var/log/clawndom/claude-refresh.log}"
 TOKEN_URL="https://platform.claude.com/v1/oauth/token"
 CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 SKIP_THRESHOLD_SECONDS=7200
 
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1"; }
 
 if [[ ! -f "$CREDS" ]]; then
   log "ERROR: $CREDS missing — run 'claude login' first"
@@ -59,7 +58,7 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   exit 1
 fi
 
-python3 - "$CREDS" "$RESPONSE_FILE" <<'PY' >> "$LOG"
+python3 - "$CREDS" "$RESPONSE_FILE" <<'PY'
 import json, os, sys, tempfile, time
 
 creds_path, response_path = sys.argv[1], sys.argv[2]
