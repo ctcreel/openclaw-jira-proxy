@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 
 import type { Request, Response } from 'express';
 
@@ -80,6 +81,11 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
 
     if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret, additionalHeaders)) {
       // DEBUG(SPE-1703): temporary diagnostic — strip after HMAC root cause identified.
+      try {
+        writeFileSync(`/tmp/clawndom-body-${Date.now()}.bin`, rawBody);
+      } catch {
+        // best-effort
+      }
       const expectedSha256 = createHmac('sha256', provider.hmacSecret)
         .update(rawBody)
         .digest('hex');
