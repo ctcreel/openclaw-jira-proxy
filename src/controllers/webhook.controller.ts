@@ -1,5 +1,4 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { Request, Response } from 'express';
 
@@ -80,41 +79,7 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
     }
 
     if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret, additionalHeaders)) {
-      // DEBUG(SPE-1703): temporary diagnostic — strip after HMAC root cause identified.
-      try {
-        writeFileSync(`/var/log/clawndom/hmac-body-${Date.now()}.bin`, rawBody);
-      } catch {
-        // best-effort
-      }
-      const expectedSha256 = createHmac('sha256', provider.hmacSecret)
-        .update(rawBody)
-        .digest('hex');
-      const expectedSha1 = createHmac('sha1', provider.hmacSecret).update(rawBody).digest('hex');
-      const bodyPreview = rawBody.toString('utf-8').slice(0, 120);
-      const jiraHeaders: Record<string, string> = {};
-      for (const name of Object.keys(request.headers)) {
-        if (
-          name.toLowerCase().startsWith('x-') ||
-          name === 'content-type' ||
-          name === 'user-agent'
-        ) {
-          const value = request.headers[name];
-          jiraHeaders[name] = Array.isArray(value) ? value.join(',') : (value ?? '');
-        }
-      }
-      logger.warn(
-        {
-          provider: provider.name,
-          receivedSignature: signatureHeader,
-          expectedSha256,
-          expectedSha1,
-          bodyLength: rawBody.length,
-          bodyPreview,
-          secretPrefix: provider.hmacSecret.slice(0, 8),
-          jiraHeaders,
-        },
-        'Invalid HMAC signature [DIAGNOSTIC]',
-      );
+      logger.warn({ provider: provider.name }, 'Invalid HMAC signature');
       events.publish({
         type: 'webhook.rejected',
         timestamp: Date.now(),

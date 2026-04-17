@@ -149,10 +149,18 @@ install_systemd_units() {
   install -m 0644 \
     "${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom-sync-agents.timer" \
     /etc/systemd/system/clawndom-sync-agents.timer
+  install -m 0644 \
+    "${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom-claude-refresh.service" \
+    /etc/systemd/system/clawndom-claude-refresh.service
+  install -m 0644 \
+    "${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom-claude-refresh.timer" \
+    /etc/systemd/system/clawndom-claude-refresh.timer
   systemctl daemon-reload
   systemctl enable redis-server
   systemctl enable clawndom-sync-agents.timer
   systemctl start clawndom-sync-agents.timer
+  systemctl enable clawndom-claude-refresh.timer
+  systemctl start clawndom-claude-refresh.timer
 }
 
 configure_redis() {

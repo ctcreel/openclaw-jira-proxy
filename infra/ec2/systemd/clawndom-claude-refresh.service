@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Claude OAuth credentials using stored refresh_token
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=clawndom
+Group=clawndom
+ExecStart=/opt/clawndom/infra/ec2/refresh-claude-token.sh
+StandardOutput=append:/var/log/clawndom/claude-refresh.log
+StandardError=append:/var/log/clawndom/claude-refresh.log
