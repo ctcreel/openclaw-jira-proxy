@@ -233,11 +233,23 @@ describe('E2E: webhook → queue → runner.run (mock)', () => {
     await sleep(500);
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     currentTestId = nextTestId();
     // Re-register after global setup.ts resetRunners() in beforeEach
     resetRunners();
     registerRunner(new CapturingRunner());
+
+    // Clear dedup keys so tests can reuse the same ticket id + status
+    // without being silently dropped as duplicates.
+    const IORedis = (await import('ioredis')).default;
+    const { getSettings } = await import('../../src/config');
+    const redisUrl = getSettings().redisUrl;
+    const conn = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+    const keys = await conn.keys('clawndom:dedup:*');
+    if (keys.length > 0) {
+      await conn.del(...keys);
+    }
+    await conn.quit();
   });
 
   afterAll(async () => {
