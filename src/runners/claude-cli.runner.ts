@@ -11,32 +11,6 @@ const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 
 const logger = getLogger('runner:claude-cli');
 
-/**
- * OAuth token manager. Reads CLAUDE_CODE_OAUTH_TOKEN from env at startup.
- * No self-refresh — the token is refreshed by restarting the process,
- * which re-reads the token from the Keychain via the startup wrapper.
- * This avoids rotating the shared OAuth refresh token, which would
- * invalidate the user's interactive Claude Code session.
- */
-class TokenManager {
-  private readonly accessToken: string | undefined;
-
-  constructor() {
-    this.accessToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    if (this.accessToken) {
-      logger.info('OAuth access token loaded from environment');
-    }
-  }
-
-  getToken(): string | undefined {
-    return this.accessToken;
-  }
-
-  stop(): void {
-    // No timers to clean up
-  }
-}
-
 function emitStreamEvent(
   runId: string,
   traceId: string | undefined,
@@ -111,23 +85,21 @@ export class ClaudeCliRunner implements AgentRunner {
   private readonly workDirectory: string;
   private readonly binary: string;
   private readonly systemPrompt: string | undefined;
-  private readonly tokenManager: TokenManager;
 
   constructor(config: ClaudeCliRunnerConfig) {
     this.workDirectory = config.workDirectory;
     this.binary = config.binary ?? 'claude';
     this.systemPrompt = config.systemPrompt;
-    this.tokenManager = new TokenManager();
   }
 
   async close(): Promise<void> {
-    this.tokenManager.stop();
+    // No resources to clean up — `claude -p` is spawned per run.
   }
 
   isHealthy(): boolean {
     // Env-var injected token (Mac plist path) OR file-based credentials
     // written by `claude login` (Linux / EC2 path). Either is authoritative.
-    return this.tokenManager.getToken() !== undefined || existsSync(CREDENTIALS_PATH);
+    return process.env.CLAUDE_CODE_OAUTH_TOKEN !== undefined || existsSync(CREDENTIALS_PATH);
   }
 
   async run(options: RunOptions): Promise<RunResult> {
@@ -159,16 +131,10 @@ export class ClaudeCliRunner implements AgentRunner {
     );
 
     return new Promise<RunResult>((resolve) => {
-      const env = { ...process.env };
-      const token = this.tokenManager.getToken();
-      if (token) {
-        env.CLAUDE_CODE_OAUTH_TOKEN = token;
-      }
-
       const proc = spawn(this.binary, args, {
         cwd: this.workDirectory,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env,
+        env: process.env,
       });
 
       let stderr = '';

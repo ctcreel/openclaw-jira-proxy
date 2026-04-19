@@ -92,12 +92,11 @@ export async function processJob(
     'Processing webhook job',
   );
 
-  let parsedPayload: unknown;
-  try {
-    parsedPayload = JSON.parse(envelope.payload);
-  } catch {
-    parsedPayload = {};
-  }
+  // HMAC validation already succeeded in the controller, so the payload
+  // is trusted. A JSON parse failure here is a real bug — let it throw
+  // and surface via the worker's failure path rather than silently
+  // routing an empty object.
+  const parsedPayload: unknown = JSON.parse(envelope.payload);
 
   const webhookContext = extractWebhookContext(provider.name, parsedPayload);
   logger.info(
@@ -130,7 +129,10 @@ export async function processJob(
   const jobIdString = String(job.id ?? 'unknown');
   const traceId = envelope.originalJobId ?? jobIdString;
   const events = getEventBus();
-  const matchedAgent = agents.find((agent) => agent.name === agentId)!;
+  const matchedAgent = agents.find((agent) => agent.name === agentId);
+  if (!matchedAgent) {
+    throw new Error(`Routing resolved agentId "${agentId}" but that agent is not loaded`);
+  }
   const modelRules = matchedAgent.config.modelRules[provider.name];
   const selectedModel = resolveModel(parsedPayload, modelRules);
 

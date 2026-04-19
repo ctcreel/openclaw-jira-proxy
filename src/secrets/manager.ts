@@ -88,12 +88,18 @@ export class SecretManager {
   /** Update a secret value in memory (used by providers that self-refresh). */
   updateSecret(key: string, value: string, expiresAt?: Date): void {
     const existing = this.secrets.get(key);
+    if (!existing) {
+      throw new Error(
+        `Cannot update secret "${key}" — not declared in bindings. ` +
+          `updateSecret is for refresh of previously-resolved secrets only.`,
+      );
+    }
     this.secrets.set(key, {
       key,
       value,
       resolvedAt: new Date(),
       expiresAt,
-      source: existing?.source ?? 'unknown',
+      source: existing.source,
     });
   }
 

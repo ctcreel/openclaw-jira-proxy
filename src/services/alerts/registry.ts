@@ -58,61 +58,33 @@ export class AlertRegistry {
 export function buildAlertRegistry(): AlertRegistry {
   const registry = new AlertRegistry();
 
-  // Slack
+  // Misconfigured env vars fail loud at startup — better to crash than
+  // to silently ship with a half-dead alert registry that only surfaces
+  // the problem when something actually breaks.
+
   const slackWebhookUrl = process.env.ALERT_SLACK_WEBHOOK_URL;
   const slackToken = process.env.ALERT_SLACK_TOKEN;
   const slackChannel = process.env.ALERT_SLACK_CHANNEL;
-
   if (slackWebhookUrl || slackToken) {
-    try {
-      registry.add(
-        new SlackAlertProvider({
-          webhookUrl: slackWebhookUrl,
-          token: slackToken,
-          channel: slackChannel,
-        }),
-      );
-    } catch (error) {
-      logger.warn(
-        { error: error instanceof Error ? error.message : String(error) },
-        'Failed to configure Slack alert provider',
-      );
-    }
+    registry.add(
+      new SlackAlertProvider({
+        webhookUrl: slackWebhookUrl,
+        token: slackToken,
+        channel: slackChannel,
+      }),
+    );
   }
 
-  // Discord
   const discordWebhookUrl = process.env.ALERT_DISCORD_WEBHOOK_URL;
   if (discordWebhookUrl) {
-    try {
-      registry.add(new DiscordAlertProvider({ webhookUrl: discordWebhookUrl }));
-    } catch (error) {
-      logger.warn(
-        { error: error instanceof Error ? error.message : String(error) },
-        'Failed to configure Discord alert provider',
-      );
-    }
+    registry.add(new DiscordAlertProvider({ webhookUrl: discordWebhookUrl }));
   }
 
-  // HTTP
   const httpUrl = process.env.ALERT_HTTP_URL;
   if (httpUrl) {
-    let headers: Record<string, string> | undefined;
     const rawHeaders = process.env.ALERT_HTTP_HEADERS;
-    if (rawHeaders) {
-      try {
-        headers = JSON.parse(rawHeaders) as Record<string, string>;
-      } catch {
-        logger.warn('ALERT_HTTP_HEADERS is not valid JSON — ignoring headers');
-      }
-    }
-    try {
-      registry.add(new HttpAlertProvider({ url: httpUrl, headers }));
-    } catch (error) {
-      logger.warn(
-        { error: error instanceof Error ? error.message : String(error) },
-        'Failed to configure HTTP alert provider',
-      );
-    }
+    const headers = rawHeaders ? (JSON.parse(rawHeaders) as Record<string, string>) : undefined;
+    registry.add(new HttpAlertProvider({ url: httpUrl, headers }));
   }
 
   logger.info({ providers: registry.names }, 'Alert registry initialized');
