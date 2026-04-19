@@ -160,10 +160,18 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
     const queue = getProviderQueue(provider.name);
     const job = await queue.add('webhook-event', rawBody.toString('utf-8'));
 
+    // After enqueue, the BullMQ job id becomes the canonical trace id —
+    // the worker uses `envelope.originalJobId ?? jobIdString`, which on
+    // the first attempt is exactly this job id. Dashboard handlers key
+    // trace_context by traceId, so webhook.accepted and every subsequent
+    // worker/runner event must share one value or the context lookup
+    // misses and completed rows render as "?"/"?".
+    const jobTraceId = String(job.id ?? 'unknown');
+
     events.publish({
       type: 'webhook.accepted',
       timestamp: Date.now(),
-      traceId,
+      traceId: jobTraceId,
       provider: provider.name,
       contextId: context.id,
       contextTitle: context.title,
@@ -173,8 +181,8 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
     events.publish({
       type: 'job.queued',
       timestamp: Date.now(),
-      traceId,
-      jobId: String(job.id ?? 'unknown'),
+      traceId: jobTraceId,
+      jobId: jobTraceId,
       provider: provider.name,
       contextId: context.id,
       contextTitle: context.title,
