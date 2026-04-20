@@ -5,6 +5,7 @@ import { getSettings } from '../config';
 import { createHealthRoutes } from './health.routes';
 import { createWebhookHandler } from '../controllers/webhook.controller';
 import { handleEventStream } from '../controllers/events.controller';
+import { listActiveJobs } from '../controllers/active-jobs.controller';
 import {
   createTaskHandler,
   getTaskStatusHandler,
@@ -15,6 +16,7 @@ import type { ResolvedAgent } from '../services/agent-loader.service';
 export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): void {
   app.use('/api/health', createHealthRoutes());
   app.get('/api/events', handleEventStream);
+  app.get('/api/jobs/active', listActiveJobs);
 
   app.post('/api/tasks', express.json({ limit: '1mb' }), createTaskHandler(agents));
   app.get('/api/tasks/:agent/:taskId', getTaskStatusHandler());
