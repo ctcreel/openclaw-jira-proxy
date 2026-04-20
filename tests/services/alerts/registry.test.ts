@@ -105,11 +105,10 @@ describe('buildAlertRegistry', () => {
     expect(registry.names).toContain('slack');
   });
 
-  it('should not add Slack when token set without channel', () => {
+  it('should throw when Slack token is set without channel', () => {
     process.env.ALERT_SLACK_TOKEN = 'xoxb-test';
-    // no channel
-    const registry = buildAlertRegistry();
-    expect(registry.names).not.toContain('slack');
+    // no channel — fail loud at startup instead of warn-and-continue
+    expect(() => buildAlertRegistry()).toThrow('SlackAlertProvider requires channel');
   });
 
   it('should add Discord provider when webhook URL is set', () => {
@@ -139,10 +138,11 @@ describe('buildAlertRegistry', () => {
     expect(registry.names).toContain('http');
   });
 
-  it('should add HTTP provider even with invalid JSON headers', () => {
+  it('should throw when ALERT_HTTP_HEADERS is invalid JSON', () => {
     process.env.ALERT_HTTP_URL = 'https://alerts.example.com/webhook';
     process.env.ALERT_HTTP_HEADERS = 'not-json{{{';
-    const registry = buildAlertRegistry();
-    expect(registry.names).toContain('http');
+    // Misconfigured env vars fail loud at startup rather than silently
+    // dropping the headers and shipping a request that won't auth.
+    expect(() => buildAlertRegistry()).toThrow();
   });
 });

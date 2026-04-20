@@ -52,6 +52,11 @@ export interface AgentRunResult {
  * Persistent WebSocket client to the OpenClaw gateway.
  * Wraps the official SDK GatewayClient which handles device identity,
  * scope negotiation, reconnection, and the full connect handshake.
+ *
+ * This module is load-gated: server.ts only imports and wires it up when
+ * settings.openclawGatewayWsUrl is set. The current EC2 deployment uses
+ * the claude-cli runner, so this class is dormant there — kept in the
+ * repo so the WS path stays an option without a reintroduction cost.
  */
 export class GatewayClient {
   private client: SdkGatewayClient;
