@@ -5,6 +5,7 @@ import type { ProviderConfig } from '../../src/config';
 import { resetSettings } from '../../src/config';
 import { registerRunner, resetRunners } from '../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
+import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -43,6 +44,20 @@ const provider: ProviderConfig = {
   openclawHookUrl: 'http://unused',
 };
 
+// Catch-all agent so routing resolves for any integration-test webhook.
+const agents: ResolvedAgent[] = [
+  {
+    name: 'patch',
+    dir: '/tmp/clawndom-integration-agent',
+    config: {
+      routing: {
+        'integration-test': { rules: [{ condition: { all_of: [] } }] },
+      },
+      modelRules: {},
+    },
+  },
+];
+
 describe('Worker integration (runner registry)', () => {
   beforeAll(() => {
     process.env.OPENCLAW_TOKEN = 'integration-test-token';
@@ -72,7 +87,7 @@ describe('Worker integration (runner registry)', () => {
   it('should deliver job prompt via runner with isolated session key', async () => {
     const payload = '{"event":"updated"}';
 
-    await processJob(createFakeJob(payload), provider);
+    await processJob(createFakeJob(payload), provider, agents);
 
     expect(runSpy).toHaveBeenCalledOnce();
     const call = runSpy.mock.calls[0]!;
@@ -82,8 +97,8 @@ describe('Worker integration (runner registry)', () => {
   });
 
   it('should process multiple jobs sequentially', async () => {
-    await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider);
-    await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider);
+    await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider, agents);
+    await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider, agents);
 
     expect(runSpy).toHaveBeenCalledTimes(2);
     expect(runSpy.mock.calls[0]![0].prompt).toBe('{"event":"first"}');
@@ -97,7 +112,7 @@ describe('Worker integration (runner registry)', () => {
       renderedPrompt: 'test',
     });
 
-    await expect(processJob(createFakeJob('{}'), provider)).rejects.toThrow(
+    await expect(processJob(createFakeJob('{}'), provider, agents)).rejects.toThrow(
       'Agent run failed: Something broke',
     );
   });

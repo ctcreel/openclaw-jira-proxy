@@ -7,7 +7,15 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+// Mock node:fs so isHealthy() doesn't pick up the developer's real
+// ~/.claude/.credentials.json file. isHealthy is OR: env token OR file.
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return { ...actual, existsSync: vi.fn(() => false) };
+});
+
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { ClaudeCliRunner } from '../../src/runners/claude-cli.runner';
 import type { RunOptions, ClaudeCliRunnerConfig } from '../../src/runners/types';
 
@@ -55,15 +63,24 @@ describe('ClaudeCliRunner', () => {
     expect(runner.name).toBe('claude-cli');
   });
 
-  it('should report healthy when OAuth token is available', () => {
+  it('should report healthy when OAuth token env var is set', () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-token';
+    vi.mocked(existsSync).mockReturnValue(false);
     const runner = new ClaudeCliRunner(baseConfig);
     expect(runner.isHealthy()).toBe(true);
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
   });
 
-  it('should report unhealthy when no OAuth token is available', () => {
+  it('should report healthy when file-based credentials exist', () => {
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    vi.mocked(existsSync).mockReturnValue(true);
+    const runner = new ClaudeCliRunner(baseConfig);
+    expect(runner.isHealthy()).toBe(true);
+  });
+
+  it('should report unhealthy when neither env token nor credentials file exists', () => {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    vi.mocked(existsSync).mockReturnValue(false);
     const runner = new ClaudeCliRunner(baseConfig);
     expect(runner.isHealthy()).toBe(false);
   });
