@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
 import { getLogger } from './lib/logging';
+import { getActiveJobsRegistry } from './services/active-jobs.service';
 import { loadAgents } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
 import { createTaskWorker } from './services/task-worker.service';
@@ -133,6 +134,11 @@ async function startServer(): Promise<void> {
   );
 
   // ── Workers + HTTP ───────────────────────────────────────────────────
+  // Subscribe the active-jobs registry before any worker can publish
+  // job.started — otherwise bootstrap snapshots (GET /api/jobs/active)
+  // would miss jobs that started before the first dashboard connects.
+  getActiveJobsRegistry();
+
   const alertRegistry = buildAlertRegistry();
   for (const provider of settings.providers) {
     createWorker({ provider, agents, alertRegistry });
