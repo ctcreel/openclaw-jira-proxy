@@ -133,12 +133,22 @@ Each provider declares:
 
 ### Tailscale Funnel
 
-Expose the proxy so external services can reach it:
+Funnel allowlists each public path individually — there's no wildcard. Every provider's webhook route *and* every `/api/*` endpoint the dashboard consumes has to be registered explicitly, or the public URL returns a Funnel-level 502/404. Rules persist in Tailscale's own state, not in this repo, so re-provisioning a host means re-running these.
+
+Pass the full upstream URL (including the path) so Funnel forwards to the matching clawndom route rather than the proxy root:
 
 ```bash
-tailscale funnel --bg --set-path /hooks/jira 8792
-tailscale funnel --bg --set-path /hooks/github 8792
+# Webhook ingress — one per provider in PROVIDERS_CONFIG
+tailscale funnel --bg --set-path /hooks/jira http://127.0.0.1:8793/hooks/jira
+tailscale funnel --bg --set-path /hooks/slack http://127.0.0.1:8793/hooks/slack
+
+# Dashboard + observability endpoints
+tailscale funnel --bg --set-path /api/health http://127.0.0.1:8793/api/health
+tailscale funnel --bg --set-path /api/events http://127.0.0.1:8793/api/events
+tailscale funnel --bg --set-path /api/jobs/active http://127.0.0.1:8793/api/jobs/active
 ```
+
+Verify with `tailscale funnel status`.
 
 ### launchd (macOS)
 
