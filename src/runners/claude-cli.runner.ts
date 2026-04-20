@@ -113,7 +113,7 @@ export class ClaudeCliRunner implements AgentRunner {
       'stream-json',
       '--verbose',
       '--max-turns',
-      '50',
+      '150',
       '--dangerously-skip-permissions',
     ];
 
