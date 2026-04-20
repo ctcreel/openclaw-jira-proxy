@@ -175,9 +175,13 @@ def handle_event(event_type: str, payload: dict[str, Any]) -> None:
             )
 
         elif event_type == "job.failed":
+            # Always clear from active — a retry will arrive as a new jobId via
+            # job.started, not as a continuation of this one. Previously we only
+            # popped on `final` failures, which left non-final failures as
+            # zombies in the active list forever.
+            STATE.active.pop(job_id, None)
             ctx = STATE.trace_context.get(trace_id, {})
             if payload.get("final"):
-                STATE.active.pop(job_id, None)
                 STATE.recent.appendleft(
                     {
                         "kind": "failed",
@@ -188,7 +192,6 @@ def handle_event(event_type: str, payload: dict[str, Any]) -> None:
                         "attempt": payload.get("attempt", 0),
                     }
                 )
-            # Non-final failures will be followed by a job.requeued event
 
 
 # ── SSE reader ───────────────────────────────────────────────────────
