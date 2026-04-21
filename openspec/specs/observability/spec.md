@@ -102,11 +102,11 @@ preview-template:
 	pnpm tsx scripts/preview-template.ts --template $(TEMPLATE) --payload $(PAYLOAD)
 ```
 
-Sample payload files SHOULD be stored in `samples/` and committed to the repository to enable repeatable preview runs.
+Sample payloads MAY be kept on disk (e.g., under `/tmp` or an ignored path) for repeatable preview runs; committing them is not required.
 
 #### Scenario: Preview Renders Correctly
 - **GIVEN** A Jira template referencing `{{ issue.key }}` and a sample payload with `issue.key: "SPE-100"`
-- **WHEN** `make preview-template TEMPLATE=... PAYLOAD=samples/jira-issue-updated.json` is run
+- **WHEN** `make preview-template TEMPLATE=... PAYLOAD=/tmp/jira-issue-updated.json` is run
 - **THEN** The output MUST contain `SPE-100` and exit 0
 
 #### Scenario: Preview Fails on Missing File

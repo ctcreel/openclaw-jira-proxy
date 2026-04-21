@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # Refresh every agent repo under CLAWNDOM_CONFIG_DIR with a fast-forward pull.
-# Invoked periodically by a systemd timer (Linux) or launchd agent (macOS).
+# Invoked periodically by `clawndom-sync-agents.timer` (systemd).
 #
 # Exits 0 on success, non-zero on any per-repo failure so the timer surfaces
-# the problem in journald / unified-log instead of silently drifting.
+# the problem in journald instead of silently drifting.
 
 set -euo pipefail
 

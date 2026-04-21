@@ -66,12 +66,9 @@ A Redis-backed global semaphore caps total concurrent runs across all providers 
 
 ## Installation
 
-```bash
-git clone git@github.com:SC0RED/clawndom.git && cd clawndom
-./install.sh
-```
+Clawndom runs on a dedicated EC2 host in `sc0red-dev` (us-east-1). Infrastructure (VPC wiring, systemd units, Redis, Tailscale) is under `infra/ec2/` — `cloudformation.yaml` provisions the instance, `bootstrap.sh` sets it up, and GitHub Actions (`deploy-ec2.yml`) ships every push to `main` via `scripts/deploy.sh`.
 
-The installer prompts for secrets, builds the project, installs a launchd agent, and starts the proxy.
+For a new instance: deploy the CloudFormation stack, SSH in, run `infra/ec2/bootstrap.sh`, then follow the printed next steps (Tailscale up, populate `/etc/clawndom/clawndom.env`, `claude login`, `scripts/sync-agents.sh`, `scripts/deploy.sh`).
 
 ## Configuration
 
@@ -150,19 +147,6 @@ tailscale funnel --bg --set-path /api/jobs/active http://127.0.0.1:8793/api/jobs
 
 Verify with `tailscale funnel status`.
 
-### launchd (macOS)
-
-```bash
-# Install
-cp infra/launchd/com.openclaw.clawndom.plist ~/Library/LaunchAgents/
-# Edit the plist to fill in INSTALL_PATH and env var values
-launchctl load ~/Library/LaunchAgents/com.openclaw.clawndom.plist
-
-# Uninstall
-launchctl unload ~/Library/LaunchAgents/com.openclaw.clawndom.plist
-rm ~/Library/LaunchAgents/com.openclaw.clawndom.plist
-```
-
 ## Webhook Setup by Provider
 
 ### Jira
@@ -224,7 +208,7 @@ Architecture and behavior are defined in OpenSpec format under `openspec/specs/`
 | `code-architecture` | Layered architecture, file size limits, dependency direction |
 | `error-handling` | Exception hierarchy, structured error responses |
 | `observability` | Structured logging, health checks |
-| `infrastructure` | launchd, Tailscale, Redis deployment |
+| `infrastructure` | EC2, systemd, Tailscale, Redis deployment |
 | `ci-cd` | GitHub Actions pipeline |
 | `enforcement` | Pre-commit hooks, CI quality gates |
 | `quality-framework` | Coverage thresholds, principles |
