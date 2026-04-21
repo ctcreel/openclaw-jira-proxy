@@ -2,7 +2,7 @@
 
 ## 1Password Integration
 
-All credentials live in the **Patch** vault in 1Password. The proxy loads secrets from environment variables at startup — secrets are injected via the launchd plist or a local `.env` file (not committed).
+All credentials live in the **Engineering** vault in 1Password. The proxy loads secrets from environment variables at startup — on EC2 these are sourced from `/etc/clawndom/clawndom.env` (which systemd reads via `EnvironmentFile=`); locally, from a `.env` file (not committed). Non-primitive secrets (HMAC shared with a provider, Jira tokens, etc.) are resolved at runtime by `OnePasswordProvider` using the `OP_SERVICE_ACCOUNT_TOKEN` in the env file.
 
 ### Required Secrets
 
