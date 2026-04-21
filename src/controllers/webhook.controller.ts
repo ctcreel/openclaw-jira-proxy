@@ -33,8 +33,8 @@ const SlackChallengeSchema = z.object({
 
 function hashHeaders(headers: Request['headers']): string {
   const material = Object.entries(headers)
-    .map(([k, v]) => `${k}:${Array.isArray(v) ? v.join(',') : (v ?? '')}`)
-    .sort()
+    .map(([k, v]) => `${k}:${Array.isArray(v) ? v.join(',') : String(v ?? '')}`)
+    .sort((a, b) => a.localeCompare(b))
     .join('\n');
   return createHash('sha256').update(material).digest('hex').slice(0, 12);
 }

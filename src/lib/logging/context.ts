@@ -26,7 +26,7 @@ export function generateCorrelationId(): string {
 }
 
 export function getExtraContext(): Record<string, unknown> {
-  return { ...(storage.getStore()?.extra ?? {}) };
+  return { ...storage.getStore()?.extra };
 }
 
 export function setExtraContext(context: Record<string, unknown>): void {

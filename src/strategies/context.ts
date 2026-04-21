@@ -54,10 +54,10 @@ const githubStrategy: ContextStrategy = {
     let id = typeof repo === 'string' ? repo : '?';
     let title = '?';
 
-    if (prNumber !== undefined) {
+    if (typeof prNumber === 'number' || typeof prNumber === 'string') {
       id += `#${prNumber}`;
       title = typeof prTitle === 'string' ? prTitle.slice(0, 80) : '?';
-    } else if (issueNumber !== undefined) {
+    } else if (typeof issueNumber === 'number' || typeof issueNumber === 'string') {
       id += `#${issueNumber}`;
       title = typeof issueTitle === 'string' ? issueTitle.slice(0, 80) : '?';
     } else if (typeof ref === 'string') {

@@ -249,10 +249,10 @@ function signRequest(options: SignRequestOptions): Record<string, string> {
   const { method, url, body, region, service, credentials } = options;
   const parsedUrl = new URL(url);
   const now = new Date();
-  const dateStamp = now.toISOString().replace(/[-:]/g, '').slice(0, 8);
+  const dateStamp = now.toISOString().replaceAll(/[-:]/g, '').slice(0, 8);
   const amzDate = now
     .toISOString()
-    .replace(/[-:]/g, '')
+    .replaceAll(/[-:]/g, '')
     .replace(/\.\d{3}/, '');
   const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
   const payloadHash = createHash('sha256').update(body).digest('hex');
@@ -266,7 +266,7 @@ function signRequest(options: SignRequestOptions): Record<string, string> {
     headers['x-amz-security-token'] = credentials.sessionToken;
   }
 
-  const signedHeaderKeys = Object.keys(headers).sort();
+  const signedHeaderKeys = Object.keys(headers).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const signedHeaders = signedHeaderKeys.join(';');
   const canonicalHeaders = signedHeaderKeys.map((key) => `${key}:${headers[key]!}\n`).join('');
   const canonicalRequest = buildCanonicalRequest(
