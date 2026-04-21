@@ -96,8 +96,8 @@ function splitCamelCase(name: string): string[] {
   // Insert a separator before each uppercase letter that follows a lowercase letter
   // or before a sequence of uppercase letters followed by a lowercase letter
   const parts = name
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replaceAll(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replaceAll(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
     .toLowerCase()
     .split("_")
     .filter((part) => part.length > 0);
@@ -164,8 +164,58 @@ const DECLARATION_PATTERNS: Array<{ regex: RegExp; context: string; group: numbe
 const PARAM_RE = /\(([^)]*)\)/g;
 const PARAM_NAME_RE = /\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*[?]?\s*:/g;
 
-function checkFile(filepath: string): Violation[] {
+const TYPE_KEYWORDS = new Set([
+  "string",
+  "number",
+  "boolean",
+  "void",
+  "any",
+  "unknown",
+  "never",
+  "object",
+  "readonly",
+]);
+
+function shouldSkipLine(line: string): boolean {
+  if (hasNoqa(line)) return true;
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("import ")) return true;
+  if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) return true;
+  return false;
+}
+
+function checkDeclarations(line: string, lineNum: number, filepath: string): Violation[] {
   const violations: Violation[] = [];
+  for (const pattern of DECLARATION_PATTERNS) {
+    const match = pattern.regex.exec(line);
+    if (match) {
+      const name = match[pattern.group] ?? '';
+      const violation = checkName(name, lineNum, pattern.context, filepath);
+      if (violation) violations.push(violation);
+    }
+  }
+  return violations;
+}
+
+function checkParameters(line: string, lineNum: number, filepath: string): Violation[] {
+  const violations: Violation[] = [];
+  let paramBlockMatch: RegExpExecArray | null;
+  PARAM_RE.lastIndex = 0;
+  while ((paramBlockMatch = PARAM_RE.exec(line)) !== null) {
+    const paramBlock = paramBlockMatch[1] ?? '';
+    let paramMatch: RegExpExecArray | null;
+    PARAM_NAME_RE.lastIndex = 0;
+    while ((paramMatch = PARAM_NAME_RE.exec(paramBlock)) !== null) {
+      const paramName = paramMatch[1] ?? '';
+      if (TYPE_KEYWORDS.has(paramName)) continue;
+      const violation = checkName(paramName, lineNum, "Parameter", filepath);
+      if (violation) violations.push(violation);
+    }
+  }
+  return violations;
+}
+
+function checkFile(filepath: string): Violation[] {
   let content: string;
 
   try {
@@ -174,46 +224,15 @@ function checkFile(filepath: string): Violation[] {
     return [{ file: filepath, line: 0, message: "Error reading file" }];
   }
 
+  const violations: Violation[] = [];
   const lines = content.split("\n");
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
+    if (shouldSkipLine(line)) continue;
     const lineNum = i + 1;
-
-    if (hasNoqa(line)) continue;
-
-    // Skip import lines
-    if (line.trimStart().startsWith("import ")) continue;
-
-    // Skip comment-only lines
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) continue;
-
-    // Check declaration patterns
-    for (const pattern of DECLARATION_PATTERNS) {
-      const match = line.match(pattern.regex);
-      if (match) {
-        const name = match[pattern.group] ?? '';
-        const violation = checkName(name, lineNum, pattern.context, filepath);
-        if (violation) violations.push(violation);
-      }
-    }
-
-    // Check parameter names in function signatures
-    let paramBlockMatch: RegExpExecArray | null;
-    PARAM_RE.lastIndex = 0;
-    while ((paramBlockMatch = PARAM_RE.exec(line)) !== null) {
-      const paramBlock = paramBlockMatch[1] ?? '';
-      let paramMatch: RegExpExecArray | null;
-      PARAM_NAME_RE.lastIndex = 0;
-      while ((paramMatch = PARAM_NAME_RE.exec(paramBlock)) !== null) {
-        const paramName = paramMatch[1] ?? '';
-        // Skip destructured patterns and type keywords
-        if (["string", "number", "boolean", "void", "any", "unknown", "never", "object", "readonly"].includes(paramName)) continue;
-        const violation = checkName(paramName, lineNum, "Parameter", filepath);
-        if (violation) violations.push(violation);
-      }
-    }
+    violations.push(...checkDeclarations(line, lineNum, filepath));
+    violations.push(...checkParameters(line, lineNum, filepath));
   }
 
   return violations;
@@ -237,7 +256,7 @@ function main(): number {
 
   if (allViolations.length > 0) {
     console.log("x Forbidden abbreviations found:\n");
-    const sorted = allViolations.sort((a, b) => `${a.file}:${a.line}`.localeCompare(`${b.file}:${b.line}`));
+    const sorted = allViolations.toSorted((a, b) => `${a.file}:${a.line}`.localeCompare(`${b.file}:${b.line}`));
     for (const v of sorted) {
       console.log(`  ${v.file}:${v.line}: ${v.message}`);
     }
