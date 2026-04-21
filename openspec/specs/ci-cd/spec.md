@@ -6,46 +6,36 @@ Defines the continuous integration and deployment pipeline that clawndom MUST im
 
 ### Requirement: GitHub Actions Workflow Architecture
 
-The template MUST use reusable GitHub Actions workflows with this structure:
+The repository MUST use reusable GitHub Actions workflows with this structure:
 - `_ci-checks.yml` — Reusable workflow for lint, test, security, SonarCloud
-- `_deploy.yml` — Parameterized deploy workflow with environment approval gates
-- `_naming-validation.yml` — Reusable workflow for naming convention checks
-- `pull-request.yml` — Orchestrator that calls reusable workflows on PR events
-- `post-merge.yml` — Auto-deployment on merge to long-lived branches
-- `gitstream.yml` — gitStream PR automation
+- `_naming-validation.yml` — Reusable workflow for branch-name and naming-convention checks
+- `pull-request.yml` — Orchestrator that calls the reusable workflows on PR events
+- `deploy-ec2.yml` — Runs on every push to `main`: CI checks, then SSH-deploys to the EC2 host via `scripts/deploy.sh`
 
 #### Scenario: Pull Request Opened
-- **GIVEN** A developer opens a pull request against the development branch
+- **GIVEN** A developer opens a pull request against `main`
 - **WHEN** GitHub Actions triggers
-- **THEN** CI checks, naming validation, and deployment validation MUST all run in parallel
+- **THEN** `_ci-checks.yml` and `_naming-validation.yml` MUST both run and the PR MUST surface a summary of their results
 
-### Requirement: Environment-Aware Deployment
+#### Scenario: Merge to main
+- **GIVEN** A pull request is merged into `main`
+- **WHEN** The push event fires
+- **THEN** `deploy-ec2.yml` MUST run CI checks, then SSH to the EC2 host and invoke `sudo -u clawndom bash /opt/clawndom/scripts/deploy.sh`, and the job MUST fail if `/api/health` does not return 200 after the restart
 
-The template MUST support four deployment environments with increasing protection:
+### Requirement: Single-Branch Model
 
-| Environment | Branch | Approvals | Admin Enforcement |
-|-------------|--------|-----------|-------------------|
-| Development | development | 0 | No |
-| Testing | testing | 2 | Yes |
-| Demo | demo | 2 | Yes |
-| Production | production | 3 | Yes |
+The repository MUST operate against a single long-lived branch (`main`). There are no separate development/testing/demo/production branches; the EC2 host is a single dev instance. Feature work lands on short-lived branches named `{type}/{description}` per `docs/guides/BRANCHING.md` and is merged via pull request.
 
-Each environment MUST have appropriate CDK configuration for:
-- Removal policy (DESTROY for dev/test, SNAPSHOT for demo, RETAIN for production)
-- Log retention (7d, 14d, 30d, 90d respectively)
-- Monitoring (disabled for dev, enabled for test+)
-- Tagging (Project, ManagedBy, Environment, CostCenter)
-
-#### Scenario: Production Deployment
-- **GIVEN** A PR is opened against the production branch
-- **WHEN** The deployment workflow runs
-- **THEN** It MUST require 3 approvals, CODEOWNERS review, and all CI checks passing before deployment proceeds
+#### Scenario: Feature Branch Merge
+- **GIVEN** A feature branch named `feature/new-provider`
+- **WHEN** Its PR to `main` passes CI and is merged
+- **THEN** `deploy-ec2.yml` MUST immediately roll the new commit onto the EC2 host
 
 ### Requirement: Secrets Management in CI
 
-The template MUST load all secrets from 1Password via `1password/load-secrets-action@v2`. The only GitHub-level secret MUST be `OP_SERVICE_ACCOUNT_TOKEN`. Per-environment AWS credentials MUST be stored in the 1Password Engineering vault.
+CI MUST load all secrets from 1Password via `1password/load-secrets-action@v2`. The only GitHub-level secret MUST be `OP_SERVICE_ACCOUNT_TOKEN`. SSH credentials for the deploy job MUST be stored as GitHub Actions repo secrets (`EC2_HOST`, `EC2_USER`, `EC2_SSH_PRIVATE_KEY`) rather than 1Password — they are deploy-target identity, not application secrets.
 
-#### Scenario: CI Accesses AWS Credentials
-- **GIVEN** The CI pipeline needs AWS credentials for the testing environment
+#### Scenario: CI Accesses SonarCloud Token
+- **GIVEN** The SonarCloud job runs in `_ci-checks.yml`
 - **WHEN** The secrets loading step runs
-- **THEN** It MUST resolve `op://Engineering/AWS_ACCESS_KEY_ID_TESTING/credential` from 1Password
+- **THEN** It MUST resolve `op://Engineering/SONAR_TOKEN/credential` from 1Password using `OP_SERVICE_ACCOUNT_TOKEN`

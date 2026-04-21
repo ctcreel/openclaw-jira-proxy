@@ -1,4 +1,4 @@
-.PHONY: install lint-quick lint test security naming check sonar check-all format review dev dev-unsafe cdk-synth cdk-deploy deploy sync-standards help
+.PHONY: install lint-quick lint test security naming check sonar check-all format review dev dev-unsafe preview-template sync-standards help
 
 # ============================================================================
 # SETUP
@@ -6,7 +6,6 @@
 
 install: ## Install all dependencies
 	pnpm install
-	cd infra && pnpm install
 
 # ============================================================================
 # LINTING & TYPE CHECKING
@@ -88,18 +87,6 @@ dev: lint-quick ## Dev server (enforces lint-quick first)
 
 dev-unsafe: ## Dev server (no checks - debugging only)
 	pnpm exec tsx watch src/server.ts
-
-# ============================================================================
-# CDK / INFRASTRUCTURE
-# ============================================================================
-
-cdk-synth: ## Synthesize CDK CloudFormation templates
-	cd infra && pnpm exec cdk synth
-
-cdk-deploy: check ## Deploy CDK (requires all checks to pass)
-	cd infra && pnpm exec cdk deploy --require-approval never
-
-deploy: cdk-deploy ## Alias for cdk-deploy
 
 # ============================================================================
 # TEMPLATE PREVIEW

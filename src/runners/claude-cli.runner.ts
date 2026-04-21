@@ -37,16 +37,16 @@ function buildCliArgs(options: RunOptions, systemPrompt: string | undefined): st
 }
 
 function scheduleForceKill(
-  proc: CliProcess,
+  child: CliProcess,
   timeoutMs: number,
 ): { clear: () => void; didTimeOut: () => boolean } {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill('SIGTERM');
+    child.kill('SIGTERM');
     setTimeout(() => {
-      if (!proc.killed) {
-        proc.kill('SIGKILL');
+      if (!child.killed) {
+        child.kill('SIGKILL');
       }
     }, KILL_GRACE_MS);
   }, timeoutMs);
@@ -56,9 +56,9 @@ function scheduleForceKill(
   };
 }
 
-function installStreamParser(proc: CliProcess, runId: string, options: RunOptions): void {
+function installStreamParser(child: CliProcess, runId: string, options: RunOptions): void {
   let buffer = '';
-  proc.stdout.on('data', (chunk: Buffer) => {
+  child.stdout.on('data', (chunk: Buffer) => {
     buffer += chunk.toString();
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
@@ -158,22 +158,22 @@ function runClaudeCliSubprocess(
   options: RunOptions,
 ): Promise<RunResult> {
   return new Promise<RunResult>((resolve) => {
-    const proc = spawn(binary, args, {
+    const child = spawn(binary, args, {
       cwd: workDirectory,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
     }) as CliProcess;
 
     const state = { stderr: '' };
-    const timeout = scheduleForceKill(proc, options.timeoutMs);
+    const timeout = scheduleForceKill(child, options.timeoutMs);
 
-    installStreamParser(proc, runId, options);
+    installStreamParser(child, runId, options);
 
-    proc.stderr.on('data', (chunk: Buffer) => {
+    child.stderr.on('data', (chunk: Buffer) => {
       state.stderr += chunk.toString();
     });
 
-    proc.on('close', (code) => {
+    child.on('close', (code) => {
       timeout.clear();
       buildCloseHandler(
         runId,
@@ -184,7 +184,7 @@ function runClaudeCliSubprocess(
       )(code);
     });
 
-    proc.on('error', (error) => {
+    child.on('error', (error) => {
       timeout.clear();
       logger.error({ runId, error: error.message }, 'Claude CLI spawn error');
       resolve({

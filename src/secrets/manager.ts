@@ -8,8 +8,8 @@ const MAX_REFRESH_FAILURES = 3;
 
 let instance: SecretManager | null = null;
 
-function setInstance(mgr: SecretManager): void {
-  instance = mgr;
+function setInstance(manager: SecretManager): void {
+  instance = manager;
 }
 
 export function getSecretManager(): SecretManager {
