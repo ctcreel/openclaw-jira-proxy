@@ -73,7 +73,11 @@ function stringifyResolved(value: unknown): string {
   if (typeof value === 'object') {
     return JSON.stringify(value);
   }
-  return String(value);
+  if (typeof value === 'symbol') {
+    return value.toString();
+  }
+  // value is string | number | boolean | bigint — all convert losslessly.
+  return String(value as string | number | boolean | bigint);
 }
 
 function evaluateEquals(payload: unknown, field: string, target: string): boolean {

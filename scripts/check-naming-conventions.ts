@@ -40,7 +40,7 @@ const CORE_VERBS = new Set([
   "download", "upload", "sync", "extract", "emit", "notify", "sleep",
   "resolve", "interpret", "preprocess", "invoke", "install", "schedule",
   "sign", "requeue", "wait", "map", "group", "replace", "collect",
-  "enqueue", "dequeue", "hash", "try", "clamp", "list",
+  "enqueue", "dequeue", "hash", "try", "clamp", "list", "compare",
   // Boolean prefixes
   "is", "has", "can", "should", "will", "was", "are", "have",
 ]);
@@ -150,7 +150,7 @@ function updateBraceDepth(stripped: string, depth: number): number {
     if (ch === "{") next++;
     if (ch === "}") next--;
   }
-  return next < 0 ? 0 : next;
+  return Math.max(0, next);
 }
 
 function checkPascalDeclarations(
@@ -240,7 +240,7 @@ function checkFile(filepath: string): Violation[] {
   // Blank out /* ... */ block comments (including JSDoc) while preserving
   // line boundaries so prose like "pass a verify function via bearerStrategy()"
   // doesn't trip FUNCTION_RE.
-  content = content.replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, " "));
+  content = content.replaceAll(/\/\*[\s\S]*?\*\//g, (match) => match.replaceAll(/[^\n]/g, " "));
 
   const lines = content.split("\n");
   const violations: Violation[] = [];
@@ -255,9 +255,11 @@ function checkFile(filepath: string): Violation[] {
     const stripped = stripLine(line);
     braceDepth = updateBraceDepth(stripped, braceDepth);
 
-    violations.push(...checkPascalDeclarations(stripped, lineNum, filepath));
-    violations.push(...checkFunctionName(stripped, lineNum, filepath, braceDepth));
-    violations.push(...checkConstantName(stripped, lineNum, filepath));
+    violations.push(
+      ...checkPascalDeclarations(stripped, lineNum, filepath),
+      ...checkFunctionName(stripped, lineNum, filepath, braceDepth),
+      ...checkConstantName(stripped, lineNum, filepath),
+    );
   }
 
   return violations;
