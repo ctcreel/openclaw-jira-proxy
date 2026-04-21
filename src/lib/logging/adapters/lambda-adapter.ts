@@ -67,14 +67,14 @@ export function setLambdaContext(
   };
 
   const apiRequestId = parsedEvent.requestContext?.requestId;
-  if (apiRequestId) extra.apiRequestId = apiRequestId;
+  if (apiRequestId) extra['apiRequestId'] = apiRequestId;
 
-  if (parsedEvent.httpMethod) extra.httpMethod = parsedEvent.httpMethod;
-  if (parsedEvent.path) extra.path = parsedEvent.path;
+  if (parsedEvent.httpMethod) extra['httpMethod'] = parsedEvent.httpMethod;
+  if (parsedEvent.path) extra['path'] = parsedEvent.path;
 
   if (extractUserId) {
     const userId = resolveUserId(parsedEvent);
-    if (userId) extra.userId = userId;
+    if (userId) extra['userId'] = userId;
   }
 
   setExtraContext(extra);

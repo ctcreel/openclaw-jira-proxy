@@ -20,10 +20,10 @@ export class ValidationError extends ClientError {
   ) {
     const context: Record<string, unknown> = { ...options?.context };
     if (options?.field !== undefined) {
-      context.field = options.field;
+      context['field'] = options.field;
     }
     if (options?.value !== undefined) {
-      context.value = options.value;
+      context['value'] = options.value;
     }
     super(message, { context });
   }
@@ -44,10 +44,10 @@ export class NotFoundError extends ClientError {
   ) {
     const context: Record<string, unknown> = { ...options?.context };
     if (options?.resourceType !== undefined) {
-      context.resourceType = options.resourceType;
+      context['resourceType'] = options.resourceType;
     }
     if (options?.resourceId !== undefined) {
-      context.resourceId = options.resourceId;
+      context['resourceId'] = options.resourceId;
     }
     super(message, { context });
   }

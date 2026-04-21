@@ -25,7 +25,7 @@ export class ExternalServiceError extends ServerError {
   ) {
     const context: Record<string, unknown> = { ...options?.context };
     if (options?.serviceName !== undefined) {
-      context.serviceName = options.serviceName;
+      context['serviceName'] = options.serviceName;
     }
     super(message, { context });
   }

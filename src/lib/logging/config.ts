@@ -34,11 +34,11 @@ export function getLoggingConfig(): LoggingConfig {
     return cachedConfig;
   }
   cachedConfig = loggingConfigSchema.parse({
-    logLevel: process.env.LOG_LEVEL?.toLowerCase(),
-    logFormat: process.env.LOG_FORMAT?.toLowerCase(),
-    serviceName: process.env.SERVICE_NAME,
-    includeTimestamp: process.env.INCLUDE_TIMESTAMP !== 'false',
-    includeLocation: process.env.INCLUDE_LOCATION !== 'false',
+    logLevel: process.env['LOG_LEVEL']?.toLowerCase(),
+    logFormat: process.env['LOG_FORMAT']?.toLowerCase(),
+    serviceName: process.env['SERVICE_NAME'],
+    includeTimestamp: process.env['INCLUDE_TIMESTAMP'] !== 'false',
+    includeLocation: process.env['INCLUDE_LOCATION'] !== 'false',
   });
   return cachedConfig;
 }

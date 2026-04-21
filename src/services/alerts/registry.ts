@@ -64,9 +64,9 @@ export function buildAlertRegistry(): AlertRegistry {
   // to silently ship with a half-dead alert registry that only surfaces
   // the problem when something actually breaks.
 
-  const slackWebhookUrl = process.env.ALERT_SLACK_WEBHOOK_URL;
-  const slackToken = process.env.ALERT_SLACK_TOKEN;
-  const slackChannel = process.env.ALERT_SLACK_CHANNEL;
+  const slackWebhookUrl = process.env['ALERT_SLACK_WEBHOOK_URL'];
+  const slackToken = process.env['ALERT_SLACK_TOKEN'];
+  const slackChannel = process.env['ALERT_SLACK_CHANNEL'];
   if (slackWebhookUrl || slackToken) {
     registry.add(
       new SlackAlertProvider({
@@ -77,14 +77,14 @@ export function buildAlertRegistry(): AlertRegistry {
     );
   }
 
-  const discordWebhookUrl = process.env.ALERT_DISCORD_WEBHOOK_URL;
+  const discordWebhookUrl = process.env['ALERT_DISCORD_WEBHOOK_URL'];
   if (discordWebhookUrl) {
     registry.add(new DiscordAlertProvider({ webhookUrl: discordWebhookUrl }));
   }
 
-  const httpUrl = process.env.ALERT_HTTP_URL;
+  const httpUrl = process.env['ALERT_HTTP_URL'];
   if (httpUrl) {
-    const rawHeaders = process.env.ALERT_HTTP_HEADERS;
+    const rawHeaders = process.env['ALERT_HTTP_HEADERS'];
     const headers = rawHeaders
       ? z.record(z.string(), z.string()).parse(JSON.parse(rawHeaders))
       : undefined;

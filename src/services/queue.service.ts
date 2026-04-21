@@ -6,7 +6,7 @@ import { getSettings } from '../config';
 const queueInstances = new Map<string, Queue>();
 
 export function buildQueueName(providerName: string): string {
-  const prefix = process.env.BULLMQ_QUEUE_PREFIX ?? 'webhooks';
+  const prefix = process.env['BULLMQ_QUEUE_PREFIX'] ?? 'webhooks';
   return `${prefix}-${providerName}`;
 }
 

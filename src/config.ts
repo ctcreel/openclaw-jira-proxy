@@ -93,7 +93,7 @@ function parseJsonEnv(envVar: string): unknown[] | undefined {
 }
 
 function parseProviders(): ProviderConfig[] {
-  const raw = process.env.PROVIDERS_CONFIG;
+  const raw = process.env['PROVIDERS_CONFIG'];
   if (!raw) {
     return [];
   }
@@ -111,29 +111,29 @@ export function getSettings(): Settings {
     return cachedSettings;
   }
   cachedSettings = settingsSchema.parse({
-    nodeEnv: process.env.NODE_ENV,
-    port: process.env.PORT,
-    serviceName: process.env.SERVICE_NAME,
-    version: process.env.npm_package_version,
-    logLevel: process.env.LOG_LEVEL,
-    logFormat: process.env.LOG_FORMAT,
-    openclawToken: process.env.OPENCLAW_TOKEN,
-    openclawHookUrl: process.env.OPENCLAW_HOOK_URL,
-    openclawGatewayWsUrl: process.env.OPENCLAW_GATEWAY_WS_URL,
-    openclawAgentId: process.env.OPENCLAW_AGENT_ID,
-    redisUrl: process.env.REDIS_URL,
-    maxConcurrentRuns: process.env.MAX_CONCURRENT_RUNS,
-    agentWaitTimeoutMs: process.env.AGENT_WAIT_TIMEOUT_MS,
-    jobMaxAttempts: process.env.JOB_MAX_ATTEMPTS,
-    jobBackoffDelayMs: process.env.JOB_BACKOFF_DELAY_MS,
-    dedupTtlSeconds: process.env.DEDUP_TTL_SECONDS,
+    nodeEnv: process.env['NODE_ENV'],
+    port: process.env['PORT'],
+    serviceName: process.env['SERVICE_NAME'],
+    version: process.env['npm_package_version'],
+    logLevel: process.env['LOG_LEVEL'],
+    logFormat: process.env['LOG_FORMAT'],
+    openclawToken: process.env['OPENCLAW_TOKEN'],
+    openclawHookUrl: process.env['OPENCLAW_HOOK_URL'],
+    openclawGatewayWsUrl: process.env['OPENCLAW_GATEWAY_WS_URL'],
+    openclawAgentId: process.env['OPENCLAW_AGENT_ID'],
+    redisUrl: process.env['REDIS_URL'],
+    maxConcurrentRuns: process.env['MAX_CONCURRENT_RUNS'],
+    agentWaitTimeoutMs: process.env['AGENT_WAIT_TIMEOUT_MS'],
+    jobMaxAttempts: process.env['JOB_MAX_ATTEMPTS'],
+    jobBackoffDelayMs: process.env['JOB_BACKOFF_DELAY_MS'],
+    dedupTtlSeconds: process.env['DEDUP_TTL_SECONDS'],
     sessionsFilePath:
-      process.env.SESSIONS_FILE_PATH ||
-      `${process.env.HOME}/.openclaw/agents/${process.env.OPENCLAW_AGENT_ID || 'patch'}/sessions/sessions.json`,
+      process.env['SESSIONS_FILE_PATH'] ||
+      `${process.env['HOME']}/.openclaw/agents/${process.env['OPENCLAW_AGENT_ID'] || 'patch'}/sessions/sessions.json`,
     providers: parseProviders(),
-    configDir: process.env.CLAWNDOM_CONFIG_DIR,
+    configDir: process.env['CLAWNDOM_CONFIG_DIR'],
     agents: parseJsonEnv('AGENTS_CONFIG'),
-    agentToken: process.env.CLAWNDOM_AGENT_TOKEN,
+    agentToken: process.env['CLAWNDOM_AGENT_TOKEN'],
     secretProviders: parseJsonEnv('SECRETS_PROVIDERS_CONFIG'),
     secrets: parseJsonEnv('SECRETS_CONFIG'),
   });

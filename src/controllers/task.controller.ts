@@ -89,7 +89,7 @@ export function waitTaskHandler() {
       return;
     }
     const { agent, taskId } = request.params as { agent: string; taskId: string };
-    const timeoutMs = clampTimeout(request.query.timeoutMs);
+    const timeoutMs = clampTimeout(request.query['timeoutMs']);
     const result = await waitForTask(agent, taskId, timeoutMs);
     response.status(200).json(result);
   };

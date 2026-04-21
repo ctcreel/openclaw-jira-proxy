@@ -153,15 +153,15 @@ async function interpretBedrockResponse(
 // ---------------------------------------------------------------------------
 
 function resolveFromEnv(): AwsCredentials | null {
-  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  const accessKeyId = process.env['AWS_ACCESS_KEY_ID'];
+  const secretAccessKey = process.env['AWS_SECRET_ACCESS_KEY'];
   if (!accessKeyId || !secretAccessKey) {
     return null;
   }
   return {
     accessKeyId,
     secretAccessKey,
-    sessionToken: process.env.AWS_SESSION_TOKEN,
+    sessionToken: process.env['AWS_SESSION_TOKEN'],
   };
 }
 

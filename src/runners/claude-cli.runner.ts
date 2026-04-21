@@ -132,7 +132,7 @@ export class ClaudeCliRunner implements AgentRunner {
   isHealthy(): boolean {
     // Env-var injected token (Mac plist path) OR file-based credentials
     // written by `claude login` (Linux / EC2 path). Either is authoritative.
-    return process.env.CLAUDE_CODE_OAUTH_TOKEN !== undefined || existsSync(CREDENTIALS_PATH);
+    return process.env['CLAUDE_CODE_OAUTH_TOKEN'] !== undefined || existsSync(CREDENTIALS_PATH);
   }
 
   async run(options: RunOptions): Promise<RunResult> {
