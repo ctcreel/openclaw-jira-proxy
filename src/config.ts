@@ -97,11 +97,13 @@ function parseProviders(): ProviderConfig[] {
   if (!raw) {
     return [];
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(raw) as ProviderConfig[];
+    parsed = JSON.parse(raw);
   } catch {
     throw new Error('PROVIDERS_CONFIG is not valid JSON');
   }
+  return z.array(providerSchema).parse(parsed);
 }
 
 export function getSettings(): Settings {

@@ -14,10 +14,10 @@ import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { ResolvedAgent } from './agent-loader.service';
 import type { AlertRegistry } from './alerts';
-import type { JobAlert } from './alerts';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
 import { buildQueueName } from './queue.service';
+import { buildFailedHandler } from './worker-failure-handler';
 
 const logger = getLogger('worker');
 
@@ -242,136 +242,25 @@ export interface CreateWorkerOptions {
 
 export function createWorker(options: CreateWorkerOptions): Worker<string> {
   const { provider, agents, alertRegistry } = options;
-
   const settings = getSettings();
-  const redisUrl = settings.redisUrl;
-  const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
   const maxAttempts = settings.jobMaxAttempts;
 
-  const worker = new Worker<string>(
-    buildQueueName(provider.name),
-    (job) => processJob(job, provider, agents),
-    {
-      connection,
-      concurrency: 1,
-      removeOnComplete: { count: 100 },
-      removeOnFail: { count: 100 },
-    },
-  );
+  // One shared Redis connection for both the worker and the requeue Queue.
+  // A prior implementation created a fresh connection per failure, which
+  // under a bad-job storm leaked Redis sockets as fast as jobs failed.
+  const connection = new IORedis(settings.redisUrl, { maxRetriesPerRequest: null });
+  const queueName = buildQueueName(provider.name);
+  const requeueQueue = new Queue(queueName, { connection });
 
-  worker.on('failed', (job, error) => {
-    if (!job) return;
-
-    const envelope = parseEnvelope(job.data);
-    const isFinalFailure = envelope.attempt >= maxAttempts;
-    const traceId = envelope.originalJobId ?? String(job.id ?? 'unknown');
-    const jobIdString = String(job.id ?? 'unknown');
-
-    getEventBus().publish({
-      type: 'job.failed',
-      timestamp: Date.now(),
-      traceId,
-      jobId: jobIdString,
-      provider: provider.name,
-      error: error.message,
-      attempt: envelope.attempt,
-      final: isFinalFailure,
-    });
-
-    if (isFinalFailure) {
-      // Summarily executed in front of the other jobs so they will learn.
-      logger.error(
-        {
-          jobId: job.id,
-          provider: provider.name,
-          error: error.message,
-          attempt: envelope.attempt,
-          maxAttempts,
-        },
-        'Job permanently failed — all retries exhausted',
-      );
-
-      if (alertRegistry) {
-        const alert: JobAlert = {
-          jobId: traceId,
-          sessionKey: `agent:unknown:main`,
-          agentId: 'unknown',
-          error: error.message,
-          attempts: envelope.attempt,
-          maxAttempts,
-          provider: provider.name,
-          failedAt: new Date(),
-        };
-
-        alertRegistry.sendAll(alert).catch((err) => {
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err) },
-            'Alert dispatch failed',
-          );
-        });
-      }
-    } else {
-      // Bad job! Back to the end of the line.
-      logger.warn(
-        {
-          jobId: job.id,
-          provider: provider.name,
-          error: error.message,
-          attempt: envelope.attempt,
-          maxAttempts,
-          action: 'requeue-to-back',
-        },
-        'Job failed — re-enqueueing to back of queue',
-      );
-
-      const retryEnvelope: JobEnvelope = {
-        payload: envelope.payload,
-        attempt: envelope.attempt + 1,
-        originalJobId: envelope.originalJobId ?? job.id ?? undefined,
-      };
-
-      // Re-enqueue to the back with exponential delay — give runner time to recover
-      const delayMs = Math.min(5_000 * Math.pow(2, envelope.attempt - 1), 60_000);
-      const retryConn = new IORedis(redisUrl, { maxRetriesPerRequest: null });
-      const queue = new Queue(buildQueueName(provider.name), { connection: retryConn });
-      queue
-        .add('webhook-event', JSON.stringify(retryEnvelope), { delay: delayMs })
-        .then((requeued) => {
-          logger.info(
-            {
-              jobId: job.id,
-              provider: provider.name,
-              newAttempt: retryEnvelope.attempt,
-              originalJobId: retryEnvelope.originalJobId,
-            },
-            'Job re-enqueued to back of queue',
-          );
-          getEventBus().publish({
-            type: 'job.requeued',
-            timestamp: Date.now(),
-            traceId,
-            jobId: String(requeued.id ?? 'unknown'),
-            provider: provider.name,
-            attempt: retryEnvelope.attempt,
-            originalJobId: String(retryEnvelope.originalJobId ?? jobIdString),
-          });
-        })
-        .catch((err) => {
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err), jobId: job.id },
-            'Failed to re-enqueue job — job is lost',
-          );
-        })
-        .finally(() => {
-          queue.close().catch(() => {});
-          retryConn.quit().catch(() => {});
-        });
-    }
+  const worker = new Worker<string>(queueName, (job) => processJob(job, provider, agents), {
+    connection,
+    concurrency: 1,
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 100 },
   });
 
-  logger.info(
-    { provider: provider.name, queue: buildQueueName(provider.name), maxAttempts },
-    'Worker started',
-  );
+  worker.on('failed', buildFailedHandler(provider, requeueQueue, alertRegistry, maxAttempts));
+
+  logger.info({ provider: provider.name, queue: queueName, maxAttempts }, 'Worker started');
   return worker;
 }
