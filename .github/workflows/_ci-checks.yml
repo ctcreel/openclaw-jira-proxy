@@ -44,32 +44,8 @@ jobs:
       - uses: ./.github/actions/setup-node-pnpm
       - run: make security
 
-  sonarcloud:
-    name: SonarCloud
-    runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-node-pnpm
-      - name: Load Sonar token from 1Password
-        uses: 1password/load-secrets-action@v2
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          SONAR_TOKEN: op://Engineering/SONAR_TOKEN/credential
-      - run: make test
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+  # Note: a dedicated SonarCloud job used to live here, running the scan
+  # manually with a 1Password-loaded SONAR_TOKEN. It duplicated the
+  # SonarCloud GitHub App's automatic "SonarCloud Code Analysis" check
+  # that already runs on every PR — so the manual job is gone and the
+  # GitHub App is the sole source of Sonar analysis.
