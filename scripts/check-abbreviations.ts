@@ -18,11 +18,13 @@ import path from "node:path";
 const SCAN_DIRS = ["src", "infra"];
 const FILE_EXTENSIONS = new Set([".ts", ".tsx"]);
 
+// Note: "env" and "auth" are deliberately absent. Both are idiomatic in
+// Node.js/TypeScript (process.env, OAuth, authHeader, etc.) and banning
+// them collides with well-known protocol names and API surfaces.
 const FORBIDDEN: Record<string, string> = {
   usr: "user",
   pwd: "password",
   passwd: "password",
-  auth: "authentication",
   authn: "authentication",
   authz: "authorization",
   msg: "message",
@@ -44,7 +46,6 @@ const FORBIDDEN: Record<string, string> = {
   spec: "specification",
   arg: "argument",
   param: "parameter",
-  env: "environment",
   temp: "temporary",
   tmp: "temporary",
   curr: "current",

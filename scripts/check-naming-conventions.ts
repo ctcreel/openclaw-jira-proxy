@@ -136,6 +136,11 @@ function checkFile(filepath: string): Violation[] {
     return [{ file: filepath, line: 0, message: "Error reading file" }];
   }
 
+  // Blank out /* ... */ block comments (including JSDoc) while preserving
+  // line boundaries so prose like "pass a verify function via bearerStrategy()"
+  // doesn't trip FUNCTION_RE.
+  content = content.replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, " "));
+
   const lines = content.split("\n");
 
   // Track brace depth to determine if we're at top level
