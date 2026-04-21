@@ -88,8 +88,8 @@ export class GatewayClient {
           this.connectedPromise = null;
         }
       },
-      onConnectError: (err: Error): void => {
-        logger.error({ error: err.message }, 'Gateway WS connect error');
+      onConnectError: (error: Error): void => {
+        logger.error({ error: error.message }, 'Gateway WS connect error');
       },
       onClose: (_code: number, reason: string): void => {
         this.connected = false;
