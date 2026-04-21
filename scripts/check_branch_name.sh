@@ -2,7 +2,16 @@
 
 set -euo pipefail
 
-BRANCH_NAME=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)
+# GitHub Actions: on pull_request events HEAD is the merge commit (detached),
+# so prefer GITHUB_HEAD_REF; on push events use GITHUB_REF. Locally (husky
+# pre-push), fall back to the current branch.
+if [ -n "${GITHUB_HEAD_REF:-}" ]; then
+    BRANCH_NAME="$GITHUB_HEAD_REF"
+elif [ -n "${GITHUB_REF:-}" ] && [[ "$GITHUB_REF" == refs/heads/* ]]; then
+    BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+else
+    BRANCH_NAME=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)
+fi
 
 # Long-lived branches
 LONG_LIVED_BRANCHES="^(main|development|testing|demo|production)$"
