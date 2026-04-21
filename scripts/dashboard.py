@@ -113,6 +113,62 @@ def _shorten_path(path: str) -> str:
     return "/".join(parts[-2:]) if len(parts) >= 2 else path
 
 
+def _describe_bash(args: dict[str, Any]) -> str:
+    command = args.get("command", "")
+    if isinstance(command, str):
+        return command.split("\n", 1)[0][:60]
+    return ""
+
+
+def _describe_file_tool(args: dict[str, Any]) -> str:
+    path = args.get("file_path") or args.get("notebook_path", "")
+    if isinstance(path, str) and path:
+        return _shorten_path(path)
+    return ""
+
+
+def _describe_grep(args: dict[str, Any]) -> str:
+    pattern = str(args.get("pattern", ""))
+    scope = args.get("glob") or args.get("type") or args.get("path", "")
+    return f"{pattern[:35]}{f' in {scope}' if scope else ''}"[:55]
+
+
+def _describe_tool_search(args: dict[str, Any]) -> str:
+    query = str(args.get("query", ""))
+    if query.startswith("select:"):
+        names = [n for n in query[len("select:") :].split(",") if n]
+        if len(names) == 1:
+            # Show the tool suffix after the last `__` — that's the
+            # semantically meaningful part (getJiraIssue, createEvent).
+            return f"load {names[0].rsplit('__', 1)[-1]}"
+        return f"load {len(names)} tools"
+    return query[:55]
+
+
+def _describe_agent(args: dict[str, Any]) -> str:
+    subagent = args.get("subagent_type", "agent")
+    description = args.get("description", "")
+    return f"{subagent}: {description}"[:55]
+
+
+def _describe_todo_write(args: dict[str, Any]) -> str:
+    todos = args.get("todos", [])
+    return f"{len(todos)} todos" if isinstance(todos, list) else ""
+
+
+def _describe_mcp(args: dict[str, Any]) -> str:
+    for key in _MCP_ARG_PRIORITY:
+        value = args.get(key)
+        if isinstance(value, (str, int)):
+            return f"{key}={value}"[:55]
+    for key, value in args.items():
+        if key == "cloudId":
+            continue
+        if isinstance(value, str) and value:
+            return f"{key}={value[:40]}"
+    return ""
+
+
 def describe_tool_call(tool: str, args: Any) -> str:
     """Render a short detail string for a tool call so `Read` shows WHAT was
     read. Falls back to empty if args are missing — the renderer will just
@@ -121,46 +177,21 @@ def describe_tool_call(tool: str, args: Any) -> str:
         return ""
 
     if tool == "Bash":
-        command = args.get("command", "")
-        if isinstance(command, str):
-            return command.split("\n", 1)[0][:60]
-    elif tool in _FILE_TOOLS:
-        path = args.get("file_path") or args.get("notebook_path", "")
-        if isinstance(path, str) and path:
-            return _shorten_path(path)
-    elif tool == "Grep":
-        pattern = str(args.get("pattern", ""))
-        scope = args.get("glob") or args.get("type") or args.get("path", "")
-        return f"{pattern[:35]}{f' in {scope}' if scope else ''}"[:55]
-    elif tool == "Glob":
+        return _describe_bash(args)
+    if tool in _FILE_TOOLS:
+        return _describe_file_tool(args)
+    if tool == "Grep":
+        return _describe_grep(args)
+    if tool == "Glob":
         return str(args.get("pattern", ""))[:55]
-    elif tool == "ToolSearch":
-        query = str(args.get("query", ""))
-        if query.startswith("select:"):
-            names = [n for n in query[len("select:") :].split(",") if n]
-            if len(names) == 1:
-                # Show the tool suffix after the last `__` — that's the
-                # semantically meaningful part (getJiraIssue, createEvent).
-                return f"load {names[0].rsplit('__', 1)[-1]}"
-            return f"load {len(names)} tools"
-        return query[:55]
-    elif tool == "Agent":
-        subagent = args.get("subagent_type", "agent")
-        description = args.get("description", "")
-        return f"{subagent}: {description}"[:55]
-    elif tool == "TodoWrite":
-        todos = args.get("todos", [])
-        return f"{len(todos)} todos" if isinstance(todos, list) else ""
-    elif tool.startswith("mcp__"):
-        for key in _MCP_ARG_PRIORITY:
-            value = args.get(key)
-            if isinstance(value, (str, int)):
-                return f"{key}={value}"[:55]
-        for key, value in args.items():
-            if key == "cloudId":
-                continue
-            if isinstance(value, str) and value:
-                return f"{key}={value[:40]}"
+    if tool == "ToolSearch":
+        return _describe_tool_search(args)
+    if tool == "Agent":
+        return _describe_agent(args)
+    if tool == "TodoWrite":
+        return _describe_todo_write(args)
+    if tool.startswith("mcp__"):
+        return _describe_mcp(args)
     return ""
 
 
@@ -193,6 +224,135 @@ def _record_ticket_event(context_id: str, entry: dict[str, Any]) -> None:
     history.appendleft(entry)
 
 
+def _handle_webhook_accepted(trace_id: str, payload: dict[str, Any]) -> None:
+    STATE.trace_context[trace_id] = {
+        "id": payload.get("contextId", "?"),
+        "title": payload.get("contextTitle", "?"),
+        "status": payload.get("contextStatus", "?"),
+        "provider": payload.get("provider", "?"),
+    }
+
+
+def _handle_webhook_rejected(payload: dict[str, Any]) -> None:
+    reason = payload.get("reason", "?")
+    # Jira fan-out noise — these fire constantly on any ticket edit
+    # whose new status doesn't match a routing rule. Count them so
+    # we're not lying about the volume, but keep them out of RECENT
+    # so real work stays visible.
+    if reason == "no-routing-match":
+        STATE.routing_skipped_count += 1
+        STATE.routing_skipped_last_time = payload.get("timestamp", 0)
+    else:
+        STATE.recent.appendleft(
+            {
+                "kind": "rejected",
+                "time": payload.get("timestamp", 0),
+                "provider": payload.get("provider", "?"),
+                "reason": reason,
+            }
+        )
+
+
+def _handle_job_queued(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
+    STATE.job_trace[job_id] = trace_id
+    STATE.queued[job_id] = {
+        "provider": payload.get("provider", "?"),
+        "title": payload.get("contextTitle", "?"),
+        "context_id": payload.get("contextId", "?"),
+        "queued_at": payload.get("timestamp", 0),
+    }
+
+
+def _handle_job_requeued(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
+    STATE.job_trace[job_id] = trace_id
+    STATE.queued[job_id] = {
+        "provider": payload.get("provider", "?"),
+        "title": STATE.queued.get(job_id, {}).get("title", "?"),
+        "context_id": STATE.queued.get(job_id, {}).get("context_id", "?"),
+        "queued_at": payload.get("timestamp", 0),
+        "attempt": payload.get("attempt", 1),
+    }
+
+
+def _handle_job_started(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
+    STATE.job_trace[job_id] = trace_id
+    STATE.queued.pop(job_id, None)
+    STATE.active[job_id] = _new_active_entry(payload)
+
+
+def _handle_assistant_text(job_id: str, payload: dict[str, Any]) -> None:
+    if job_id not in STATE.active:
+        return
+    text = payload.get("text", "")
+    STATE.active[job_id]["phase"] = "thinking"
+    STATE.active[job_id]["latest"] = text[:120]
+    STATE.active[job_id]["text_history"].appendleft(
+        {"time": payload.get("timestamp", 0), "text": text}
+    )
+    STATE.active[job_id]["last_event_at"] = time.time()
+
+
+def _handle_tool_call(job_id: str, payload: dict[str, Any]) -> None:
+    if job_id not in STATE.active:
+        return
+    tool = payload.get("tool", "?")
+    detail = describe_tool_call(tool, payload.get("args"))
+    STATE.active[job_id]["tool"] = tool
+    STATE.active[job_id]["phase"] = f"tool: {tool}"
+    STATE.active[job_id]["tool_history"].appendleft(
+        {"time": payload.get("timestamp", 0), "tool": tool, "detail": detail}
+    )
+    STATE.active[job_id]["last_event_at"] = time.time()
+
+
+def _handle_runner_result(job_id: str, payload: dict[str, Any]) -> None:
+    if job_id not in STATE.active:
+        return
+    STATE.active[job_id]["turns"] = payload.get("turns", 0)
+    STATE.active[job_id]["cost"] = payload.get("costUsd", 0.0)
+    STATE.active[job_id]["phase"] = "finishing"
+    STATE.active[job_id]["last_event_at"] = time.time()
+
+
+def _handle_job_completed(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
+    state = STATE.active.pop(job_id, None)
+    ctx = STATE.trace_context.get(trace_id, {})
+    completion = {
+        "kind": "completed",
+        "time": payload.get("timestamp", 0),
+        "job_id": job_id,
+        "context": ctx,
+        "duration_ms": payload.get("durationMs", 0),
+        "turns": state.get("turns", 0) if state else 0,
+        "cost": state.get("cost", 0.0) if state else 0.0,
+        "agent_id": state.get("agent_id", "?") if state else "?",
+    }
+    STATE.recent.appendleft(completion)
+    _record_ticket_event(ctx.get("id", "?"), completion)
+
+
+def _handle_job_failed(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
+    # Always clear from active — a retry will arrive as a new jobId via
+    # job.started, not as a continuation of this one. Previously we only
+    # popped on `final` failures, which left non-final failures as
+    # zombies in the active list forever.
+    STATE.active.pop(job_id, None)
+    ctx = STATE.trace_context.get(trace_id, {})
+    if not payload.get("final"):
+        # Non-final failures will be followed by a job.requeued event
+        return
+    failure = {
+        "kind": "failed",
+        "time": payload.get("timestamp", 0),
+        "job_id": job_id,
+        "context": ctx,
+        "error": payload.get("error", "")[:60],
+        "attempt": payload.get("attempt", 0),
+    }
+    STATE.recent.appendleft(failure)
+    _record_ticket_event(ctx.get("id", "?"), failure)
+
+
 def handle_event(event_type: str, payload: dict[str, Any]) -> None:
     trace_id = payload.get("traceId", "")
     job_id = payload.get("jobId", "")
@@ -201,119 +361,25 @@ def handle_event(event_type: str, payload: dict[str, Any]) -> None:
         STATE.last_event_at = time.time()
 
         if event_type == "webhook.accepted":
-            STATE.trace_context[trace_id] = {
-                "id": payload.get("contextId", "?"),
-                "title": payload.get("contextTitle", "?"),
-                "status": payload.get("contextStatus", "?"),
-                "provider": payload.get("provider", "?"),
-            }
-
+            _handle_webhook_accepted(trace_id, payload)
         elif event_type == "webhook.rejected":
-            reason = payload.get("reason", "?")
-            # Jira fan-out noise — these fire constantly on any ticket edit
-            # whose new status doesn't match a routing rule. Count them so
-            # we're not lying about the volume, but keep them out of RECENT
-            # so real work stays visible.
-            if reason == "no-routing-match":
-                STATE.routing_skipped_count += 1
-                STATE.routing_skipped_last_time = payload.get("timestamp", 0)
-            else:
-                STATE.recent.appendleft(
-                    {
-                        "kind": "rejected",
-                        "time": payload.get("timestamp", 0),
-                        "provider": payload.get("provider", "?"),
-                        "reason": reason,
-                    }
-                )
-
+            _handle_webhook_rejected(payload)
         elif event_type == "job.queued":
-            STATE.job_trace[job_id] = trace_id
-            STATE.queued[job_id] = {
-                "provider": payload.get("provider", "?"),
-                "title": payload.get("contextTitle", "?"),
-                "context_id": payload.get("contextId", "?"),
-                "queued_at": payload.get("timestamp", 0),
-            }
-
+            _handle_job_queued(job_id, trace_id, payload)
         elif event_type == "job.requeued":
-            STATE.job_trace[job_id] = trace_id
-            STATE.queued[job_id] = {
-                "provider": payload.get("provider", "?"),
-                "title": STATE.queued.get(job_id, {}).get("title", "?"),
-                "context_id": STATE.queued.get(job_id, {}).get("context_id", "?"),
-                "queued_at": payload.get("timestamp", 0),
-                "attempt": payload.get("attempt", 1),
-            }
-
+            _handle_job_requeued(job_id, trace_id, payload)
         elif event_type == "job.started":
-            STATE.job_trace[job_id] = trace_id
-            STATE.queued.pop(job_id, None)
-            STATE.active[job_id] = _new_active_entry(payload)
-
+            _handle_job_started(job_id, trace_id, payload)
         elif event_type == "runner.assistant_text":
-            if job_id in STATE.active:
-                text = payload.get("text", "")
-                STATE.active[job_id]["phase"] = "thinking"
-                STATE.active[job_id]["latest"] = text[:120]
-                STATE.active[job_id]["text_history"].appendleft(
-                    {"time": payload.get("timestamp", 0), "text": text}
-                )
-                STATE.active[job_id]["last_event_at"] = time.time()
-
+            _handle_assistant_text(job_id, payload)
         elif event_type == "runner.tool_call":
-            if job_id in STATE.active:
-                tool = payload.get("tool", "?")
-                detail = describe_tool_call(tool, payload.get("args"))
-                STATE.active[job_id]["tool"] = tool
-                STATE.active[job_id]["phase"] = f"tool: {tool}"
-                STATE.active[job_id]["tool_history"].appendleft(
-                    {"time": payload.get("timestamp", 0), "tool": tool, "detail": detail}
-                )
-                STATE.active[job_id]["last_event_at"] = time.time()
-
+            _handle_tool_call(job_id, payload)
         elif event_type == "runner.result":
-            if job_id in STATE.active:
-                STATE.active[job_id]["turns"] = payload.get("turns", 0)
-                STATE.active[job_id]["cost"] = payload.get("costUsd", 0.0)
-                STATE.active[job_id]["phase"] = "finishing"
-                STATE.active[job_id]["last_event_at"] = time.time()
-
+            _handle_runner_result(job_id, payload)
         elif event_type == "job.completed":
-            state = STATE.active.pop(job_id, None)
-            ctx = STATE.trace_context.get(trace_id, {})
-            completion = {
-                "kind": "completed",
-                "time": payload.get("timestamp", 0),
-                "job_id": job_id,
-                "context": ctx,
-                "duration_ms": payload.get("durationMs", 0),
-                "turns": state.get("turns", 0) if state else 0,
-                "cost": state.get("cost", 0.0) if state else 0.0,
-                "agent_id": state.get("agent_id", "?") if state else "?",
-            }
-            STATE.recent.appendleft(completion)
-            _record_ticket_event(ctx.get("id", "?"), completion)
-
+            _handle_job_completed(job_id, trace_id, payload)
         elif event_type == "job.failed":
-            # Always clear from active — a retry will arrive as a new jobId via
-            # job.started, not as a continuation of this one. Previously we only
-            # popped on `final` failures, which left non-final failures as
-            # zombies in the active list forever.
-            STATE.active.pop(job_id, None)
-            ctx = STATE.trace_context.get(trace_id, {})
-            if payload.get("final"):
-                failure = {
-                    "kind": "failed",
-                    "time": payload.get("timestamp", 0),
-                    "job_id": job_id,
-                    "context": ctx,
-                    "error": payload.get("error", "")[:60],
-                    "attempt": payload.get("attempt", 0),
-                }
-                STATE.recent.appendleft(failure)
-                _record_ticket_event(ctx.get("id", "?"), failure)
-            # Non-final failures will be followed by a job.requeued event
+            _handle_job_failed(job_id, trace_id, payload)
 
 
 # ── SSE reader ───────────────────────────────────────────────────────
@@ -352,6 +418,17 @@ def stream_events(url: str, stop_event: threading.Event) -> None:
         backoff = min(backoff * 2, 15.0)
 
 
+def _dispatch_sse_frame(event: str, data: list[str]) -> None:
+    if not data:
+        return
+    payload_text = "\n".join(data)
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        payload = {}
+    handle_event(event, payload)
+
+
 def parse_sse_stream(stream: Any, stop_event: threading.Event) -> None:
     """Parse SSE framing: `event: foo\\ndata: {...}\\n\\n`."""
     current_event = "message"
@@ -363,13 +440,7 @@ def parse_sse_stream(stream: Any, stop_event: threading.Event) -> None:
         line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
 
         if line == "":
-            if current_data:
-                payload_text = "\n".join(current_data)
-                try:
-                    payload = json.loads(payload_text)
-                except json.JSONDecodeError:
-                    payload = {}
-                handle_event(current_event, payload)
+            _dispatch_sse_frame(current_event, current_data)
             current_event = "message"
             current_data = []
             continue
@@ -507,14 +578,9 @@ def _render_header(
     ]
 
 
-def _render_active_job(
-    job_id: str,
-    job: dict[str, Any],
-    job_trace: dict[str, str],
-    trace_context: dict[str, dict[str, str]],
+def _render_active_job_header(
+    ctx: dict[str, str], job: dict[str, Any]
 ) -> list[str]:
-    trace_id = job_trace.get(job_id, "")
-    ctx = trace_context.get(trace_id, {"id": "?", "title": "?", "status": "?"})
     elapsed_seconds = (time.time() * 1000 - job["started_at"]) / 1000
     elapsed_text = _format_elapsed(elapsed_seconds)
     is_stale = (time.time() - job["last_event_at"]) > ACTIVE_STALE_SECONDS
@@ -536,28 +602,48 @@ def _render_active_job(
     title = ctx.get("title") or "?"
     if title != "?":
         lines.append(f"     {DIM}{title[:72]}{RESET}")
+    return lines
 
-    tool_history = list(job.get("tool_history") or ())
-    if tool_history:
-        lines.append(f"     {DIM}tools:{RESET}")
-        for entry in tool_history:
-            tool_name = entry["tool"]
-            detail = entry.get("detail", "")
-            timestamp = format_time(entry.get("time", 0))
-            detail_text = f"  {detail}" if detail else ""
-            lines.append(
-                f"       {DIM}{timestamp}{RESET}  {MAGENTA}{tool_name:<16}{RESET}"
-                f"{DIM}{detail_text[:56]}{RESET}"
-            )
 
-    text_history = list(job.get("text_history") or ())
-    if text_history:
-        lines.append(f"     {DIM}said:{RESET}")
-        for entry in text_history:
-            text = (entry.get("text") or "").replace("\n", " ")
-            timestamp = format_time(entry.get("time", 0))
-            lines.append(f"       {DIM}{timestamp}  \u201c{text[:60]}\u2026\u201d{RESET}")
+def _render_tool_history(tool_history: list[dict[str, Any]]) -> list[str]:
+    if not tool_history:
+        return []
+    lines = [f"     {DIM}tools:{RESET}"]
+    for entry in tool_history:
+        tool_name = entry["tool"]
+        detail = entry.get("detail", "")
+        timestamp = format_time(entry.get("time", 0))
+        detail_text = f"  {detail}" if detail else ""
+        lines.append(
+            f"       {DIM}{timestamp}{RESET}  {MAGENTA}{tool_name:<16}{RESET}"
+            f"{DIM}{detail_text[:56]}{RESET}"
+        )
+    return lines
 
+
+def _render_text_history(text_history: list[dict[str, Any]]) -> list[str]:
+    if not text_history:
+        return []
+    lines = [f"     {DIM}said:{RESET}"]
+    for entry in text_history:
+        text = (entry.get("text") or "").replace("\n", " ")
+        timestamp = format_time(entry.get("time", 0))
+        lines.append(f"       {DIM}{timestamp}  \u201c{text[:60]}\u2026\u201d{RESET}")
+    return lines
+
+
+def _render_active_job(
+    job_id: str,
+    job: dict[str, Any],
+    job_trace: dict[str, str],
+    trace_context: dict[str, dict[str, str]],
+) -> list[str]:
+    trace_id = job_trace.get(job_id, "")
+    ctx = trace_context.get(trace_id, {"id": "?", "title": "?", "status": "?"})
+
+    lines = _render_active_job_header(ctx, job)
+    lines.extend(_render_tool_history(list(job.get("tool_history") or ())))
+    lines.extend(_render_text_history(list(job.get("text_history") or ())))
     return lines
 
 
@@ -682,7 +768,7 @@ def render(url: str) -> str:
 
 
 # ── Main loop ────────────────────────────────────────────────────────
-def main() -> int:
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="print one snapshot then exit")
     parser.add_argument(
@@ -703,7 +789,7 @@ def main() -> int:
         bootstrap_active_jobs(url)
         sys.stdout.write(render(url))
         sys.stdout.flush()
-        return 0
+        return
 
     stop_event = threading.Event()
 
@@ -735,8 +821,6 @@ def main() -> int:
     finally:
         print(f"\n{DIM}Dashboard stopped.{RESET}")
 
-    return 0
-
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
