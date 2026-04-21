@@ -38,6 +38,9 @@ const CORE_VERBS = new Set([
   "search", "find", "filter", "sort", "merge", "split", "join",
   "register", "unregister", "subscribe", "unsubscribe", "publish",
   "download", "upload", "sync", "extract", "emit", "notify", "sleep",
+  "resolve", "interpret", "preprocess", "invoke", "install", "schedule",
+  "sign", "requeue", "wait", "map", "group", "replace", "collect",
+  "enqueue", "dequeue", "hash", "try", "clamp", "list",
   // Boolean prefixes
   "is", "has", "can", "should", "will", "was", "are", "have",
 ]);

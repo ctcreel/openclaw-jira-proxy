@@ -69,12 +69,12 @@ export class BedrockRunner implements AgentRunner {
       const response = await invokeBedrockModel(url, this.region, options);
       return await interpretBedrockResponse(response, options, startedAt);
     } catch (error) {
-      return toErrorResult(error, options, startedAt);
+      return buildErrorResult(error, options, startedAt);
     }
   }
 }
 
-function toErrorResult(error: unknown, options: RunOptions, startedAt: string): RunResult {
+function buildErrorResult(error: unknown, options: RunOptions, startedAt: string): RunResult {
   const endedAt = new Date().toISOString();
   if (error instanceof DOMException && error.name === 'TimeoutError') {
     return {

@@ -35,7 +35,7 @@ async function interpretOpenAiResponse(
   return { status: 'ok', runId: data.id, startedAt, endedAt, renderedPrompt: options.prompt };
 }
 
-function toErrorResult(error: unknown, options: RunOptions, startedAt: string): RunResult {
+function buildErrorResult(error: unknown, options: RunOptions, startedAt: string): RunResult {
   const endedAt = new Date().toISOString();
   if (error instanceof DOMException && error.name === 'TimeoutError') {
     return {
@@ -94,7 +94,7 @@ export class OpenAiRunner implements AgentRunner {
       });
       return await interpretOpenAiResponse(response, options, startedAt);
     } catch (error) {
-      return toErrorResult(error, options, startedAt);
+      return buildErrorResult(error, options, startedAt);
     }
   }
 }

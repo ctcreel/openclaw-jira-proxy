@@ -222,7 +222,7 @@ async function enqueueWebhookEvent(
   );
 }
 
-function safeParseJson(raw: string): unknown {
+function tryParseJson(raw: string): unknown {
   try {
     return JSON.parse(raw);
   } catch {
@@ -248,7 +248,7 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
     const rawBody = verifyRequestSignature(request, response, provider, strategy, events, traceId);
     if (rawBody === null) return;
 
-    const parsedPayload = safeParseJson(rawBody.toString('utf-8'));
+    const parsedPayload = tryParseJson(rawBody.toString('utf-8'));
 
     if (handleSlackChallenge(parsedPayload, response, provider)) return;
 

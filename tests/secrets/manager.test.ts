@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { SecretManager } from '../../src/secrets/manager';
 import { registerSecretProvider, resetSecretProviders } from '../../src/secrets/registry';
@@ -139,5 +139,93 @@ describe('SecretManager', () => {
     await manager.initialize();
     expect(manager.isHealthy()).toBe(true);
     manager.close();
+  });
+
+  describe('refresh timer', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('schedules periodic refresh when a binding has a ttl', async () => {
+      mockProvider.resolveFn.mockResolvedValue(new Map([['key', 'v1']]));
+      const bindings: SecretBinding[] = [
+        { key: 'key', provider: 'mock', reference: 'ref', required: true, ttlSeconds: 120 },
+      ];
+      const manager = new SecretManager(bindings);
+      await manager.initialize();
+
+      // Second resolve returns a fresh value
+      mockProvider.resolveFn.mockResolvedValue(new Map([['key', 'v2']]));
+
+      // Advance time past the refresh interval (120s - 60s = 60s refresh window)
+      await vi.advanceTimersByTimeAsync(61_000);
+
+      expect(manager.getSecret('key')).toBe('v2');
+      manager.close();
+    });
+
+    it('ignores bindings without a ttl', async () => {
+      mockProvider.resolveFn.mockResolvedValue(new Map([['key', 'v1']]));
+      const bindings: SecretBinding[] = [
+        { key: 'key', provider: 'mock', reference: 'ref', required: true },
+      ];
+      const manager = new SecretManager(bindings);
+      await manager.initialize();
+
+      mockProvider.resolveFn.mockClear();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(mockProvider.resolveFn).not.toHaveBeenCalled();
+      manager.close();
+    });
+
+    it('batches refresh of bindings sharing the same provider + ttl', async () => {
+      mockProvider.resolveFn.mockResolvedValue(
+        new Map([
+          ['a', '1'],
+          ['b', '2'],
+        ]),
+      );
+      const bindings: SecretBinding[] = [
+        { key: 'a', provider: 'mock', reference: 'ra', required: true, ttlSeconds: 120 },
+        { key: 'b', provider: 'mock', reference: 'rb', required: true, ttlSeconds: 120 },
+      ];
+      const manager = new SecretManager(bindings);
+      await manager.initialize();
+
+      mockProvider.resolveFn.mockClear();
+      mockProvider.resolveFn.mockResolvedValue(
+        new Map([
+          ['a', '1b'],
+          ['b', '2b'],
+        ]),
+      );
+      await vi.advanceTimersByTimeAsync(61_000);
+
+      // Both keys refreshed in a single provider call
+      expect(mockProvider.resolveFn).toHaveBeenCalledTimes(1);
+      expect(manager.getSecret('a')).toBe('1b');
+      expect(manager.getSecret('b')).toBe('2b');
+      manager.close();
+    });
+
+    it('tolerates a transient refresh failure without crashing', async () => {
+      mockProvider.resolveFn.mockResolvedValueOnce(new Map([['key', 'v1']]));
+      const bindings: SecretBinding[] = [
+        { key: 'key', provider: 'mock', reference: 'ref', required: false, ttlSeconds: 120 },
+      ];
+      const manager = new SecretManager(bindings);
+      await manager.initialize();
+
+      mockProvider.resolveFn.mockRejectedValueOnce(new Error('provider down'));
+      await vi.advanceTimersByTimeAsync(61_000);
+
+      // Last-known-good value stays available
+      expect(manager.getSecret('key')).toBe('v1');
+      manager.close();
+    });
   });
 });
