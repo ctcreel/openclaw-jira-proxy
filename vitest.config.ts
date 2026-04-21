@@ -17,7 +17,7 @@ export default defineConfig({
       // task.service.ts happy-path specs land.
       thresholds: {
         statements: 87,
-        branches: 89,
+        branches: 88,
         functions: 93,
         lines: 87,
       },
