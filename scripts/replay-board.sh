@@ -38,7 +38,7 @@ ISSUES_JSON=$(curl -s -X POST "${JIRA_API}/search/jql" \
 ISSUE_COUNT=$(echo "$ISSUES_JSON" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(len(d.get('issues',[])))")
 echo "📋 Found $ISSUE_COUNT actionable tickets"
 
-if [ "$ISSUE_COUNT" -eq 0 ]; then
+if [[ "$ISSUE_COUNT" -eq 0 ]]; then
   echo "Nothing to replay."
   exit 0
 fi

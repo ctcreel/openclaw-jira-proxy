@@ -1,9 +1,8 @@
 import { createApp } from './app';
-import { setupLogging } from './lib/logging';
+import { setupLogging, getLogger } from './lib/logging';
 import { getSettings } from './config';
 import type { ProviderConfig, Settings } from './config';
 import type { Logger } from 'pino';
-import { getLogger } from './lib/logging';
 import { getActiveJobsRegistry } from './services/active-jobs.service';
 import { loadAgents } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
@@ -198,7 +197,9 @@ async function startServer(): Promise<void> {
   installShutdownHandlers(secretManager, runnersWithConnections, logger);
 }
 
-startServer().catch((error: unknown) => {
+try {
+  await startServer();
+} catch (error: unknown) {
   console.error('Failed to start server:', error);
   process.exit(1);
-});
+}

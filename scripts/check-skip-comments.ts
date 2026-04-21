@@ -123,7 +123,7 @@ function main(): number {
 
   if (allViolations.length > 0) {
     console.log("x Skip comments found (these bypass checks instead of fixing issues):\n");
-    const sorted = allViolations.sort((a, b) => `${a.file}:${a.line}`.localeCompare(`${b.file}:${b.line}`));
+    const sorted = allViolations.toSorted((a, b) => `${a.file}:${a.line}`.localeCompare(`${b.file}:${b.line}`));
     for (const v of sorted) {
       console.log(`  ${v.file}:${v.line}: ${v.patternName}`);
       console.log(`    ${v.lineContent}\n`);

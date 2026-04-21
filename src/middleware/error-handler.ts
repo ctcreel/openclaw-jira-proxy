@@ -12,7 +12,9 @@ export function createErrorHandler(): ErrorRequestHandler {
 
       response.status(error.httpStatus).json({
         type: `https://errors.clawndom.dev/${error.errorCode}`,
-        title: error.errorCode.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
+        title: error.errorCode
+          .replaceAll('_', ' ')
+          .replaceAll(/\b\w/g, (char) => char.toUpperCase()),
         status: error.httpStatus,
         detail: error.message,
         ...(Object.keys(error.context).length > 0 ? { context: error.context } : {}),

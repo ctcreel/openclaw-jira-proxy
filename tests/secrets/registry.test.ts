@@ -7,7 +7,7 @@ import {
   resetSecretProviders,
 } from '../../src/secrets/registry';
 import { EnvSecretProvider } from '../../src/secrets/env.provider';
-import type { SecretProvider, SecretBinding } from '../../src/secrets/types';
+import type { SecretProvider } from '../../src/secrets/types';
 
 class FakeProvider implements SecretProvider {
   readonly name = 'fake';

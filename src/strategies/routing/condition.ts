@@ -66,15 +66,25 @@ export const conditionSchema: z.ZodType<Condition> = z.lazy(() =>
   ]),
 );
 
+function stringifyResolved(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
 function evaluateEquals(payload: unknown, field: string, target: string): boolean {
   const resolved = resolveFieldPath(payload, field);
   if (resolved === undefined || resolved === null) {
     return false;
   }
   if (Array.isArray(resolved)) {
-    return resolved.some((element) => String(element) === target);
+    return resolved.some((element) => stringifyResolved(element) === target);
   }
-  return String(resolved) === target;
+  return stringifyResolved(resolved) === target;
 }
 
 function evaluateIn(payload: unknown, field: string, values: readonly string[]): boolean {
@@ -84,9 +94,9 @@ function evaluateIn(payload: unknown, field: string, values: readonly string[]):
   }
   const targets = new Set(values);
   if (Array.isArray(resolved)) {
-    return resolved.some((element) => targets.has(String(element)));
+    return resolved.some((element) => targets.has(stringifyResolved(element)));
   }
-  return targets.has(String(resolved));
+  return targets.has(stringifyResolved(resolved));
 }
 
 function evaluateMatches(
@@ -101,9 +111,9 @@ function evaluateMatches(
   }
   const regex = new RegExp(pattern, flags);
   if (Array.isArray(resolved)) {
-    return resolved.some((element) => regex.test(String(element)));
+    return resolved.some((element) => regex.test(stringifyResolved(element)));
   }
-  return regex.test(String(resolved));
+  return regex.test(stringifyResolved(resolved));
 }
 
 function evaluateExists(payload: unknown, field: string): boolean {

@@ -36,6 +36,50 @@ export const StreamEventSchema = z
 
 export type StreamEvent = z.infer<typeof StreamEventSchema>;
 
+type ContentBlock = NonNullable<NonNullable<StreamEvent['message']>['content']>[number];
+
+function emitTextBlock(
+  runId: string,
+  traceId: string | undefined,
+  jobId: string | undefined,
+  text: string,
+  timestamp: number,
+): void {
+  const preview = text.length > 200 ? text.slice(0, 200) + '...' : text;
+  logger.info({ runId, event: 'assistant_text' }, preview);
+  if (traceId && jobId) {
+    getEventBus().publish({
+      type: 'runner.assistant_text',
+      timestamp,
+      traceId,
+      jobId,
+      runId,
+      text,
+    });
+  }
+}
+
+function emitToolUseBlock(
+  runId: string,
+  traceId: string | undefined,
+  jobId: string | undefined,
+  block: ContentBlock,
+  timestamp: number,
+): void {
+  logger.info({ runId, event: 'tool_call', tool: block.name }, `Tool: ${block.name ?? ''}`);
+  if (traceId && jobId) {
+    getEventBus().publish({
+      type: 'runner.tool_call',
+      timestamp,
+      traceId,
+      jobId,
+      runId,
+      tool: String(block.name ?? ''),
+      args: block.input,
+    });
+  }
+}
+
 function emitAssistantEvents(
   runId: string,
   traceId: string | undefined,
@@ -44,36 +88,13 @@ function emitAssistantEvents(
 ): void {
   const content = event.message?.content;
   if (!content) return;
-  const bus = getEventBus();
   const timestamp = Date.now();
 
   for (const block of content) {
     if (block.type === 'text' && typeof block.text === 'string') {
-      const preview = block.text.length > 200 ? block.text.slice(0, 200) + '...' : block.text;
-      logger.info({ runId, event: 'assistant_text' }, preview);
-      if (traceId && jobId) {
-        bus.publish({
-          type: 'runner.assistant_text',
-          timestamp,
-          traceId,
-          jobId,
-          runId,
-          text: block.text,
-        });
-      }
+      emitTextBlock(runId, traceId, jobId, block.text, timestamp);
     } else if (block.type === 'tool_use') {
-      logger.info({ runId, event: 'tool_call', tool: block.name }, `Tool: ${block.name ?? ''}`);
-      if (traceId && jobId) {
-        bus.publish({
-          type: 'runner.tool_call',
-          timestamp,
-          traceId,
-          jobId,
-          runId,
-          tool: String(block.name ?? ''),
-          args: block.input,
-        });
-      }
+      emitToolUseBlock(runId, traceId, jobId, block, timestamp);
     }
   }
 }

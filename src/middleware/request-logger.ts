@@ -25,10 +25,10 @@ export function createRequestLogger(): RequestHandler {
         break;
       }
     }
-    if (!correlationId) {
-      correlationId = generateCorrelationId();
-    } else {
+    if (correlationId) {
       setCorrelationId(correlationId);
+    } else {
+      correlationId = generateCorrelationId();
     }
 
     setExtraContext({

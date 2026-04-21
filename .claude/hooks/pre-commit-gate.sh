@@ -40,11 +40,11 @@ fi
 # Validate commit message follows Conventional Commits format
 # Extract the message from -m "..." or -m '...' (macOS-compatible, no grep -P)
 COMMIT_MSG=$(echo "$COMMAND" | sed -nE 's/.*-m[[:space:]]+"([^"]+)".*/\1/p' || true)
-if [ -z "$COMMIT_MSG" ]; then
+if [[ -z "$COMMIT_MSG" ]]; then
     COMMIT_MSG=$(echo "$COMMAND" | sed -nE "s/.*-m[[:space:]]+'([^']+)'.*/\1/p" || true)
 fi
 
-if [ -n "$COMMIT_MSG" ]; then
+if [[ -n "$COMMIT_MSG" ]]; then
     PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?!?: .+'
     if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
         echo "Commit message does not follow Conventional Commits format." >&2

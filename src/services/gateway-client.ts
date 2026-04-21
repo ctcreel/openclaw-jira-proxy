@@ -59,7 +59,7 @@ export interface AgentRunResult {
  * repo so the WS path stays an option without a reintroduction cost.
  */
 export class GatewayClient {
-  private client: SdkGatewayClient;
+  private readonly client: SdkGatewayClient;
   private started = false;
   private connected = false;
   private connectedPromise: Promise<void> | null = null;

@@ -67,7 +67,9 @@ async function main(): Promise<void> {
   process.stdout.write(rendered);
 }
 
-main().catch((error: unknown) => {
+try {
+  await main();
+} catch (error: unknown) {
   console.error('Preview failed:', error instanceof Error ? error.message : String(error));
   process.exit(1);
-});
+}

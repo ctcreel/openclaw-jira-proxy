@@ -37,9 +37,7 @@ export class EventBus {
 let instance: EventBus | null = null;
 
 export function getEventBus(): EventBus {
-  if (instance === null) {
-    instance = new EventBus();
-  }
+  instance ??= new EventBus();
   return instance;
 }
 

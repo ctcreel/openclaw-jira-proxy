@@ -24,13 +24,14 @@ CLAWNDOM_ENV_DIR="/etc/clawndom"
 CLAWNDOM_LOG_DIR="/var/log/clawndom"
 TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-clawndom}"
 
-log() { echo "[bootstrap] $*"; }
+log() { echo "[bootstrap] $*"; return 0; }
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
     echo "This script must run as root (use sudo)." >&2
     exit 1
   fi
+  return 0
 }
 
 install_system_deps() {
@@ -39,6 +40,7 @@ install_system_deps() {
   apt-get update -y
   apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg git redis-server jq unzip build-essential
+  return 0
 }
 
 install_tailscale() {
@@ -116,6 +118,7 @@ clone_repo() {
     git clone "${CLAWNDOM_REPO_URL}" "${CLAWNDOM_REPO}"
   fi
   chown -R "${CLAWNDOM_USER}:${CLAWNDOM_USER}" "${CLAWNDOM_REPO}"
+  return 0
 }
 
 create_dirs() {
@@ -136,6 +139,7 @@ create_dirs() {
 
   mkdir -p "${CLAWNDOM_HOME}/.openclaw" "${CLAWNDOM_HOME}/.clawndom/agents" "${CLAWNDOM_HOME}/.claude"
   chown -R "${CLAWNDOM_USER}:${CLAWNDOM_USER}" "${CLAWNDOM_HOME}"
+  return 0
 }
 
 install_systemd_units() {
@@ -161,6 +165,7 @@ install_systemd_units() {
   systemctl start clawndom-sync-agents.timer
   systemctl enable clawndom-claude-refresh.timer
   systemctl start clawndom-claude-refresh.timer
+  return 0
 }
 
 configure_redis() {
@@ -168,6 +173,7 @@ configure_redis() {
   sed -i 's/^bind .*/bind 127.0.0.1 ::1/' /etc/redis/redis.conf
   sed -i 's/^# *protected-mode .*/protected-mode yes/' /etc/redis/redis.conf
   systemctl restart redis-server
+  return 0
 }
 
 summary() {
@@ -190,6 +196,7 @@ Next steps (run as root):
 
 ────────────────────────────────────────────
 EOF
+  return 0
 }
 
 main() {
@@ -206,6 +213,7 @@ main() {
   install_systemd_units
   configure_redis
   summary
+  return 0
 }
 
 main "$@"

@@ -21,7 +21,11 @@ TOKEN_URL="https://platform.claude.com/v1/oauth/token"
 CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 SKIP_THRESHOLD_SECONDS=7200
 
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1"; }
+log() {
+  local message="$1"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $message"
+  return 0
+}
 
 if [[ ! -f "$CREDS" ]]; then
   log "ERROR: $CREDS missing — run 'claude login' first"

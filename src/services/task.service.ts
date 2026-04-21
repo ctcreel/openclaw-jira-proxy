@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
 import { Queue, QueueEvents } from 'bullmq';
-import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { z } from 'zod';
 
@@ -187,4 +186,4 @@ export function parseTaskEnvelope(data: string): TaskEnvelope {
   return result.data;
 }
 
-export type { Job };
+export type { Job } from 'bullmq';

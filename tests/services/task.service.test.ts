@@ -34,11 +34,15 @@ vi.mock('bullmq', () => {
         },
       };
     }
-    async close() {}
+    async close() {
+      return undefined;
+    }
   }
 
   class QueueEventsMock {
-    async close() {}
+    async close() {
+      return undefined;
+    }
   }
 
   return {

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('fs/promises', () => ({
+vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
 }));
 
-import { readFile } from 'fs/promises';
+import { readFile } from 'node:fs/promises';
 import { renderTemplate } from '../../../src/lib/template/template-engine';
 
 const BASE_DIR = '/agents/patch';
