@@ -5,6 +5,7 @@ import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 
 import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
@@ -21,27 +22,27 @@ import { buildFailedHandler } from './worker-failure-handler';
 
 const logger = getLogger('worker');
 
-export interface JobEnvelope {
-  payload: string;
-  attempt: number;
-  originalJobId?: string;
-}
+const JobEnvelopeSchema = z.object({
+  payload: z.string(),
+  attempt: z.number(),
+  originalJobId: z.string().optional(),
+});
+
+export type JobEnvelope = z.infer<typeof JobEnvelopeSchema>;
 
 /** Parse raw job data into an envelope. Re-enqueued jobs already have the envelope shape. */
 export function parseEnvelope(data: string): JobEnvelope {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(data);
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'payload' in parsed &&
-      'attempt' in parsed
-    ) {
-      return parsed as JobEnvelope;
-    }
+    parsed = JSON.parse(data);
   } catch {
-    // Not JSON or not an envelope — treat as raw payload
+    return { payload: data, attempt: 1 };
   }
+  const result = JobEnvelopeSchema.safeParse(parsed);
+  if (result.success) {
+    return result.data;
+  }
+  // Not an envelope — treat the raw data as a first-attempt payload
   return { payload: data, attempt: 1 };
 }
 

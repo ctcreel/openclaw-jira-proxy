@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import { getLogger } from '../../lib/logging';
 import { DiscordAlertProvider } from './discord-provider';
 import { HttpAlertProvider } from './http-provider';
@@ -83,7 +85,9 @@ export function buildAlertRegistry(): AlertRegistry {
   const httpUrl = process.env.ALERT_HTTP_URL;
   if (httpUrl) {
     const rawHeaders = process.env.ALERT_HTTP_HEADERS;
-    const headers = rawHeaders ? (JSON.parse(rawHeaders) as Record<string, string>) : undefined;
+    const headers = rawHeaders
+      ? z.record(z.string(), z.string()).parse(JSON.parse(rawHeaders))
+      : undefined;
     registry.add(new HttpAlertProvider({ url: httpUrl, headers }));
   }
 

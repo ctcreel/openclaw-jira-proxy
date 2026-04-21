@@ -89,8 +89,18 @@ function verifyRequestSignature(
     return null;
   }
 
-  // Raw-body middleware guarantees Buffer here; documented in src/app.ts.
-  const rawBody = request.body as Buffer;
+  // Raw-body middleware (src/app.ts) should deliver a Buffer. A runtime
+  // check here catches route-level misconfiguration instead of letting
+  // HMAC validation fail against a stringified payload.
+  if (!Buffer.isBuffer(request.body)) {
+    logger.error(
+      { provider: provider.name },
+      'Webhook route is not configured with raw-body parser',
+    );
+    response.status(500).json({ error: 'Provider misconfigured' });
+    return null;
+  }
+  const rawBody: Buffer = request.body;
   const additionalHeaders = collectAdditionalHeaders(request, strategy);
 
   if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret, additionalHeaders)) {

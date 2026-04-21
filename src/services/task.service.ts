@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Queue, QueueEvents } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
+import { z } from 'zod';
 
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
@@ -17,11 +18,13 @@ export interface TaskRequest {
   context?: Record<string, unknown>;
 }
 
-export interface TaskEnvelope {
-  taskId: string;
-  taskType: string;
-  context: Record<string, unknown>;
-}
+const TaskEnvelopeSchema = z.object({
+  taskId: z.string(),
+  taskType: z.string(),
+  context: z.record(z.string(), z.unknown()),
+});
+
+export type TaskEnvelope = z.infer<typeof TaskEnvelopeSchema>;
 
 export type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'unknown';
 
@@ -177,16 +180,11 @@ export function resetTaskQueues(): void {
 }
 
 export function parseTaskEnvelope(data: string): TaskEnvelope {
-  const parsed = JSON.parse(data);
-  if (
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    typeof (parsed as TaskEnvelope).taskId === 'string' &&
-    typeof (parsed as TaskEnvelope).taskType === 'string'
-  ) {
-    return parsed as TaskEnvelope;
+  const result = TaskEnvelopeSchema.safeParse(JSON.parse(data));
+  if (!result.success) {
+    throw new Error('Invalid task envelope');
   }
-  throw new Error('Invalid task envelope');
+  return result.data;
 }
 
 export type { Job };
