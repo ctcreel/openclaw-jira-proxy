@@ -1,8 +1,8 @@
-import { existsSync } from 'fs';
-import { mkdir, readFile } from 'fs/promises';
-import { join } from 'path';
-import { execFile as execFileCallback } from 'child_process';
-import { promisify } from 'util';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { execFile as execFileCallback } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
@@ -45,17 +45,17 @@ export interface GitClient {
 
 export const defaultGitClient: GitClient = {
   async cloneOrPull(repoUrl, cloneDir, ref) {
-    if (!existsSync(cloneDir)) {
-      logger.info({ repoUrl, cloneDir }, 'Cloning agent repo');
-      await execFile('git', ['clone', repoUrl, cloneDir]);
-    } else {
+    if (existsSync(cloneDir)) {
       logger.debug({ cloneDir }, 'Fetching latest for agent repo');
       await execFile('git', ['-C', cloneDir, 'fetch', '--prune']);
-    }
-    if (ref !== undefined) {
-      await execFile('git', ['-C', cloneDir, 'reset', '--hard', `origin/${ref}`]);
     } else {
+      logger.info({ repoUrl, cloneDir }, 'Cloning agent repo');
+      await execFile('git', ['clone', repoUrl, cloneDir]);
+    }
+    if (ref === undefined) {
       await execFile('git', ['-C', cloneDir, 'pull', '--ff-only']);
+    } else {
+      await execFile('git', ['-C', cloneDir, 'reset', '--hard', `origin/${ref}`]);
     }
   },
 };
