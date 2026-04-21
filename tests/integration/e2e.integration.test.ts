@@ -11,7 +11,6 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 import request from 'supertest';
 
-import { vi } from 'vitest';
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
 import { registerRunner, resetRunners } from '../../src/runners/registry';
@@ -434,7 +433,7 @@ describe('E2E: webhook → queue → runner.run (mock)', () => {
     expect(deliveries).toHaveLength(2);
     const keys1 = JSON.parse(deliveries[0]!.prompt).issue.key;
     const keys2 = JSON.parse(deliveries[1]!.prompt).issue.key;
-    expect([keys1, keys2].sort()).toEqual(['SPE-1567', 'SPE-1593']);
+    expect([keys1, keys2].sort((a, b) => a.localeCompare(b))).toEqual(['SPE-1567', 'SPE-1593']);
 
     const t1 = new Date(deliveries[0]!.receivedAt).getTime();
     const t2 = new Date(deliveries[1]!.receivedAt).getTime();

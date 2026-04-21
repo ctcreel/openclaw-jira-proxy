@@ -22,7 +22,7 @@ const clients: ClientInstance[] = [];
 
 vi.mock('openclaw/plugin-sdk/gateway-runtime', () => ({
   GatewayClient: class {
-    private config: MockClientConfig;
+    private readonly config: MockClientConfig;
     public start = vi.fn();
     public stop = vi.fn();
     public request = vi.fn();

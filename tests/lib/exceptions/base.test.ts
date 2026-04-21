@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { ClawndomError, registerError } from '../../../src/lib/exceptions/base';
+import { ClawndomError } from '../../../src/lib/exceptions/base';
 import { ValidationError, NotFoundError } from '../../../src/lib/exceptions/client-errors';
 
 describe('ClawndomError', () => {

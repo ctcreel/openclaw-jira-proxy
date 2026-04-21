@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 
 import { EnvSecretProvider } from '../../src/secrets/env.provider';
 import type { SecretBinding } from '../../src/secrets/types';
