@@ -24,9 +24,9 @@ export function setupLogging(config?: LoggingConfig, options?: { force?: boolean
       const extra: Record<string, unknown> = {};
       const correlationId = getCorrelationId();
       if (correlationId) {
-        extra.correlationId = correlationId;
+        extra['correlationId'] = correlationId;
       }
-      extra.service = effectiveConfig.serviceName;
+      extra['service'] = effectiveConfig.serviceName;
       const extraContext = getExtraContext();
       return { ...extra, ...extraContext };
     },

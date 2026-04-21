@@ -1,9 +1,55 @@
+import { z } from 'zod';
+
 import { getLogger } from '../lib/logging';
 import type { AgentRunner, RunOptions, RunResult, OpenAiRunnerConfig } from './types';
 
 const logger = getLogger('runner:openai');
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+
+const OpenAiResponseSchema = z
+  .object({
+    id: z.string().optional(),
+  })
+  .passthrough();
+
+async function interpretOpenAiResponse(
+  response: Response,
+  options: RunOptions,
+  startedAt: string,
+): Promise<RunResult> {
+  const endedAt = new Date().toISOString();
+  if (!response.ok) {
+    const body = await response.text();
+    logger.error({ status: response.status, body: body.slice(0, 500) }, 'OpenAI API error');
+    return {
+      status: 'error',
+      error: `OpenAI API returned ${response.status}: ${body.slice(0, 200)}`,
+      startedAt,
+      endedAt,
+      renderedPrompt: options.prompt,
+    };
+  }
+  const data = OpenAiResponseSchema.parse(await response.json());
+  logger.info({ responseId: data.id }, 'OpenAI completions returned');
+  return { status: 'ok', runId: data.id, startedAt, endedAt, renderedPrompt: options.prompt };
+}
+
+function buildErrorResult(error: unknown, options: RunOptions, startedAt: string): RunResult {
+  const endedAt = new Date().toISOString();
+  if (error instanceof DOMException && error.name === 'TimeoutError') {
+    return {
+      status: 'timeout',
+      error: `OpenAI request timed out after ${options.timeoutMs}ms`,
+      startedAt,
+      endedAt,
+      renderedPrompt: options.prompt,
+    };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  logger.error({ error: message }, 'OpenAI request failed');
+  return { status: 'error', error: message, startedAt, endedAt, renderedPrompt: options.prompt };
+}
 
 /**
  * Calls the OpenAI Chat Completions API (or any compatible endpoint).
@@ -46,53 +92,9 @@ export class OpenAiRunner implements AgentRunner {
         }),
         signal: AbortSignal.timeout(options.timeoutMs),
       });
-
-      const endedAt = new Date().toISOString();
-
-      if (!response.ok) {
-        const body = await response.text();
-        logger.error({ status: response.status, body: body.slice(0, 500) }, 'OpenAI API error');
-        return {
-          status: 'error',
-          error: `OpenAI API returned ${response.status}: ${body.slice(0, 200)}`,
-          startedAt,
-          endedAt,
-          renderedPrompt: options.prompt,
-        };
-      }
-
-      const data = (await response.json()) as { id?: string };
-
-      logger.info({ responseId: data.id }, 'OpenAI completions returned');
-      return {
-        status: 'ok',
-        runId: data.id,
-        startedAt,
-        endedAt,
-        renderedPrompt: options.prompt,
-      };
+      return await interpretOpenAiResponse(response, options, startedAt);
     } catch (error) {
-      const endedAt = new Date().toISOString();
-
-      if (error instanceof DOMException && error.name === 'TimeoutError') {
-        return {
-          status: 'timeout',
-          error: `OpenAI request timed out after ${options.timeoutMs}ms`,
-          startedAt,
-          endedAt,
-          renderedPrompt: options.prompt,
-        };
-      }
-
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error({ error: message }, 'OpenAI request failed');
-      return {
-        status: 'error',
-        error: message,
-        startedAt,
-        endedAt,
-        renderedPrompt: options.prompt,
-      };
+      return buildErrorResult(error, options, startedAt);
     }
   }
 }

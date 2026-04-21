@@ -12,11 +12,25 @@ export function resolveFieldPath(payload: unknown, path: string): unknown {
   let current: unknown = payload;
 
   for (const segment of segments) {
-    if (current === null || current === undefined || typeof current !== 'object') {
+    current = readIndexed(current, segment);
+    if (current === undefined) {
       return undefined;
     }
-    current = (current as Record<string, unknown>)[segment];
   }
 
   return current;
+}
+
+/**
+ * Safe property access for `unknown` values. Returns undefined when the
+ * subject is not an object/array. Isolates the one narrowing cast needed
+ * to index into a non-null object — TypeScript can't express
+ * "any object is indexable by string" without a type assertion, so we
+ * pay that tax once here rather than scattering `as` casts at call sites.
+ */
+function readIndexed(subject: unknown, key: string): unknown {
+  if (subject === null || subject === undefined || typeof subject !== 'object') {
+    return undefined;
+  }
+  return (subject as Record<string, unknown>)[key];
 }

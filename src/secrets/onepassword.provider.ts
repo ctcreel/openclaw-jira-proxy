@@ -22,7 +22,7 @@ export class OnePasswordProvider implements SecretProvider {
 
   constructor(config: OnePasswordProviderConfig) {
     this.binary = config.binary ?? 'op';
-    const token = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    const token = process.env['OP_SERVICE_ACCOUNT_TOKEN'];
     if (!token) {
       throw new Error('OP_SERVICE_ACCOUNT_TOKEN is required for the onepassword secret provider');
     }

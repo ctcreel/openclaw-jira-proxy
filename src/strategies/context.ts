@@ -89,7 +89,8 @@ const slackStrategy: ContextStrategy = {
 
     let title = '?';
     if (Array.isArray(blocks) && blocks.length > 0) {
-      const firstBlock = blocks[0] as Record<string, unknown>;
+      // resolveFieldPath accepts unknown — no narrowing cast needed.
+      const firstBlock: unknown = blocks[0];
       const text =
         resolveFieldPath(firstBlock, 'text.text') ?? resolveFieldPath(firstBlock, 'text');
       if (typeof text === 'string') {

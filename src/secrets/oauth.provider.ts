@@ -76,7 +76,7 @@ export class OAuthSecretProvider implements SecretProvider {
       client_id: this.clientId,
     };
     if (this.scopes) {
-      body.scope = this.scopes;
+      body['scope'] = this.scopes;
     }
 
     const response = await fetch(this.tokenUrl, {

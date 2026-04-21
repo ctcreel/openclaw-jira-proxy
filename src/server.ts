@@ -1,9 +1,12 @@
 import { createApp } from './app';
 import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
+import type { ProviderConfig, Settings } from './config';
+import type { Logger } from 'pino';
 import { getLogger } from './lib/logging';
 import { getActiveJobsRegistry } from './services/active-jobs.service';
 import { loadAgents } from './services/agent-loader.service';
+import type { ResolvedAgent } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
 import { createTaskWorker } from './services/task-worker.service';
 import { createWorker } from './services/worker.service';
@@ -20,13 +23,7 @@ import { OnePasswordProvider } from './secrets/onepassword.provider';
 import { OAuthSecretProvider } from './secrets/oauth.provider';
 import { FileSecretProvider } from './secrets/file.provider';
 
-async function startServer(): Promise<void> {
-  setupLogging();
-  const logger = getLogger('server');
-  const settings = getSettings();
-
-  // ── Secrets ──────────────────────────────────────────────────────────
-  // Register secret providers (env is always available)
+async function initializeSecrets(settings: Settings): Promise<SecretManager> {
   registerSecretProvider(new EnvSecretProvider());
 
   if (settings.secretProviders) {
@@ -41,109 +38,110 @@ async function startServer(): Promise<void> {
     }
   }
 
-  const secretBindings = settings.secrets ?? [];
-  const secretManager = new SecretManager(secretBindings);
-
-  if (secretBindings.length > 0) {
-    await secretManager.initialize();
+  const bindings = settings.secrets ?? [];
+  const manager = new SecretManager(bindings);
+  if (bindings.length > 0) {
+    await manager.initialize();
   }
+  return manager;
+}
 
-  // Resolve hmacSecret from SecretManager for providers that declared secrets
-  for (const provider of settings.providers) {
-    if (provider.secrets && !provider.hmacSecret) {
-      const hmacKey = provider.secrets.find((key) => key.includes('hmac'));
-      if (hmacKey && secretManager.hasSecret(hmacKey)) {
-        (provider as Record<string, unknown>).hmacSecret = secretManager.getSecret(hmacKey);
-      }
+function resolveProviderHmacSecrets(
+  providers: readonly ProviderConfig[],
+  secretManager: SecretManager,
+): void {
+  for (const provider of providers) {
+    if (!provider.secrets || provider.hmacSecret) {
+      continue;
+    }
+    const hmacKey = provider.secrets.find((key) => key.includes('hmac'));
+    if (hmacKey && secretManager.hasSecret(hmacKey)) {
+      provider.hmacSecret = secretManager.getSecret(hmacKey);
     }
   }
+}
 
-  // ── Runners ──────────────────────────────────────────────────────────
+function resolveOpenClawToken(settings: Settings, secretManager: SecretManager): string {
+  const fromSettings = settings.openclawToken;
+  if (fromSettings) return fromSettings;
+  if (secretManager.hasSecret('openclaw_token')) {
+    return secretManager.getSecret('openclaw_token');
+  }
+  throw new Error('OPENCLAW_TOKEN is required when any provider uses the openclaw runner');
+}
+
+async function registerOpenClawRunner(
+  settings: Settings,
+  secretManager: SecretManager,
+): Promise<AgentRunner> {
+  const token = resolveOpenClawToken(settings, secretManager);
+  // Dynamic import so the openclaw SDK package isn't pulled in on hosts
+  // that only use claude-cli / openai / bedrock runners.
+  const { GatewayClient } = await import('./services/gateway-client');
+  const { OpenClawRunner } = await import('./runners/openclaw.runner');
+  const gatewayClient = new GatewayClient(settings.openclawGatewayWsUrl, token);
+  const runner = new OpenClawRunner(gatewayClient);
+  registerRunner(runner);
+  return runner;
+}
+
+function registerSingleRunnerByType(
+  settings: Settings,
+  type: 'claude-cli' | 'openai' | 'bedrock',
+): void {
+  const config = settings.providers.map((p) => p.runner).find((r) => r?.type === type);
+  if (!config) return;
+  if (config.type === 'claude-cli') {
+    registerRunner(new ClaudeCliRunner(config));
+  } else if (config.type === 'openai') {
+    registerRunner(new OpenAiRunner(config));
+  } else if (config.type === 'bedrock') {
+    registerRunner(new BedrockRunner(config));
+  }
+}
+
+async function registerSelectedRunners(
+  settings: Settings,
+  secretManager: SecretManager,
+  logger: Logger,
+): Promise<AgentRunner[]> {
   registerRunner(new NullRunner());
 
-  const neededRunnerTypes = new Set(
-    settings.providers.map((provider) => provider.runner?.type ?? 'openclaw'),
-  );
-
-  logger.info({ runners: [...neededRunnerTypes] }, 'Registering required runners');
+  const neededTypes = new Set(settings.providers.map((p) => p.runner?.type ?? 'openclaw'));
+  logger.info({ runners: [...neededTypes] }, 'Registering required runners');
 
   const runnersWithConnections: AgentRunner[] = [];
 
-  if (neededRunnerTypes.has('openclaw')) {
-    const token =
-      (settings.openclawToken ?? secretManager.hasSecret('openclaw_token'))
-        ? secretManager.getSecret('openclaw_token')
-        : undefined;
-    if (!token) {
-      throw new Error('OPENCLAW_TOKEN is required when any provider uses the openclaw runner');
-    }
-    // Dynamic import so the openclaw SDK package isn't pulled in on hosts
-    // that only use claude-cli / openai / bedrock runners.
-    const { GatewayClient } = await import('./services/gateway-client');
-    const { OpenClawRunner } = await import('./runners/openclaw.runner');
-    const gatewayClient = new GatewayClient(settings.openclawGatewayWsUrl, token);
-    const openclawRunner = new OpenClawRunner(gatewayClient);
-    registerRunner(openclawRunner);
-    runnersWithConnections.push(openclawRunner);
+  if (neededTypes.has('openclaw')) {
+    runnersWithConnections.push(await registerOpenClawRunner(settings, secretManager));
   }
-
-  if (neededRunnerTypes.has('claude-cli')) {
-    const cliConfigs = settings.providers
-      .filter((provider) => provider.runner?.type === 'claude-cli')
-      .map((provider) => provider.runner!);
-
-    const firstConfig = cliConfigs[0]!;
-    if (firstConfig.type === 'claude-cli') {
-      registerRunner(new ClaudeCliRunner(firstConfig));
-    }
-  }
-
-  if (neededRunnerTypes.has('openai')) {
-    const openaiConfigs = settings.providers
-      .filter((provider) => provider.runner?.type === 'openai')
-      .map((provider) => provider.runner!);
-
-    const firstConfig = openaiConfigs[0]!;
-    if (firstConfig.type === 'openai') {
-      registerRunner(new OpenAiRunner(firstConfig));
-    }
-  }
-
-  if (neededRunnerTypes.has('bedrock')) {
-    const bedrockConfigs = settings.providers
-      .filter((provider) => provider.runner?.type === 'bedrock')
-      .map((provider) => provider.runner!);
-
-    const firstConfig = bedrockConfigs[0]!;
-    if (firstConfig.type === 'bedrock') {
-      registerRunner(new BedrockRunner(firstConfig));
-    }
-  }
+  if (neededTypes.has('claude-cli')) registerSingleRunnerByType(settings, 'claude-cli');
+  if (neededTypes.has('openai')) registerSingleRunnerByType(settings, 'openai');
+  if (neededTypes.has('bedrock')) registerSingleRunnerByType(settings, 'bedrock');
 
   for (const runner of runnersWithConnections) {
     if (runner.connect) {
       await runner.connect();
     }
   }
+  return runnersWithConnections;
+}
 
-  // ── Agents ───────────────────────────────────────────────────────────
-  const agents = await loadAgents(settings.agents, settings.configDir);
-  logger.info(
-    { agents: agents.map((agent) => ({ name: agent.name, dir: agent.dir })) },
-    'Agents loaded',
-  );
-
-  // ── Workers + HTTP ───────────────────────────────────────────────────
+function startWorkers(
+  providers: readonly ProviderConfig[],
+  agents: readonly ResolvedAgent[],
+  logger: Logger,
+): void {
   // Subscribe the active-jobs registry before any worker can publish
   // job.started — otherwise bootstrap snapshots (GET /api/jobs/active)
   // would miss jobs that started before the first dashboard connects.
   getActiveJobsRegistry();
 
   const alertRegistry = buildAlertRegistry();
-  for (const provider of settings.providers) {
+  for (const provider of providers) {
     createWorker({ provider, agents, alertRegistry });
   }
-  logger.info({ providers: settings.providers.map((p) => p.name) }, 'Workers started');
+  logger.info({ providers: providers.map((p) => p.name) }, 'Workers started');
 
   // Task workers — one per agent that declares internal routing rules
   const taskWorkers = agents.map((agent) => createTaskWorker(agent)).filter((w) => w !== null);
@@ -153,14 +151,13 @@ async function startServer(): Promise<void> {
       'Task workers started for agents with internal routing rules',
     );
   }
+}
 
-  const app = createApp(agents);
-  const port = settings.port;
-
-  app.listen(port, () => {
-    logger.info({ port }, `Server running on port ${port}`);
-  });
-
+function installShutdownHandlers(
+  secretManager: SecretManager,
+  runnersWithConnections: readonly AgentRunner[],
+  logger: Logger,
+): void {
   const shutdown = (): void => {
     logger.info('Shutting down...');
     secretManager.close();
@@ -171,9 +168,34 @@ async function startServer(): Promise<void> {
     }
     process.exit(0);
   };
-
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+}
+
+async function startServer(): Promise<void> {
+  setupLogging();
+  const logger = getLogger('server');
+  const settings = getSettings();
+
+  const secretManager = await initializeSecrets(settings);
+  resolveProviderHmacSecrets(settings.providers, secretManager);
+
+  const runnersWithConnections = await registerSelectedRunners(settings, secretManager, logger);
+
+  const agents = await loadAgents(settings.agents, settings.configDir);
+  logger.info(
+    { agents: agents.map((agent) => ({ name: agent.name, dir: agent.dir })) },
+    'Agents loaded',
+  );
+
+  startWorkers(settings.providers, agents, logger);
+
+  const app = createApp(agents);
+  app.listen(settings.port, () => {
+    logger.info({ port: settings.port }, `Server running on port ${settings.port}`);
+  });
+
+  installShutdownHandlers(secretManager, runnersWithConnections, logger);
 }
 
 startServer().catch((error: unknown) => {

@@ -7,7 +7,7 @@ import { getLogger } from '../lib/logging';
 const logger = getLogger('gateway-client');
 
 const CLAWNDOM_IDENTITY_PATH = join(
-  process.env.HOME || '/tmp',
+  process.env['HOME'] || '/tmp',
   '.openclaw',
   'identity',
   'clawndom-device-auth.json',
