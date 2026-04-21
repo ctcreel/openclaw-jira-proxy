@@ -245,6 +245,15 @@ function buildCanonicalRequest(
   ].join('\n');
 }
 
+// AWS SigV4 requires byte-wise ASCII sort of header names. localeCompare
+// is locale-aware and would reorder non-ASCII characters differently than
+// the AWS signing spec expects.
+function compareByteOrder(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function signRequest(options: SignRequestOptions): Record<string, string> {
   const { method, url, body, region, service, credentials } = options;
   const parsedUrl = new URL(url);
@@ -266,7 +275,7 @@ function signRequest(options: SignRequestOptions): Record<string, string> {
     headers['x-amz-security-token'] = credentials.sessionToken;
   }
 
-  const signedHeaderKeys = Object.keys(headers).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const signedHeaderKeys = Object.keys(headers).sort(compareByteOrder);
   const signedHeaders = signedHeaderKeys.join(';');
   const canonicalHeaders = signedHeaderKeys.map((key) => `${key}:${headers[key]!}\n`).join('');
   const canonicalRequest = buildCanonicalRequest(

@@ -231,8 +231,10 @@ function checkFile(filepath: string): Violation[] {
     const line = lines[i] ?? '';
     if (shouldSkipLine(line)) continue;
     const lineNum = i + 1;
-    violations.push(...checkDeclarations(line, lineNum, filepath));
-    violations.push(...checkParameters(line, lineNum, filepath));
+    violations.push(
+      ...checkDeclarations(line, lineNum, filepath),
+      ...checkParameters(line, lineNum, filepath),
+    );
   }
 
   return violations;
