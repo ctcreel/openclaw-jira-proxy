@@ -44,13 +44,13 @@ fi
 # Generate or reuse token
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ -f /tmp/gh_app_token ]; then
+if [[ -f /tmp/gh_app_token ]]; then
     TOKEN=$(cat /tmp/gh_app_token)
     # Quick check if token is still valid
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
         -H "Authorization: token $TOKEN" \
         https://api.github.com/rate_limit)
-    if [ "$HTTP_CODE" != "200" ]; then
+    if [[ "$HTTP_CODE" != "200" ]]; then
         echo -e "${BLUE}Token expired, generating new one...${NC}" >&2
         TOKEN=$("${SCRIPT_DIR}/generate-github-app-token.sh")
     fi

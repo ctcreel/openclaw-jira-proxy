@@ -16,7 +16,7 @@ REPO_DIR="/opt/clawndom"
 HEALTH_URL="http://127.0.0.1:${PORT:-8793}/api/health"
 HEALTH_TIMEOUT_SECONDS=30
 
-log() { echo "[deploy] $*"; }
+log() { echo "[deploy] $*"; return 0; }
 
 if [[ ! -d "${REPO_DIR}/.git" ]]; then
   echo "Expected a git checkout at ${REPO_DIR} — run bootstrap.sh first" >&2
