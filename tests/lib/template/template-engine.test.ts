@@ -69,4 +69,37 @@ describe('renderTemplate', () => {
 
     expect(result).toBe('first file and second file');
   });
+
+  it('resolves {{shared:...}} from the sibling "shared" directory', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce('# Engineering Pipeline\nShared content.');
+
+    const result = await renderTemplate(
+      '{{shared:sc0red-engineering-pipeline.md}}',
+      {},
+      BASE_DIR,
+    );
+
+    expect(readFile).toHaveBeenCalledWith('/agents/shared/sc0red-engineering-pipeline.md', 'utf-8');
+    expect(result).toBe('# Engineering Pipeline\nShared content.');
+  });
+
+  it('rejects {{shared:...}} paths that escape the shared root', async () => {
+    await expect(
+      renderTemplate('{{shared:../patch/docs/SOUL.md}}', {}, BASE_DIR),
+    ).rejects.toThrow(/escapes shared root/);
+  });
+
+  it('interleaves {{doc:...}} and {{shared:...}} in the same template', async () => {
+    vi.mocked(readFile)
+      .mockResolvedValueOnce('agent-only body')
+      .mockResolvedValueOnce('shared body');
+
+    const result = await renderTemplate(
+      '{{doc:docs/SOUL.md}} then {{shared:anti-patterns.md}}',
+      {},
+      BASE_DIR,
+    );
+
+    expect(result).toBe('agent-only body then shared body');
+  });
 });
