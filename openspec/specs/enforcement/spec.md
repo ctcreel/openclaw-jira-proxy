@@ -83,16 +83,10 @@ The template MUST include gitleaks configuration with rules for at minimum:
 
 ### Requirement: Code Review Integration
 
-The template MUST include:
-- CodeRabbit configuration (.coderabbit.yaml) with path-specific review rules
-- SonarCloud configuration (sonar-project.properties)
+The repository MUST include:
+- CodeRabbit configuration (`.coderabbit.yaml`) with path-specific review rules
+- SonarCloud configuration (`sonar-project.properties`) wired to the `SC0RED_clawndom` project
 - CODEOWNERS file mapping directories to review teams
-- gitstream configuration (.cm/gitstream.cm) for automated PR labeling, size classification, test coverage checks, and production guards
-
-#### Scenario: PR Without Tests
-- **GIVEN** A pull request modifies source files but includes no test files
-- **WHEN** gitstream evaluates the PR
-- **THEN** gitstream MUST add a "needs-tests" label and request changes
 
 ### Requirement: Makefile Quality Pipeline
 
