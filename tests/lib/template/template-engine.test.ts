@@ -73,20 +73,16 @@ describe('renderTemplate', () => {
   it('resolves {{shared:...}} from the sibling "shared" directory', async () => {
     vi.mocked(readFile).mockResolvedValueOnce('# Engineering Pipeline\nShared content.');
 
-    const result = await renderTemplate(
-      '{{shared:sc0red-engineering-pipeline.md}}',
-      {},
-      BASE_DIR,
-    );
+    const result = await renderTemplate('{{shared:sc0red-engineering-pipeline.md}}', {}, BASE_DIR);
 
     expect(readFile).toHaveBeenCalledWith('/agents/shared/sc0red-engineering-pipeline.md', 'utf-8');
     expect(result).toBe('# Engineering Pipeline\nShared content.');
   });
 
   it('rejects {{shared:...}} paths that escape the shared root', async () => {
-    await expect(
-      renderTemplate('{{shared:../patch/docs/SOUL.md}}', {}, BASE_DIR),
-    ).rejects.toThrow(/escapes shared root/);
+    await expect(renderTemplate('{{shared:../patch/docs/SOUL.md}}', {}, BASE_DIR)).rejects.toThrow(
+      /escapes shared root/,
+    );
   });
 
   it('interleaves {{doc:...}} and {{shared:...}} in the same template', async () => {
