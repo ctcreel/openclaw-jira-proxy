@@ -30,12 +30,6 @@ reviews:
         - Not import from routes or controllers
         - Not handle HTTP concerns (status codes, headers)
         - Return typed results, throw Sc0redError on failure
-    - path: "infra/**/*.ts"
-      instructions: |
-        CDK code must:
-        - Use L2/L3 constructs (no L1/Cfn*)
-        - No hardcoded ARNs or account IDs
-        - Config from CDK context or environment variables
     - path: "tests/**/*.ts"
       instructions: |
         Tests should:

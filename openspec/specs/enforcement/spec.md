@@ -16,9 +16,8 @@ The template MUST run the following checks before every commit via git hooks:
 - Merge conflict marker detection
 - Large file detection (>1000kb threshold)
 - Private key detection
-- Secrets scanning (gitleaks)
 - Conventional Commits message validation
-- No-commit-to-branch guard (main, production, demo)
+- No-commit-to-branch guard (direct commits to `main` must fail)
 
 #### Scenario: Commit With Type Error
 - **GIVEN** A developer stages a file with a type error
@@ -27,9 +26,9 @@ The template MUST run the following checks before every commit via git hooks:
 
 ### Requirement: Pre-Push Hooks
 
-The template MUST validate branch naming on every push. Branch names MUST follow the format: `{type}/{TICKET-ID}-{description}` where type is one of: feature, bugfix, hotfix, chore, docs, refactor, test.
+The repository MUST validate branch naming on every push. Branch names MUST follow the format: `{type}/{TICKET-ID}-{description}` where type is one of: feature, bugfix, hotfix, chore, docs, refactor, test.
 
-Long-lived branches (development, testing, demo, production) MUST be allowed without validation.
+`main` is the sole long-lived branch and MUST be allowed without validation.
 
 #### Scenario: Invalid Branch Name
 - **GIVEN** A developer is on branch `my-feature`
@@ -49,13 +48,12 @@ The template MUST include Claude Code hooks that mechanically enforce:
 
 ### Requirement: CI Pipeline Checks
 
-The template MUST run these checks on every pull request via GitHub Actions:
+The repository MUST run these checks on every pull request via GitHub Actions:
 - Lint (linter + type checker + formatter check)
-- Test (with coverage threshold enforcement)
+- Test (with coverage threshold enforcement, Redis service container)
 - Security (dependency audit)
-- Naming validation (naming conventions + abbreviations + skip comments)
-- SonarCloud analysis
-- Deployment validation (CDK synth dry-run)
+- Naming validation (branch name + naming conventions + abbreviations + skip comments)
+- SonarCloud analysis (via the SonarCloud GitHub App)
 
 All checks MUST pass before merge is allowed.
 
@@ -63,23 +61,6 @@ All checks MUST pass before merge is allowed.
 - **GIVEN** A pull request contains a function without a verb prefix
 - **WHEN** The CI naming validation workflow runs
 - **THEN** The workflow MUST fail and the PR MUST be blocked from merging
-
-### Requirement: Secrets Scanning
-
-The template MUST include gitleaks configuration with rules for at minimum:
-- AWS credentials (access key, secret key, session token)
-- Generic API keys, secrets, passwords
-- Private keys (RSA, EC, DSA, OpenSSH, PGP)
-- Database connection URLs with credentials (postgres, mysql, mongodb, redis)
-- GitHub tokens (PAT, OAuth, App)
-- JWT tokens
-- Slack webhooks and tokens
-- 1Password references MUST be explicitly allowed (not flagged as secrets)
-
-#### Scenario: AWS Key in Source Code
-- **GIVEN** A developer accidentally pastes an AWS access key into a config file
-- **WHEN** They attempt to commit
-- **THEN** Gitleaks MUST block the commit and identify the secret type
 
 ### Requirement: Code Review Integration
 

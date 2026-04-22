@@ -1,12 +1,8 @@
-# Default owners
-* @SC0RED/platform-team
+# Single-maintainer repo. Replace @ctcreel with a real team handle
+# (e.g. @SC0RED/platform-team) once one exists on the GitHub org.
 
-# Infrastructure
-/infra/ @SC0RED/platform-team @SC0RED/infra-team
+* @ctcreel
 
-# CI/CD
-/.github/ @SC0RED/platform-team
-
-# Security-sensitive
-/.gitleaks.toml @SC0RED/security-team
-/scripts/generate-github-app-token.sh @SC0RED/security-team
+# Security-sensitive path stays called out so the next reviewer knows
+# it touches the GitHub App signing surface.
+/scripts/generate-github-app-token.sh @ctcreel
