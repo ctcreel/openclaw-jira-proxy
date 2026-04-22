@@ -36,7 +36,7 @@ Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, H
 - Functions start with a verb: get, create, update, delete, build, process, handle, validate
 - No abbreviations: use `message` not `msg`, `request` not `req`, `response` not `res`
 - Files under 300 lines, functions under 50 lines
-- 95%+ test coverage
+- Test coverage gate enforced in `vitest.config.ts` (current floor: 87% lines/statements, 88% branches, 93% functions — raise as missing specs land)
 
 ## Patterns
 
