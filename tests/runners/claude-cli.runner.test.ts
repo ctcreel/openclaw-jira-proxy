@@ -187,4 +187,44 @@ describe('ClaudeCliRunner', () => {
     expect(result.startedAt).toBeDefined();
     expect(result.endedAt).toBeDefined();
   });
+
+  describe('env overlay', () => {
+    it('merges options.env on top of process.env when provided', async () => {
+      vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+      const runner = new ClaudeCliRunner(baseConfig);
+      await runner.run({ ...baseOptions, env: { PATCH_JIRA_TOKEN: 'tok-abc' } });
+
+      const spawnArgs = vi.mocked(spawn).mock.calls[0]!;
+      const spawnOptions = spawnArgs[2] as { env?: Record<string, string> };
+      expect(spawnOptions.env).toBeDefined();
+      expect(spawnOptions.env!['PATCH_JIRA_TOKEN']).toBe('tok-abc');
+      // process.env entries remain available
+      expect(spawnOptions.env!['PATH']).toBe(process.env['PATH']);
+    });
+
+    it('passes process.env through unchanged when options.env is omitted', async () => {
+      vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+      const runner = new ClaudeCliRunner(baseConfig);
+      await runner.run(baseOptions);
+
+      const spawnArgs = vi.mocked(spawn).mock.calls[0]!;
+      const spawnOptions = spawnArgs[2] as { env?: NodeJS.ProcessEnv };
+      expect(spawnOptions.env).toBe(process.env);
+    });
+
+    it('options.env overrides same-named keys from process.env', async () => {
+      process.env['OVERRIDE_ME'] = 'original';
+      try {
+        vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+        const runner = new ClaudeCliRunner(baseConfig);
+        await runner.run({ ...baseOptions, env: { OVERRIDE_ME: 'overlay' } });
+
+        const spawnArgs = vi.mocked(spawn).mock.calls[0]!;
+        const spawnOptions = spawnArgs[2] as { env?: Record<string, string> };
+        expect(spawnOptions.env!['OVERRIDE_ME']).toBe('overlay');
+      } finally {
+        delete process.env['OVERRIDE_ME'];
+      }
+    });
+  });
 });

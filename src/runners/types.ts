@@ -19,6 +19,12 @@ export interface RunOptions {
   traceId?: string;
   /** Job identifier used for SSE event correlation. */
   jobId?: string;
+  /**
+   * Extra environment variables to expose to the runner's subprocess (if any).
+   * Merged on top of `process.env` by runners that spawn child processes.
+   * Runners that don't spawn subprocesses may ignore this field.
+   */
+  env?: Record<string, string>;
 }
 
 export interface RunResult {

@@ -161,7 +161,7 @@ function runClaudeCliSubprocess(
     const child = spawn(binary, args, {
       cwd: workDirectory,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
+      env: options.env ? { ...process.env, ...options.env } : process.env,
     }) as CliProcess;
 
     const state = { stderr: '' };

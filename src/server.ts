@@ -21,6 +21,7 @@ import { EnvSecretProvider } from './secrets/env.provider';
 import { OnePasswordProvider } from './secrets/onepassword.provider';
 import { OAuthSecretProvider } from './secrets/oauth.provider';
 import { FileSecretProvider } from './secrets/file.provider';
+import { validateProviderEnvSecrets } from './secrets/validate-env-secrets';
 
 async function initializeSecrets(settings: Settings): Promise<SecretManager> {
   registerSecretProvider(new EnvSecretProvider());
@@ -178,6 +179,7 @@ async function startServer(): Promise<void> {
 
   const secretManager = await initializeSecrets(settings);
   resolveProviderHmacSecrets(settings.providers, secretManager);
+  validateProviderEnvSecrets(settings.providers, secretManager);
 
   const runnersWithConnections = await registerSelectedRunners(settings, secretManager, logger);
 
