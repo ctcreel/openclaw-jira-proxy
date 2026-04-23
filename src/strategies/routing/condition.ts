@@ -50,6 +50,7 @@ export type Condition =
   | { in: { field: string; values: string[] } }
   | { matches: { field: string; pattern: string; flags?: string } }
   | { exists: { field: string } }
+  | { any_item: { path: string; where: Condition } }
   | { all_of: Condition[] }
   | { any_of: Condition[] }
   | { not: Condition };
@@ -60,6 +61,12 @@ export const conditionSchema: z.ZodType<Condition> = z.lazy(() =>
     inLeafSchema,
     matchesLeafSchema,
     existsLeafSchema,
+    z.object({
+      any_item: z.object({
+        path: z.string().min(1),
+        where: conditionSchema,
+      }),
+    }),
     z.object({ all_of: z.array(conditionSchema) }),
     z.object({ any_of: z.array(conditionSchema) }),
     z.object({ not: conditionSchema }),
@@ -125,6 +132,21 @@ function evaluateExists(payload: unknown, field: string): boolean {
   return resolved !== undefined && resolved !== null;
 }
 
+/**
+ * `any_item` iterates an array-valued field path and returns true when at
+ * least one element satisfies the sub-condition. Each element becomes the
+ * root for its own sub-evaluation — paths inside `where` resolve against
+ * the array element, not the outer payload. Returns false if the path
+ * doesn't resolve to an array or the array is empty.
+ */
+function evaluateAnyItem(payload: unknown, path: string, where: Condition): boolean {
+  const items = resolveFieldPath(payload, path);
+  if (!Array.isArray(items)) {
+    return false;
+  }
+  return items.some((item) => evaluateCondition(item, where));
+}
+
 export function evaluateCondition(payload: unknown, condition: Condition): boolean {
   if ('equals' in condition) {
     return evaluateEquals(payload, condition.equals.field, condition.equals.value);
@@ -142,6 +164,9 @@ export function evaluateCondition(payload: unknown, condition: Condition): boole
   }
   if ('exists' in condition) {
     return evaluateExists(payload, condition.exists.field);
+  }
+  if ('any_item' in condition) {
+    return evaluateAnyItem(payload, condition.any_item.path, condition.any_item.where);
   }
   if ('all_of' in condition) {
     return condition.all_of.every((child) => evaluateCondition(payload, child));
