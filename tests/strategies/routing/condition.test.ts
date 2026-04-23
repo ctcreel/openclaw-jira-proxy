@@ -65,6 +65,43 @@ describe('conditionSchema', () => {
   it('rejects unknown operator names', () => {
     expect(() => conditionSchema.parse({ not_an_op: { field: 'a' } })).toThrow();
   });
+
+  it('accepts a valid any_item leaf', () => {
+    const parsed = conditionSchema.parse({
+      any_item: {
+        path: 'changelog.items',
+        where: { equals: { field: 'field', value: 'status' } },
+      },
+    });
+    expect(parsed).toEqual({
+      any_item: {
+        path: 'changelog.items',
+        where: { equals: { field: 'field', value: 'status' } },
+      },
+    });
+  });
+
+  it('accepts any_item with a nested composite sub-condition', () => {
+    const parsed = conditionSchema.parse({
+      any_item: {
+        path: 'changelog.items',
+        where: {
+          all_of: [
+            { equals: { field: 'field', value: 'status' } },
+            { equals: { field: 'toString', value: 'Ready for Development' } },
+          ],
+        },
+      },
+    });
+    expect(parsed).toMatchObject({ any_item: { path: 'changelog.items' } });
+  });
+
+  it('rejects any_item missing path or where', () => {
+    expect(() => conditionSchema.parse({ any_item: { path: 'x' } })).toThrow();
+    expect(() =>
+      conditionSchema.parse({ any_item: { where: { exists: { field: 'a' } } } }),
+    ).toThrow();
+  });
 });
 
 describe('evaluateCondition — equals', () => {
@@ -289,5 +326,92 @@ describe('evaluateCondition — nesting', () => {
     };
     expect(evaluateCondition({ status: 'Open' }, cond)).toBe(true);
     expect(evaluateCondition({ status: 'Closed' }, cond)).toBe(false);
+  });
+});
+
+describe('evaluateCondition — any_item', () => {
+  const jiraStatusTransitionToRfD: Condition = {
+    any_item: {
+      path: 'changelog.items',
+      where: {
+        all_of: [
+          { equals: { field: 'field', value: 'status' } },
+          { equals: { field: 'toString', value: 'Ready for Development' } },
+        ],
+      },
+    },
+  };
+
+  it('matches when any array element satisfies the sub-condition', () => {
+    const payload = {
+      changelog: {
+        items: [
+          { field: 'Rank', toString: 'Ranked higher' },
+          { field: 'status', toString: 'Ready for Development' },
+        ],
+      },
+    };
+    expect(evaluateCondition(payload, jiraStatusTransitionToRfD)).toBe(true);
+  });
+
+  it('returns false when no element satisfies the sub-condition', () => {
+    const payload = {
+      changelog: {
+        items: [
+          { field: 'Rank', toString: 'Ranked higher' },
+          { field: 'status', toString: 'In Development' },
+        ],
+      },
+    };
+    expect(evaluateCondition(payload, jiraStatusTransitionToRfD)).toBe(false);
+  });
+
+  it('returns false when the path is missing', () => {
+    const payload = { changelog: {} };
+    expect(evaluateCondition(payload, jiraStatusTransitionToRfD)).toBe(false);
+  });
+
+  it('returns false when the path resolves to a non-array value', () => {
+    const payload = { changelog: { items: 'not an array' } };
+    expect(evaluateCondition(payload, jiraStatusTransitionToRfD)).toBe(false);
+  });
+
+  it('returns false on an empty array', () => {
+    const payload = { changelog: { items: [] } };
+    expect(evaluateCondition(payload, jiraStatusTransitionToRfD)).toBe(false);
+  });
+
+  it('resolves sub-condition paths against the array element, not the outer payload', () => {
+    // The outer payload has no top-level "field" or "value" keys; they live
+    // inside each item. Verifies the sub-eval scope is the item, not the root.
+    const payload = {
+      outer: 'irrelevant',
+      items: [{ field: 'status', value: 'Open' }],
+    };
+    const cond: Condition = {
+      any_item: {
+        path: 'items',
+        where: { equals: { field: 'value', value: 'Open' } },
+      },
+    };
+    expect(evaluateCondition(payload, cond)).toBe(true);
+  });
+
+  it('composes cleanly inside an all_of with other top-level conditions', () => {
+    const payload = {
+      webhookEvent: 'jira:issue_updated',
+      issue: { fields: { issuetype: { name: 'Bug' } } },
+      changelog: {
+        items: [{ field: 'status', toString: 'Ready for Development' }],
+      },
+    };
+    const cond: Condition = {
+      all_of: [
+        { equals: { field: 'webhookEvent', value: 'jira:issue_updated' } },
+        { equals: { field: 'issue.fields.issuetype.name', value: 'Bug' } },
+        jiraStatusTransitionToRfD,
+      ],
+    };
+    expect(evaluateCondition(payload, cond)).toBe(true);
   });
 });
