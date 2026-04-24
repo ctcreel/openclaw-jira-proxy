@@ -112,11 +112,11 @@ describe('ClaudeCliRunner', () => {
   it('should include --model when model is specified', async () => {
     vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
     const runner = new ClaudeCliRunner(baseConfig);
-    await runner.run({ ...baseOptions, model: 'anthropic/claude-opus-4-6' });
+    await runner.run({ ...baseOptions, model: 'anthropic/claude-opus-4-7' });
 
     expect(spawn).toHaveBeenCalledWith(
       'claude',
-      expect.arrayContaining(['--model', 'anthropic/claude-opus-4-6']),
+      expect.arrayContaining(['--model', 'anthropic/claude-opus-4-7']),
       expect.any(Object),
     );
   });

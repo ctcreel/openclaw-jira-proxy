@@ -159,13 +159,13 @@ describe('GatewayClient', () => {
     await connectPromise;
 
     await client.runAndWait(
-      { message: 'test', agentId: 'patch', model: 'anthropic/claude-opus-4-6' },
+      { message: 'test', agentId: 'patch', model: 'anthropic/claude-opus-4-7' },
       60_000,
     );
 
     const firstCallArgs = sdk.request.mock.calls[0];
     expect(firstCallArgs[0]).toBe('agent');
-    expect(firstCallArgs[1]).toMatchObject({ model: 'anthropic/claude-opus-4-6' });
+    expect(firstCallArgs[1]).toMatchObject({ model: 'anthropic/claude-opus-4-7' });
   });
 
   it('runAndWait() propagates agent RPC errors', async () => {

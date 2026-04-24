@@ -294,7 +294,7 @@ describe('resolveModel', () => {
     {
       field: 'issue.fields.status.name',
       matches: ['Plan', 'Ready for Development'],
-      model: 'anthropic/claude-opus-4-6',
+      model: 'anthropic/claude-opus-4-7',
     },
     {
       field: 'issue.fields.status.name',
@@ -305,12 +305,12 @@ describe('resolveModel', () => {
 
   it('returns matching model for single string match', () => {
     const payload = { issue: { fields: { status: { name: 'Plan' } } } };
-    expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-6');
+    expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-7');
   });
 
   it('returns matching model for array match', () => {
     const payload = { issue: { fields: { status: { name: 'Ready for Development' } } } };
-    expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-6');
+    expect(resolveModel(payload, statusRules)).toBe('anthropic/claude-opus-4-7');
   });
 
   it('returns second rule when first does not match', () => {
@@ -373,7 +373,7 @@ describe('processJob model routing from agent config', () => {
           {
             field: 'issue.fields.status.name',
             matches: ['Plan', 'Ready for Development'],
-            model: 'anthropic/claude-opus-4-6',
+            model: 'anthropic/claude-opus-4-7',
           },
         ],
       }),
@@ -385,7 +385,7 @@ describe('processJob model routing from agent config', () => {
       agents,
     );
 
-    expect(runSpy.mock.calls[0]![0].model).toBe('anthropic/claude-opus-4-6');
+    expect(runSpy.mock.calls[0]![0].model).toBe('anthropic/claude-opus-4-7');
   });
 
   it('passes undefined model when no model rule matches', async () => {
@@ -396,7 +396,7 @@ describe('processJob model routing from agent config', () => {
           {
             field: 'issue.fields.status.name',
             matches: 'Plan',
-            model: 'anthropic/claude-opus-4-6',
+            model: 'anthropic/claude-opus-4-7',
           },
         ],
       }),

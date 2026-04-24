@@ -36,7 +36,7 @@ function buildJobStarted(overrides: Partial<JobStartedEvent> = {}): JobStartedEv
     agentId: 'patch',
     template: 'templates/jira-ready-for-dev-bug.md',
     runner: 'claude-cli',
-    model: 'claude-opus-4-6',
+    model: 'claude-opus-4-7',
     ...overrides,
   };
 }
@@ -97,7 +97,7 @@ describe('ActiveJobsRegistry', () => {
       agentId: 'patch',
       template: 'templates/jira-ready-for-dev-bug.md',
       runner: 'claude-cli',
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
       startedAt: 2,
       context: { id: 'SPE-100', title: 'Example ticket', status: 'Ready for Development' },
     });
