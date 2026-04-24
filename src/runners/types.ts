@@ -11,7 +11,7 @@ export interface RunOptions {
   sessionKey: string;
   /** Target agent identifier. */
   agentId: string;
-  /** Optional model override (e.g. "anthropic/claude-opus-4-6"). */
+  /** Optional model override (e.g. "anthropic/claude-opus-4-7"). */
   model?: string;
   /** Maximum time (ms) the runner may take before the caller treats it as timed out. */
   timeoutMs: number;
