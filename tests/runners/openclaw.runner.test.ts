@@ -81,10 +81,10 @@ describe('OpenClawRunner', () => {
   });
 
   it('should pass model to runAndWait when provided', async () => {
-    await runner.run({ ...baseOptions, model: 'anthropic/claude-opus-4-6' });
+    await runner.run({ ...baseOptions, model: 'anthropic/claude-opus-4-7' });
 
     expect(mockClient.runAndWait).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'anthropic/claude-opus-4-6' }),
+      expect.objectContaining({ model: 'anthropic/claude-opus-4-7' }),
       60_000,
     );
   });
