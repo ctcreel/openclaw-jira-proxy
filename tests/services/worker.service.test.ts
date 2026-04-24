@@ -55,8 +55,7 @@ import { readFile } from 'node:fs/promises';
 import { registerRunner, resetRunners } from '../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
 import { SecretManager } from '../../src/secrets/manager';
-import { registerSecretProvider, resetSecretProviders } from '../../src/secrets/registry';
-import type { SecretProvider, SecretBinding } from '../../src/secrets/types';
+import { buildMockSecretManager } from '../helpers/mock-secret-manager';
 
 const runSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
   status: 'ok',
@@ -469,38 +468,6 @@ describe('buildEnvVarNameForSecret', () => {
   });
 });
 
-class MockSecretProvider implements SecretProvider {
-  readonly name = 'mock';
-  readonly values: ReadonlyMap<string, string>;
-  constructor(entries: Iterable<[string, string]>) {
-    this.values = new Map(entries);
-  }
-  async resolve(bindings: readonly SecretBinding[]): Promise<ReadonlyMap<string, string>> {
-    const out = new Map<string, string>();
-    for (const b of bindings) {
-      const v = this.values.get(b.key);
-      if (v !== undefined) out.set(b.key, v);
-    }
-    return out;
-  }
-}
-
-async function buildSecretManager(
-  entries: ReadonlyArray<readonly [string, string]>,
-): Promise<SecretManager> {
-  resetSecretProviders();
-  registerSecretProvider(new MockSecretProvider(entries));
-  const bindings: SecretBinding[] = entries.map(([key]) => ({
-    key,
-    provider: 'mock',
-    reference: `ref:${key}`,
-    required: true,
-  }));
-  const manager = new SecretManager(bindings);
-  await manager.initialize();
-  return manager;
-}
-
 describe('resolveEnvSecrets', () => {
   let manager: SecretManager | null = null;
 
@@ -517,18 +484,18 @@ describe('resolveEnvSecrets', () => {
   });
 
   it('returns undefined for empty array', async () => {
-    manager = await buildSecretManager([['foo', 'bar']]);
+    manager = await buildMockSecretManager([['foo', 'bar']]);
     expect(resolveEnvSecrets([])).toBeUndefined();
   });
 
   it('resolves declared keys to an upper-snake-cased overlay', async () => {
-    manager = await buildSecretManager([['jira_patch_token', 'tok-abc']]);
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
     const overlay = resolveEnvSecrets(['jira_patch_token']);
     expect(overlay).toEqual({ JIRA_PATCH_TOKEN: 'tok-abc' });
   });
 
   it('throws when a declared key is not known to SecretManager', async () => {
-    manager = await buildSecretManager([['jira_patch_token', 'tok-abc']]);
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
     expect(() => resolveEnvSecrets(['missing_key'])).toThrow('Secret "missing_key" not found');
   });
 });
@@ -558,7 +525,7 @@ describe('processJob envSecrets injection', () => {
   });
 
   it('passes resolved envSecrets to runner.run() as an env overlay', async () => {
-    manager = await buildSecretManager([['jira_patch_token', 'tok-abc']]);
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
     const providerWithEnvSecrets: ProviderConfig = {
       ...testProvider,
       envSecrets: ['jira_patch_token'],
@@ -573,7 +540,7 @@ describe('processJob envSecrets injection', () => {
   });
 
   it('omits the env field on runner.run() when the provider declares no envSecrets', async () => {
-    manager = await buildSecretManager([['jira_patch_token', 'tok-abc']]);
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
     const agents = [
       buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
     ];
@@ -585,7 +552,7 @@ describe('processJob envSecrets injection', () => {
 
   it('never logs the resolved secret value', async () => {
     const secretValue = 'eyJ0b2tlbi1zZW50aW5lbC12YWx1ZSJ9';
-    manager = await buildSecretManager([['jira_patch_token', secretValue]]);
+    manager = await buildMockSecretManager([['jira_patch_token', secretValue]]);
     const providerWithEnvSecrets: ProviderConfig = {
       ...testProvider,
       envSecrets: ['jira_patch_token'],
@@ -609,7 +576,7 @@ describe('processJob envSecrets injection', () => {
   });
 
   it('propagates SecretManager error when a declared envSecret is missing', async () => {
-    manager = await buildSecretManager([['jira_patch_token', 'tok-abc']]);
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
     const providerWithBadEnvSecret: ProviderConfig = {
       ...testProvider,
       envSecrets: ['missing_secret'],
