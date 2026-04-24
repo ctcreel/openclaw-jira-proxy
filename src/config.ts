@@ -27,6 +27,14 @@ const providerSchema = z.object({
   runner: runnerConfigSchema.optional(),
   /** Logical secret keys this provider needs (resolved by SecretManager). */
   secrets: z.array(z.string()).optional(),
+  /**
+   * Logical secret keys to inject into the runner subprocess env.
+   * Resolved by SecretManager at job dispatch time and passed via RunOptions.env,
+   * with each key upper-snake-cased (e.g. "jira_patch_token" -> "JIRA_PATCH_TOKEN").
+   * Templates reference the env var directly; the secret value never appears in
+   * the rendered prompt or the conversation transcript.
+   */
+  envSecrets: z.array(z.string().min(1)).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;

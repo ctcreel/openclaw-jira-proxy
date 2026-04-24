@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Job } from 'bullmq';
 
 import type { ProviderConfig, ModelRule } from '../../src/config';
@@ -23,13 +23,39 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn().mockResolvedValue('file-template-content'),
 }));
 
-import { processJob, parseEnvelope, resolveModel } from '../../src/services/worker.service';
+const { loggerInfoSpy, loggerDebugSpy, loggerWarnSpy, loggerErrorSpy } = vi.hoisted(() => ({
+  loggerInfoSpy: vi.fn(),
+  loggerDebugSpy: vi.fn(),
+  loggerWarnSpy: vi.fn(),
+  loggerErrorSpy: vi.fn(),
+}));
+
+vi.mock('../../src/lib/logging', () => ({
+  getLogger: () => ({
+    info: loggerInfoSpy,
+    debug: loggerDebugSpy,
+    warn: loggerWarnSpy,
+    error: loggerErrorSpy,
+  }),
+  setupLogging: vi.fn(),
+  resetLogging: vi.fn(),
+}));
+
+import {
+  processJob,
+  parseEnvelope,
+  resolveModel,
+  buildEnvVarNameForSecret,
+  resolveEnvSecrets,
+} from '../../src/services/worker.service';
 import type { JobEnvelope } from '../../src/services/worker.service';
 import { resetSettings } from '../../src/config';
 import { renderTemplate } from '../../src/lib/template/template-engine';
 import { readFile } from 'node:fs/promises';
 import { registerRunner, resetRunners } from '../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
+import { SecretManager } from '../../src/secrets/manager';
+import { buildMockSecretManager } from '../helpers/mock-secret-manager';
 
 const runSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
   status: 'ok',
@@ -421,6 +447,147 @@ describe('processJob model routing from agent config', () => {
     await processJob(createFakeJob('{"event":"updated"}'), testProvider, agents);
 
     expect(runSpy.mock.calls[0]![0].model).toBeUndefined();
+  });
+});
+
+describe('buildEnvVarNameForSecret', () => {
+  it('upper-snake-cases a snake_case key', () => {
+    expect(buildEnvVarNameForSecret('jira_patch_token')).toBe('JIRA_PATCH_TOKEN');
+  });
+
+  it('converts dashes to underscores', () => {
+    expect(buildEnvVarNameForSecret('jira-patch-token')).toBe('JIRA_PATCH_TOKEN');
+  });
+
+  it('converts dots to underscores', () => {
+    expect(buildEnvVarNameForSecret('jira.patch.token')).toBe('JIRA_PATCH_TOKEN');
+  });
+
+  it('leaves an already upper-snake-cased key unchanged', () => {
+    expect(buildEnvVarNameForSecret('JIRA_PATCH_TOKEN')).toBe('JIRA_PATCH_TOKEN');
+  });
+});
+
+describe('resolveEnvSecrets', () => {
+  let manager: SecretManager | null = null;
+
+  beforeEach(() => {
+    manager = null;
+  });
+
+  afterEach(() => {
+    if (manager) manager.close();
+  });
+
+  it('returns undefined for undefined input', () => {
+    expect(resolveEnvSecrets(undefined)).toBeUndefined();
+  });
+
+  it('returns undefined for empty array', async () => {
+    manager = await buildMockSecretManager([['foo', 'bar']]);
+    expect(resolveEnvSecrets([])).toBeUndefined();
+  });
+
+  it('resolves declared keys to an upper-snake-cased overlay', async () => {
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
+    const overlay = resolveEnvSecrets(['jira_patch_token']);
+    expect(overlay).toEqual({ JIRA_PATCH_TOKEN: 'tok-abc' });
+  });
+
+  it('throws when a declared key is not known to SecretManager', async () => {
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
+    expect(() => resolveEnvSecrets(['missing_key'])).toThrow('Secret "missing_key" not found');
+  });
+});
+
+describe('processJob envSecrets injection', () => {
+  let manager: SecretManager | null = null;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loggerInfoSpy.mockClear();
+    loggerDebugSpy.mockClear();
+    loggerWarnSpy.mockClear();
+    loggerErrorSpy.mockClear();
+    runSpy.mockResolvedValue({
+      status: 'ok',
+      runId: 'mock-run-id',
+      renderedPrompt: 'mock-prompt',
+    });
+    resetSettings();
+    resetRunners();
+    registerRunner(new SpyRunner());
+    manager = null;
+  });
+
+  afterEach(() => {
+    if (manager) manager.close();
+  });
+
+  it('passes resolved envSecrets to runner.run() as an env overlay', async () => {
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
+    const providerWithEnvSecrets: ProviderConfig = {
+      ...testProvider,
+      envSecrets: ['jira_patch_token'],
+    };
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+
+    await processJob(createFakeJob('{"event":"test"}'), providerWithEnvSecrets, agents);
+
+    expect(runSpy.mock.calls[0]![0].env).toEqual({ JIRA_PATCH_TOKEN: 'tok-abc' });
+  });
+
+  it('omits the env field on runner.run() when the provider declares no envSecrets', async () => {
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+
+    await processJob(createFakeJob('{"event":"test"}'), testProvider, agents);
+
+    expect(runSpy.mock.calls[0]![0].env).toBeUndefined();
+  });
+
+  it('never logs the resolved secret value', async () => {
+    const secretValue = 'eyJ0b2tlbi1zZW50aW5lbC12YWx1ZSJ9';
+    manager = await buildMockSecretManager([['jira_patch_token', secretValue]]);
+    const providerWithEnvSecrets: ProviderConfig = {
+      ...testProvider,
+      envSecrets: ['jira_patch_token'],
+    };
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+
+    await processJob(createFakeJob('{"event":"test"}'), providerWithEnvSecrets, agents);
+
+    const allLoggerCalls = [
+      ...loggerInfoSpy.mock.calls,
+      ...loggerDebugSpy.mock.calls,
+      ...loggerWarnSpy.mock.calls,
+      ...loggerErrorSpy.mock.calls,
+    ];
+    const serialized = JSON.stringify(allLoggerCalls);
+    expect(serialized).not.toContain(secretValue);
+    // But the key name should appear so operators can confirm injection
+    expect(serialized).toContain('JIRA_PATCH_TOKEN');
+  });
+
+  it('propagates SecretManager error when a declared envSecret is missing', async () => {
+    manager = await buildMockSecretManager([['jira_patch_token', 'tok-abc']]);
+    const providerWithBadEnvSecret: ProviderConfig = {
+      ...testProvider,
+      envSecrets: ['missing_secret'],
+    };
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+
+    await expect(
+      processJob(createFakeJob('{"event":"test"}'), providerWithBadEnvSecret, agents),
+    ).rejects.toThrow('Secret "missing_secret" not found');
   });
 });
 

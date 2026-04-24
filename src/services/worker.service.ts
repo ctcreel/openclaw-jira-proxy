@@ -19,6 +19,7 @@ import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
 import { buildQueueName } from './queue.service';
 import { buildFailedHandler } from './worker-failure-handler';
+import { getSecretManager } from '../secrets/manager';
 
 const logger = getLogger('worker');
 
@@ -29,6 +30,34 @@ const JobEnvelopeSchema = z.object({
 });
 
 export type JobEnvelope = z.infer<typeof JobEnvelopeSchema>;
+
+/**
+ * Convert a logical secret key (e.g. "jira_patch_token" or "jira-patch-token")
+ * into the env-var name injected into the runner subprocess.
+ */
+export function buildEnvVarNameForSecret(key: string): string {
+  return key.replace(/[-.]/g, '_').toUpperCase();
+}
+
+/**
+ * Resolve declared envSecrets from SecretManager into an env overlay.
+ * Keys are upper-snake-cased; values are looked up synchronously.
+ * Returns undefined when no envSecrets are declared so the runner can keep
+ * its existing `env: process.env` fast path.
+ */
+export function resolveEnvSecrets(
+  envSecrets: readonly string[] | undefined,
+): Record<string, string> | undefined {
+  if (!envSecrets || envSecrets.length === 0) {
+    return undefined;
+  }
+  const secretManager = getSecretManager();
+  const overlay: Record<string, string> = {};
+  for (const key of envSecrets) {
+    overlay[buildEnvVarNameForSecret(key)] = secretManager.getSecret(key);
+  }
+  return overlay;
+}
 
 /** Parse raw job data into an envelope. Re-enqueued jobs already have the envelope shape. */
 export function parseEnvelope(data: string): JobEnvelope {
@@ -156,6 +185,20 @@ export async function processJob(
   const runnerName = provider.runner?.type ?? 'openclaw';
   const runner = getRunner(runnerName);
 
+  const envOverlay = resolveEnvSecrets(provider.envSecrets);
+  if (envOverlay) {
+    // Log resolved key names at info level. Values are never logged —
+    // the whole point of this path is to keep secrets out of transcripts.
+    logger.info(
+      {
+        jobId: job.id,
+        provider: provider.name,
+        envSecretKeys: Object.keys(envOverlay),
+      },
+      'Injecting provider envSecrets into runner subprocess',
+    );
+  }
+
   // Prompt observability: hash at info level, full prompt at debug level
   const promptHash = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
   logger.info(
@@ -201,6 +244,7 @@ export async function processJob(
     timeoutMs: settings.agentWaitTimeoutMs,
     traceId,
     jobId: jobIdString,
+    ...(envOverlay ? { env: envOverlay } : {}),
   });
 
   if (result.status === 'error') {
