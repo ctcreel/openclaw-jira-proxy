@@ -159,12 +159,20 @@ install_systemd_units() {
   install -m 0644 \
     "${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom-claude-refresh.timer" \
     /etc/systemd/system/clawndom-claude-refresh.timer
+  install -m 0644 \
+    "${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom-scarlett-handoff.service" \
+    /etc/systemd/system/clawndom-scarlett-handoff.service
+  install -m 0644 \
+    "${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom-scarlett-handoff.timer" \
+    /etc/systemd/system/clawndom-scarlett-handoff.timer
   systemctl daemon-reload
   systemctl enable redis-server
   systemctl enable clawndom-sync-agents.timer
   systemctl start clawndom-sync-agents.timer
   systemctl enable clawndom-claude-refresh.timer
   systemctl start clawndom-claude-refresh.timer
+  systemctl enable clawndom-scarlett-handoff.timer
+  systemctl start clawndom-scarlett-handoff.timer
   return 0
 }
 

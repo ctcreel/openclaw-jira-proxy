@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily 7:45 AM ET — Scarlett platform digest
+Requires=clawndom-scarlett-handoff.service
+
+[Timer]
+# Mon-Fri at 7:45 AM in America/New_York. systemd handles DST shifts;
+# the digest fires at local 7:45 ET regardless of the time of year.
+OnCalendar=Mon..Fri 07:45 America/New_York
+# If Clawndom or the host was down at fire time, drop — don't replay
+# on next start. A digest is timely or it's noise. Toggle to true
+# only if you genuinely want catch-up after outages.
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
