@@ -10,11 +10,18 @@ import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { getRunner } from '../runners/registry';
 import { evaluateCondition } from '../strategies/routing';
-import type { ResolvedAgent } from './agent-loader.service';
-import { buildTaskQueueName, parseTaskEnvelope } from './task.service';
+import type { AgentRule, ResolvedAgent } from './agent-loader.service';
+import {
+  buildTaskQueueName,
+  isScheduledEnvelope,
+  parseTaskEnvelope,
+  type InternalTaskEnvelope,
+  type ScheduledTaskEnvelope,
+} from './task.service';
 
 const logger = getLogger('task-worker');
 const INTERNAL_PROVIDER = 'internal';
+const SCHEDULE_PROVIDER = 'schedule';
 
 interface TaskRunSummary {
   runId: string;
@@ -24,6 +31,16 @@ interface TaskRunSummary {
 
 async function processTask(job: Job<string>, agent: ResolvedAgent): Promise<TaskRunSummary> {
   const envelope = parseTaskEnvelope(job.data);
+  if (isScheduledEnvelope(envelope)) {
+    return processScheduledTask(envelope, agent);
+  }
+  return processInternalTask(envelope, agent);
+}
+
+async function processInternalTask(
+  envelope: InternalTaskEnvelope,
+  agent: ResolvedAgent,
+): Promise<TaskRunSummary> {
   logger.info(
     { taskId: envelope.taskId, agent: agent.name, taskType: envelope.taskType },
     'Processing internal task',
@@ -31,32 +48,80 @@ async function processTask(job: Job<string>, agent: ResolvedAgent): Promise<Task
 
   const payload = { taskType: envelope.taskType, ...envelope.context };
   const rules = agent.config.routing[INTERNAL_PROVIDER]?.rules ?? [];
-  const matched = rules.find((rule) => evaluateCondition(payload, rule.condition));
+  const matched = rules.find(
+    (rule) => rule.condition && evaluateCondition(payload, rule.condition),
+  );
 
   if (!matched) {
     throw new Error(`No internal routing rule matched taskType=${envelope.taskType}`);
   }
 
+  return runRule(matched, payload, agent, {
+    sessionKey: `agent:${agent.name}:task-${envelope.taskId}`,
+    traceId: envelope.taskId,
+    jobId: envelope.taskId,
+  });
+}
+
+async function processScheduledTask(
+  envelope: ScheduledTaskEnvelope,
+  agent: ResolvedAgent,
+): Promise<TaskRunSummary> {
+  const traceId = `schedule-${agent.name}-${envelope.rule}-${Date.now()}`;
+  logger.info({ traceId, agent: agent.name, rule: envelope.rule }, 'Processing scheduled task');
+
+  const rules = agent.config.routing[SCHEDULE_PROVIDER]?.rules ?? [];
+  const matched = rules.find((rule) => rule.name === envelope.rule);
+
+  if (!matched) {
+    throw new Error(`No schedule rule named "${envelope.rule}" found for agent ${agent.name}`);
+  }
+
+  const payload = {
+    kind: 'scheduled' as const,
+    rule: envelope.rule,
+    ...envelope.context,
+  };
+
+  return runRule(matched, payload, agent, {
+    sessionKey: `agent:${agent.name}:schedule-${envelope.rule}-${traceId}`,
+    traceId,
+    jobId: traceId,
+  });
+}
+
+interface RunRuleOptions {
+  readonly sessionKey: string;
+  readonly traceId: string;
+  readonly jobId: string;
+}
+
+async function runRule(
+  rule: AgentRule,
+  payload: Record<string, unknown>,
+  agent: ResolvedAgent,
+  runOpts: RunRuleOptions,
+): Promise<TaskRunSummary> {
   let prompt: string;
-  if (matched.messageTemplate) {
-    const templateContent = await readFile(join(agent.dir, matched.messageTemplate), 'utf-8');
+  if (rule.messageTemplate) {
+    const templateContent = await readFile(join(agent.dir, rule.messageTemplate), 'utf-8');
     prompt = await renderTemplate(templateContent, payload, agent.dir);
   } else {
     prompt = JSON.stringify(payload);
   }
 
   const settings = getSettings();
-  const runnerName = 'claude-cli'; // Internal tasks use the default runner; override via agent config in a follow-up
+  const runnerName = 'claude-cli'; // Tasks use the default runner; per-agent override via config is a follow-up.
   const runner = getRunner(runnerName);
 
   const result = await runner.run({
     prompt,
-    sessionKey: `agent:${agent.name}:task-${envelope.taskId}`,
+    sessionKey: runOpts.sessionKey,
     agentId: agent.name,
     model: undefined,
     timeoutMs: settings.agentWaitTimeoutMs,
-    traceId: envelope.taskId,
-    jobId: envelope.taskId,
+    traceId: runOpts.traceId,
+    jobId: runOpts.jobId,
   });
 
   if (result.status === 'error') {
@@ -74,7 +139,8 @@ async function processTask(job: Job<string>, agent: ResolvedAgent): Promise<Task
 
 export function createTaskWorker(agent: ResolvedAgent): Worker<string> | null {
   const internalRules = agent.config.routing[INTERNAL_PROVIDER]?.rules ?? [];
-  if (internalRules.length === 0) {
+  const scheduleRules = agent.config.routing[SCHEDULE_PROVIDER]?.rules ?? [];
+  if (internalRules.length === 0 && scheduleRules.length === 0) {
     return null;
   }
 

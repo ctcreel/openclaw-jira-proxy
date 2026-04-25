@@ -17,13 +17,35 @@ export interface TaskRequest {
   context?: Record<string, unknown>;
 }
 
-const TaskEnvelopeSchema = z.object({
+// The task queue carries two flavours of job:
+//   - internal: dispatched by /api/tasks (Patch → Scarlett-style)
+//   - scheduled: dispatched by the scheduler at the time a routing.schedule
+//     rule's cron pattern matches
+// Both land on the same per-agent queue (webhooks-tasks-<agent>). The
+// task-worker discriminates on shape — `kind: 'scheduled'` carries the
+// rule name; the absence of that key means an internal task with a
+// taskId.
+const InternalTaskEnvelopeSchema = z.object({
   taskId: z.string(),
   taskType: z.string(),
   context: z.record(z.string(), z.unknown()),
 });
 
+const ScheduledTaskEnvelopeSchema = z.object({
+  kind: z.literal('scheduled'),
+  rule: z.string(),
+  context: z.record(z.string(), z.unknown()),
+});
+
+const TaskEnvelopeSchema = z.union([ScheduledTaskEnvelopeSchema, InternalTaskEnvelopeSchema]);
+
+export type InternalTaskEnvelope = z.infer<typeof InternalTaskEnvelopeSchema>;
+export type ScheduledTaskEnvelope = z.infer<typeof ScheduledTaskEnvelopeSchema>;
 export type TaskEnvelope = z.infer<typeof TaskEnvelopeSchema>;
+
+export function isScheduledEnvelope(envelope: TaskEnvelope): envelope is ScheduledTaskEnvelope {
+  return 'kind' in envelope && envelope.kind === 'scheduled';
+}
 
 export type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'unknown';
 
@@ -50,6 +72,15 @@ interface TaskQueueBundle {
  * getTaskStatus, and waitForTask.
  */
 const queueByAgent = new Map<string, TaskQueueBundle>();
+
+/**
+ * Returns the per-agent task queue used both for /api/tasks dispatches
+ * and for `routing.schedule` repeatable jobs. Reuse the same queue so
+ * both flavours share BullMQ infrastructure and per-agent concurrency.
+ */
+export function getTaskQueue(agentName: string): Queue {
+  return openQueue(agentName).queue;
+}
 
 function openQueue(agentName: string): TaskQueueBundle {
   const cached = queueByAgent.get(agentName);
