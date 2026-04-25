@@ -1,6 +1,5 @@
 [Unit]
 Description=Periodic Claude OAuth token refresh
-Requires=clawndom-claude-refresh.service
 
 [Timer]
 # First refresh shortly after boot, then every 2 hours.
