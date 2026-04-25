@@ -1,6 +1,5 @@
 [Unit]
 Description=Daily 7:45 AM ET — Scarlett platform digest
-Requires=clawndom-scarlett-handoff.service
 
 [Timer]
 # Mon-Fri at 7:45 AM in America/New_York. systemd handles DST shifts;
