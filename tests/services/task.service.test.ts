@@ -85,8 +85,16 @@ const sampleAgent: ResolvedAgent = {
 
 describe('buildTaskQueueName', () => {
   it('namespaces the queue by agent', () => {
-    expect(buildTaskQueueName('patch')).toContain('tasks:patch');
-    expect(buildTaskQueueName('scarlett')).toContain('tasks:scarlett');
+    expect(buildTaskQueueName('patch')).toContain('tasks-patch');
+    expect(buildTaskQueueName('scarlett')).toContain('tasks-scarlett');
+  });
+
+  // BullMQ uses ':' as its internal Redis key separator and refuses to
+  // construct a Worker if the queue name contains ':'. The original shape
+  // tasks:<agent> tripped this on Scarlett's first startup (SPE-1824).
+  it('never contains a colon', () => {
+    expect(buildTaskQueueName('patch')).not.toContain(':');
+    expect(buildTaskQueueName('scarlett')).not.toContain(':');
   });
 });
 
