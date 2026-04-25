@@ -7,6 +7,7 @@ import { getActiveJobsRegistry } from './services/active-jobs.service';
 import { loadAgents } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
+import { registerAgentSchedules } from './services/scheduler.service';
 import { createTaskWorker } from './services/task-worker.service';
 import { createWorker } from './services/worker.service';
 import { registerRunner } from './runners/registry';
@@ -127,11 +128,11 @@ async function registerSelectedRunners(
   return runnersWithConnections;
 }
 
-function startWorkers(
+async function startWorkers(
   providers: readonly ProviderConfig[],
   agents: readonly ResolvedAgent[],
   logger: Logger,
-): void {
+): Promise<void> {
   // Subscribe the active-jobs registry before any worker can publish
   // job.started — otherwise bootstrap snapshots (GET /api/jobs/active)
   // would miss jobs that started before the first dashboard connects.
@@ -143,12 +144,26 @@ function startWorkers(
   }
   logger.info({ providers: providers.map((p) => p.name) }, 'Workers started');
 
-  // Task workers — one per agent that declares internal routing rules
+  // Task workers — one per agent that declares internal or schedule routing rules
   const taskWorkers = agents.map((agent) => createTaskWorker(agent)).filter((w) => w !== null);
   if (taskWorkers.length > 0) {
     logger.info(
       { agents: taskWorkers.length },
-      'Task workers started for agents with internal routing rules',
+      'Task workers started for agents with internal/schedule routing rules',
+    );
+  }
+
+  // Schedules — register BullMQ repeatable jobs for every agent's
+  // routing.schedule rules. Idempotent across restarts; rules are
+  // upserted by `schedule:<agent>:<rule>` scheduler id.
+  const schedules = await registerAgentSchedules(agents);
+  if (schedules.length > 0) {
+    logger.info(
+      {
+        count: schedules.length,
+        rules: schedules.map((s) => `${s.agent}:${s.rule}`),
+      },
+      'Schedules registered',
     );
   }
 }
@@ -189,7 +204,7 @@ async function startServer(): Promise<void> {
     'Agents loaded',
   );
 
-  startWorkers(settings.providers, agents, logger);
+  await startWorkers(settings.providers, agents, logger);
 
   const app = createApp(agents);
   app.listen(settings.port, () => {

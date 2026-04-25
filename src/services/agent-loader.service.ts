@@ -15,10 +15,20 @@ import { conditionSchema } from '../strategies/routing';
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
 
+// Rules are shared across providers, but `routing.schedule` rules carry
+// extra fields (cron + timezone + catchUp + context) and don't need a
+// `condition`. Validating the per-provider invariants — schedule rules
+// have a cron, condition rules have a condition — happens in the
+// schedulers/workers that consume the rules, not at parse time. This
+// keeps the schema flat and the type one shape across providers.
 const agentRuleSchema = z.object({
   name: z.string().optional(),
-  condition: conditionSchema,
+  condition: conditionSchema.optional(),
   messageTemplate: z.string().optional(),
+  cron: z.string().optional(),
+  timezone: z.string().optional(),
+  catchUp: z.boolean().optional().default(false),
+  context: z.record(z.string(), z.unknown()).optional(),
 });
 
 const agentRoutingSchema = z.object({

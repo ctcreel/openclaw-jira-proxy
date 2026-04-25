@@ -26,6 +26,10 @@ export function resolveAgentFromAgents(
       continue;
     }
     for (const rule of providerRouting.rules) {
+      // Provider-routed rules (jira, slack, internal) require a
+      // condition. routing.schedule rules don't — they're cron-driven.
+      // A rule without a condition can't match a payload here, skip.
+      if (!rule.condition) continue;
       if (evaluateCondition(payload, rule.condition)) {
         logger.debug({ agentId: agent.name, rule: rule.name }, 'Routing rule matched');
         return {
