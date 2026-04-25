@@ -36,7 +36,7 @@ export interface TaskStatusResponse {
 }
 
 export function buildTaskQueueName(agentName: string): string {
-  return buildQueueName(`tasks:${agentName}`);
+  return buildQueueName(`tasks-${agentName}`);
 }
 
 interface TaskQueueBundle {
