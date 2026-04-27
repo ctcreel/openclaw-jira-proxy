@@ -38,6 +38,7 @@ function createFakeJob(data: string, id = 'integration-job-1'): Job<string> {
 
 const provider: ProviderConfig = {
   name: 'integration-test',
+  transport: 'webhook',
   routePath: '/hooks/integration',
   hmacSecret: 'integration-secret',
   signatureStrategy: 'websub',

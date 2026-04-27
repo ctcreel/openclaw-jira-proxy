@@ -3,16 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
-import type { ProviderConfig } from '../config';
-import { getSettings } from '../config';
+import type { WebhookProviderConfig } from '../config';
 import type { ResolvedAgent } from '../services/agent-loader.service';
-import { getDedupRedis } from '../services/dedup.service';
 import { getEventBus } from '../services/event-bus.service';
 import type { EventBus } from '../services/event-bus.service';
-import { getProviderQueue } from '../services/queue.service';
-import { extractWebhookContext } from '../strategies/context';
-import type { WebhookContext } from '../strategies/context';
-import { resolveAgentFromAgents } from '../strategies/routing';
+import { ingestEvent } from '../services/event-ingest.service';
 import { getSignatureStrategy } from '../strategies/signature';
 import type { SignatureStrategy } from '../strategies/signature';
 import { getLogger } from '../lib/logging';
@@ -69,7 +64,7 @@ function collectAdditionalHeaders(
 function verifyRequestSignature(
   request: Request,
   response: Response,
-  provider: ProviderConfig,
+  provider: WebhookProviderConfig,
   strategy: SignatureStrategy,
   events: EventBus,
   traceId: string,
@@ -131,7 +126,7 @@ function verifyRequestSignature(
 function handleSlackChallenge(
   parsedPayload: unknown,
   response: Response,
-  provider: ProviderConfig,
+  provider: WebhookProviderConfig,
 ): boolean {
   const challengeParse = SlackChallengeSchema.safeParse(parsedPayload);
   if (!challengeParse.success) {
@@ -142,91 +137,6 @@ function handleSlackChallenge(
   return true;
 }
 
-/**
- * Dedup check. Returns true if this event is a duplicate (already handled
- * the response); false if the caller should proceed with enqueue.
- * Jira fires multiple webhooks per transition (status, assignee, rank);
- * only the first for a given ticket+status should be enqueued.
- */
-async function handleDedup(
-  provider: ProviderConfig,
-  context: WebhookContext,
-  traceId: string,
-  events: EventBus,
-  response: Response,
-): Promise<boolean> {
-  if (context.id === '?') {
-    return false;
-  }
-  const dedupKey = `clawndom:dedup:${provider.name}:${context.id}:${context.status}`;
-  const isNew = await getDedupRedis().set(dedupKey, '1', 'EX', getSettings().dedupTtlSeconds, 'NX');
-
-  if (isNew !== null) {
-    return false;
-  }
-
-  logger.info(
-    { provider: provider.name, contextId: context.id, contextStatus: context.status },
-    'Duplicate — already enqueued, skipping',
-  );
-  events.publish({
-    type: 'webhook.rejected',
-    timestamp: Date.now(),
-    traceId,
-    provider: provider.name,
-    reason: 'duplicate',
-  });
-  response.status(202).json({ accepted: true, duplicate: true });
-  return true;
-}
-
-async function enqueueWebhookEvent(
-  provider: ProviderConfig,
-  rawBody: Buffer,
-  context: WebhookContext,
-  events: EventBus,
-): Promise<void> {
-  const queue = getProviderQueue(provider.name);
-  const job = await queue.add('webhook-event', rawBody.toString('utf-8'));
-
-  // After enqueue, the BullMQ job id becomes the canonical trace id —
-  // the worker uses `envelope.originalJobId ?? jobIdString`, which on
-  // the first attempt is exactly this job id. Dashboard handlers key
-  // trace_context by traceId, so webhook.accepted and every subsequent
-  // worker/runner event must share one value or the context lookup
-  // misses and completed rows render as "?"/"?".
-  const jobTraceId = String(job.id ?? 'unknown');
-
-  events.publish({
-    type: 'webhook.accepted',
-    timestamp: Date.now(),
-    traceId: jobTraceId,
-    provider: provider.name,
-    contextId: context.id,
-    contextTitle: context.title,
-    contextStatus: context.status,
-  });
-  events.publish({
-    type: 'job.queued',
-    timestamp: Date.now(),
-    traceId: jobTraceId,
-    jobId: jobTraceId,
-    provider: provider.name,
-    contextId: context.id,
-    contextTitle: context.title,
-  });
-
-  logger.info(
-    {
-      provider: provider.name,
-      contextId: context.id,
-      contextStatus: context.status,
-      contextTitle: context.title,
-    },
-    'Webhook accepted and enqueued',
-  );
-}
-
 function tryParseJson(raw: string): unknown {
   try {
     return JSON.parse(raw);
@@ -235,7 +145,10 @@ function tryParseJson(raw: string): unknown {
   }
 }
 
-export function createWebhookHandler(provider: ProviderConfig, agents: readonly ResolvedAgent[]) {
+export function createWebhookHandler(
+  provider: WebhookProviderConfig,
+  agents: readonly ResolvedAgent[],
+) {
   const strategy = getSignatureStrategy(provider.signatureStrategy);
 
   return async (request: Request, response: Response): Promise<void> => {
@@ -253,32 +166,28 @@ export function createWebhookHandler(provider: ProviderConfig, agents: readonly 
     const rawBody = verifyRequestSignature(request, response, provider, strategy, events, traceId);
     if (rawBody === null) return;
 
-    const parsedPayload = tryParseJson(rawBody.toString('utf-8'));
+    const rawBodyString = rawBody.toString('utf-8');
+    const parsedPayload = tryParseJson(rawBodyString);
 
     if (handleSlackChallenge(parsedPayload, response, provider)) return;
 
-    const context = extractWebhookContext(provider.name, parsedPayload);
+    const result = await ingestEvent({
+      provider,
+      agents,
+      rawBodyString,
+      parsedPayload,
+      traceId,
+      events,
+    });
 
-    // Check routing BEFORE enqueueing — don't queue events that will be skipped
-    if (resolveAgentFromAgents(parsedPayload, provider.name, agents) === null) {
-      logger.info(
-        { provider: provider.name, contextId: context.id, contextStatus: context.status },
-        'No routing match — not enqueueing',
-      );
-      events.publish({
-        type: 'webhook.rejected',
-        timestamp: Date.now(),
-        traceId,
-        provider: provider.name,
-        reason: 'no-routing-match',
-      });
+    if (result.outcome === 'no-routing-match') {
       response.status(202).json({ accepted: true, routed: false });
       return;
     }
-
-    if (await handleDedup(provider, context, traceId, events, response)) return;
-
-    await enqueueWebhookEvent(provider, rawBody, context, events);
+    if (result.outcome === 'duplicate') {
+      response.status(202).json({ accepted: true, duplicate: true });
+      return;
+    }
     response.status(202).json({ accepted: true });
   };
 }

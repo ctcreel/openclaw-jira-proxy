@@ -32,7 +32,8 @@
     "pino": "^9.6.0",
     "pino-http": "^10.3.0",
     "ws": "^8.18.0",
-    "zod": "^3.24.0"
+    "zod": "^3.24.0",
+    "@slack/socket-mode": "^2.0.4"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

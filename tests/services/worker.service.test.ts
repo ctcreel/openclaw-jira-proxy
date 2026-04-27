@@ -72,6 +72,7 @@ class SpyRunner implements AgentRunner {
 
 const testProvider: ProviderConfig = {
   name: 'test-provider',
+  transport: 'webhook',
   routePath: '/hooks/test',
   hmacSecret: 'test-hmac-secret',
   signatureStrategy: 'websub',
