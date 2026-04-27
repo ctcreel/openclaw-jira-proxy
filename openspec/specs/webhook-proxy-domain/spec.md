@@ -276,6 +276,37 @@ If `routing` is omitted from a provider config, the provider MUST use the global
 - **WHEN** The config is loaded
 - **THEN** Schema validation MUST fail; the server MUST not start with a malformed pattern
 
+### Requirement: No Agent-Specific Code Paths
+
+Clawndom MUST NOT contain code paths that are specific to a named agent or a named integration. All per-agent behavior MUST express in the agent's configuration (routing rules, condition AST, templates) — not in Clawndom's source code.
+
+When a feature appears to require Clawndom to know about a specific agent ("if the agent name is winston, do X"), the correct implementation is to extend the configuration surface (a new condition primitive, a new routing key, a new template variable) so that the agent's own `clawndom.yaml` expresses the behavior, and Clawndom remains agent-agnostic.
+
+This Requirement is the runtime-side complement to the `code-architecture` Requirement "Runtime / Application Boundary": agents are configured into Clawndom, not coded into it.
+
+#### Scenario: Agent-Named Branch in Worker
+- **GIVEN** A pull request adds `if (agentId === 'winston') { ... }` (or any other agent-specific branch) to `worker.service.ts` or any Clawndom service
+- **WHEN** Code review runs
+- **THEN** The reviewer MUST reject it — the condition belongs in the agent's `clawndom.yaml` routing rule, expressed via the condition AST, not in Clawndom code
+
+### Requirement: Transport Durability
+
+Every inbound event MUST be enqueued to durable storage (BullMQ + Redis) before any agent work begins. Transports — HTTP webhooks, Slack Socket Mode, scheduled cron, internal task dispatch, and any future transports — MUST follow this rule without exception.
+
+Synchronous "receive event → run agent inline → respond" paths are forbidden. They lose work on process restart, break the per-provider serialization that the queue isolation Requirement relies on, and bypass the global concurrency gate.
+
+Transports that have hard timeout requirements at the source (e.g., Slack Events API requires acknowledge within 3 seconds) MUST acknowledge BEFORE enqueueing the work, not after the agent run completes. The pattern is: ack synchronously inside the transport handler → enqueue the event to the per-provider queue → process asynchronously in the worker.
+
+#### Scenario: Inline Agent Run on Webhook
+- **GIVEN** A pull request adds a transport that runs the agent runner directly inside the webhook controller before responding to the inbound HTTP request
+- **WHEN** Code review runs
+- **THEN** The reviewer MUST reject it — events MUST be enqueued in the controller; the runner MUST be invoked from the worker, never from the controller
+
+#### Scenario: Slack Socket Mode Acknowledge Order
+- **GIVEN** Slack delivers an event over a Socket Mode connection
+- **WHEN** Clawndom processes it
+- **THEN** Clawndom MUST call the SDK's `ack()` callback within Slack's 3-second window, then enqueue the event to the per-provider BullMQ queue, then process asynchronously in the worker — the agent run MUST NOT block the ack
+
 ### Requirement: Event Forwarding
 
 The worker MUST forward events to OpenClaw by POSTing the original webhook payload to the provider's configured hook URL with:
