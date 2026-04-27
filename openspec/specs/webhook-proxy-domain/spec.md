@@ -278,9 +278,11 @@ If `routing` is omitted from a provider config, the provider MUST use the global
 
 ### Requirement: No Agent-Specific Code Paths
 
-Clawndom MUST NOT contain code paths that are specific to a named agent or a named integration. All per-agent behavior MUST express in the agent's configuration (routing rules, condition AST, templates) — not in Clawndom's source code.
+Clawndom source code MUST NOT branch on, switch on, or hardcode the identity of a specific agent. All per-agent behavior MUST express in the agent's configuration (routing rules, condition AST, templates) — not in Clawndom's source code.
 
-When a feature appears to require Clawndom to know about a specific agent ("if the agent name is winston, do X"), the correct implementation is to extend the configuration surface (a new condition primitive, a new routing key, a new template variable) so that the agent's own `clawndom.yaml` expresses the behavior, and Clawndom remains agent-agnostic.
+This forbids `if (agentId === 'winston')`-style logic, agent-name keyed lookup tables in source, and agent-specific code paths in services or controllers. It does NOT forbid log lines that interpolate `agentId` for observability, agent names appearing in tests/fixtures, or agent names appearing in OpenSpec docs and other configuration artifacts — those are configuration and discussion, not source.
+
+When a feature appears to require Clawndom to know about a specific agent, the correct implementation is to extend the configuration surface (a new condition primitive, a new routing key, a new template variable) so that the agent's own `clawndom.yaml` expresses the behavior, and Clawndom remains agent-agnostic.
 
 This Requirement is the runtime-side complement to the `code-architecture` Requirement "Runtime / Application Boundary": agents are configured into Clawndom, not coded into it.
 
@@ -289,23 +291,37 @@ This Requirement is the runtime-side complement to the `code-architecture` Requi
 - **WHEN** Code review runs
 - **THEN** The reviewer MUST reject it — the condition belongs in the agent's `clawndom.yaml` routing rule, expressed via the condition AST, not in Clawndom code
 
+#### Scenario: Agent Name in Log Line
+- **GIVEN** A service emits `logger.info({ agentId }, 'agent run completed')`
+- **WHEN** Code review runs
+- **THEN** The reviewer MUST accept it — log interpolation of an agent identifier is observability, not a hardcoded branch on agent identity
+
 ### Requirement: Transport Durability
 
-Every inbound event MUST be enqueued to durable storage (BullMQ + Redis) before any agent work begins. Transports — HTTP webhooks, Slack Socket Mode, scheduled cron, internal task dispatch, and any future transports — MUST follow this rule without exception.
+Every inbound event MUST be enqueued to durable storage (BullMQ + Redis) before any acknowledge to the source AND before any agent work begins. Transports — HTTP webhooks, Slack Socket Mode, scheduled cron, internal task dispatch, and any future transports — MUST follow this rule without exception.
 
 Synchronous "receive event → run agent inline → respond" paths are forbidden. They lose work on process restart, break the per-provider serialization that the queue isolation Requirement relies on, and bypass the global concurrency gate.
 
-Transports that have hard timeout requirements at the source (e.g., Slack Events API requires acknowledge within 3 seconds) MUST acknowledge BEFORE enqueueing the work, not after the agent run completes. The pattern is: ack synchronously inside the transport handler → enqueue the event to the per-provider queue → process asynchronously in the worker.
+Transports with a hard ack-window requirement at the source (e.g., Slack Events API requires acknowledge within 3 seconds; GitHub webhooks within 10 seconds) MUST enqueue the event BEFORE acknowledging. The enqueue is a sub-millisecond local Redis write; it fits comfortably inside the smallest ack window. The agent run happens asynchronously in the worker, after acknowledgement, so the ack is never blocked on the run.
+
+The reverse ordering (ack first, then enqueue) is forbidden. It creates an at-most-once gap: if the process crashes between source-ack and queue-write, the source considers the event delivered (no redelivery on a successful ack — Slack only redelivers on missing acks) and the event is lost.
+
+For HTTP webhook transports, the existing flow (validate signature → enqueue → respond `202`) already satisfies this Requirement.
 
 #### Scenario: Inline Agent Run on Webhook
 - **GIVEN** A pull request adds a transport that runs the agent runner directly inside the webhook controller before responding to the inbound HTTP request
 - **WHEN** Code review runs
 - **THEN** The reviewer MUST reject it — events MUST be enqueued in the controller; the runner MUST be invoked from the worker, never from the controller
 
-#### Scenario: Slack Socket Mode Acknowledge Order
+#### Scenario: Slack Socket Mode Ordering
 - **GIVEN** Slack delivers an event over a Socket Mode connection
 - **WHEN** Clawndom processes it
-- **THEN** Clawndom MUST call the SDK's `ack()` callback within Slack's 3-second window, then enqueue the event to the per-provider BullMQ queue, then process asynchronously in the worker — the agent run MUST NOT block the ack
+- **THEN** Clawndom MUST enqueue the event to the per-provider BullMQ queue FIRST, then call the SDK's `ack()` callback within Slack's 3-second window — the local Redis write is sub-millisecond and the ack remains well inside the deadline; the agent run MUST happen asynchronously in the worker
+
+#### Scenario: Ack Before Enqueue Rejected
+- **GIVEN** A pull request implements a Slack Socket Mode adapter that calls `ack()` synchronously and only then queues the event
+- **WHEN** Code review runs
+- **THEN** The reviewer MUST reject it — the inverted ordering creates an at-most-once gap (Slack does not redeliver on successful ack), violating Transport Durability
 
 ### Requirement: Event Forwarding
 

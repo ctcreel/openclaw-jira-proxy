@@ -9,10 +9,12 @@
 
 - [x] Add Requirement: **No Agent-Specific Code Paths** to `openspec/specs/webhook-proxy-domain/spec.md`. Place after "Agent Routing" so the routing/no-agent-paths requirements sit together.
     - [x] Scenario: Agent-Named Branch in Worker (`if (agentId === 'winston')` → rejected; behavior belongs in routing rule)
+    - [x] Scenario: Agent Name in Log Line (`logger.info({ agentId }, ...)` → accepted; observability, not hardcoded branch)
 
 - [x] Add Requirement: **Transport Durability** to `openspec/specs/webhook-proxy-domain/spec.md`. Place after "No Agent-Specific Code Paths".
     - [x] Scenario: Inline Agent Run on Webhook (synchronous receive→run→reply path → rejected)
-    - [x] Scenario: Slack Socket Mode Acknowledge Order (ack within 3s, then enqueue, then async process)
+    - [x] Scenario: Slack Socket Mode Ordering (enqueue first, then ack within 3s, then async process)
+    - [x] Scenario: Ack Before Enqueue Rejected (inverted ordering creates at-most-once gap → rejected)
 
 ### Verification
 

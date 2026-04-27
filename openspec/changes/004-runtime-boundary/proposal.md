@@ -32,6 +32,12 @@ The new Requirements are extensions to existing specs, not a new spec domain:
 
 No new spec directory is created. All edits are additive.
 
+### Decisions
+
+**Direct spec edits, not delta files.** Past changes 001/002/003 in this repo edited live specs directly under `openspec/specs/<capability>/spec.md`. The newer `fix-providers-config-install` change introduced delta files under its own `specs/` subdirectory. Both patterns exist in the repo. We picked direct edits here for two reasons: (1) the precedent established by 001/002/003 is the dominant prior art, and (2) the SPE-1852 ticket's Done-when criteria explicitly call out edits to live spec files. Standardizing the change-format itself is a separate decision worth its own change (and would be scope creep here — see "Out of Scope").
+
+**Enqueue-before-ack for hard-window transports.** The Transport Durability Requirement requires queue-write BEFORE source-acknowledgement, not after. The earlier draft of this Requirement had this inverted (ack first, enqueue second), which Scarlett's plan-review on SPE-1852 caught: ack-first creates an at-most-once gap because Slack does not redeliver after a successful ack. The local Redis write is sub-millisecond, comfortably inside Slack's 3-second window, so enqueue-before-ack is principled durability without missing the deadline. The original mistake was conflating "ack within the window" (true) with "ack before any other work" (false).
+
 ### Backward Compatibility
 
 This change is documentation only. No existing Requirements are modified or removed. Existing code already satisfies the new Requirements (verified by inspection of the three referenced tickets — they were drafted with these constraints implicit). No code changes, no test changes, no behavior changes.
