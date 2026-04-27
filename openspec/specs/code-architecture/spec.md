@@ -108,6 +108,6 @@ Agent code (templates, helper scripts inside agent repos) MUST treat Clawndom as
 - **THEN** The reviewer MUST accept the dependency — Socket Mode is orchestration (transport ingress), not domain logic
 
 #### Scenario: Per-Agent Helper Reaches Into Runtime
-- **GIVEN** An agent's helper script imports a Clawndom internal module (e.g. `from clawndom.services.queue_service import ...`)
+- **GIVEN** An agent's helper code reaches into Clawndom internals — for example, manipulating Clawndom's BullMQ Redis queue keys directly, or invoking Clawndom-internal services not exposed as part of the runtime's public surface
 - **WHEN** Code review runs
 - **THEN** The reviewer MUST reject it — agent helpers MUST treat Clawndom as a black box, communicating only via the runtime's public surface (templates, routing rules, configuration)

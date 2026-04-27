@@ -280,7 +280,7 @@ If `routing` is omitted from a provider config, the provider MUST use the global
 
 Clawndom source code MUST NOT branch on, switch on, or hardcode the identity of a specific agent. All per-agent behavior MUST express in the agent's configuration (routing rules, condition AST, templates) — not in Clawndom's source code.
 
-This forbids `if (agentId === 'winston')`-style logic, agent-name keyed lookup tables in source, and agent-specific code paths in services or controllers. It does NOT forbid log lines that interpolate `agentId` for observability, agent names appearing in tests/fixtures, or agent names appearing in OpenSpec docs and other configuration artifacts — those are configuration and discussion, not source.
+This forbids `if (agentId === 'winston')`-style logic, agent-name-keyed lookup tables in source, and agent-specific code paths in services or controllers. It does NOT forbid log lines that interpolate `agentId` for observability, agent names appearing in tests/fixtures, or agent names appearing in OpenSpec docs and other configuration artifacts — those are configuration and discussion, not source.
 
 When a feature appears to require Clawndom to know about a specific agent, the correct implementation is to extend the configuration surface (a new condition primitive, a new routing key, a new template variable) so that the agent's own `clawndom.yaml` expresses the behavior, and Clawndom remains agent-agnostic.
 
@@ -298,7 +298,9 @@ This Requirement is the runtime-side complement to the `code-architecture` Requi
 
 ### Requirement: Transport Durability
 
-Every inbound event MUST be enqueued to durable storage (BullMQ + Redis) before any acknowledge to the source AND before any agent work begins. Transports — HTTP webhooks, Slack Socket Mode, scheduled cron, internal task dispatch, and any future transports — MUST follow this rule without exception.
+Every inbound event accepted for agent processing MUST be enqueued to durable storage (BullMQ + Redis) before any acknowledge to the source AND before any agent work begins. Transports — HTTP webhooks, Slack Socket Mode, scheduled cron, internal task dispatch, and any future transports — MUST follow this rule without exception.
+
+Events that the runtime decides require no agent work (notably HTTP webhooks where no agent routing rule matches the payload — the controller emits `webhook.rejected` with reason `no-routing-match` and returns HTTP 202 without enqueueing) are exempt: there is no work to make durable. The durability guarantee applies once routing has decided the event is to be handled.
 
 Synchronous "receive event → run agent inline → respond" paths are forbidden. They lose work on process restart, break the per-provider serialization that the queue isolation Requirement relies on, and bypass the global concurrency gate.
 
@@ -306,7 +308,7 @@ Transports with a hard ack-window requirement at the source (e.g., Slack Events 
 
 The reverse ordering (ack first, then enqueue) is forbidden. It creates an at-most-once gap: if the process crashes between source-ack and queue-write, the source considers the event delivered (no redelivery on a successful ack — Slack only redelivers on missing acks) and the event is lost.
 
-For HTTP webhook transports, the existing flow (validate signature → enqueue → respond `202`) already satisfies this Requirement.
+For HTTP webhook transports, the existing flow (validate signature → check routing → enqueue → respond `202`) already satisfies this Requirement.
 
 #### Scenario: Inline Agent Run on Webhook
 - **GIVEN** A pull request adds a transport that runs the agent runner directly inside the webhook controller before responding to the inbound HTTP request
