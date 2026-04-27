@@ -8,7 +8,7 @@ import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
 
 import { modelRuleSchema } from '../config';
-import type { AgentEntry } from '../config';
+import type { AgentEntry, SharedToolsConfig } from '../config';
 import { getLogger } from '../lib/logging';
 import { conditionSchema } from '../strategies/routing';
 
@@ -50,7 +50,18 @@ export interface ResolvedAgent {
 }
 
 export interface GitClient {
+  /**
+   * Branch-tracking clone. Fast-forwards when no `ref` is supplied; resets to
+   * `origin/<ref>` when supplied. Branch semantics — pinned tag/SHA refs go
+   * through `clonePinned` instead.
+   */
   cloneOrPull(repoUrl: string, cloneDir: string, ref?: string): Promise<void>;
+  /**
+   * Pinned-ref clone. Fetches all refs (including tags) and resets to the
+   * given tag or commit SHA. Throws if the ref does not exist in the remote
+   * — fail-fast over silent drift.
+   */
+  clonePinned(repoUrl: string, cloneDir: string, ref: string): Promise<void>;
 }
 
 export const defaultGitClient: GitClient = {
@@ -67,6 +78,19 @@ export const defaultGitClient: GitClient = {
     } else {
       await execFile('git', ['-C', cloneDir, 'reset', '--hard', `origin/${ref}`]);
     }
+  },
+
+  async clonePinned(repoUrl, cloneDir, ref) {
+    if (!existsSync(cloneDir)) {
+      logger.info({ repoUrl, cloneDir }, 'Cloning shared-tools repo');
+      await execFile('git', ['clone', repoUrl, cloneDir]);
+    }
+    logger.debug({ cloneDir, ref }, 'Resetting shared-tools repo to pinned ref');
+    // No `origin/` prefix: tags and commit SHAs aren't namespaced under
+    // remote-tracking refs. `--prune --tags` ensures local tags match the
+    // remote so a tag-only ref resolves on reset.
+    await execFile('git', ['-C', cloneDir, 'fetch', '--prune', '--tags', 'origin']);
+    await execFile('git', ['-C', cloneDir, 'reset', '--hard', ref]);
   },
 };
 
@@ -91,6 +115,10 @@ export async function loadAgents(
   await mkdir(configDir, { recursive: true });
 
   const cloneByRepo = new Map<string, string>();
+  // Tracks which sharedTools spec each agent repo committed to. Two agents
+  // sharing an agent repo (e.g. patch + scarlett in `the-agency`) share the
+  // same shared-tools clone dir, so they must agree on (repo, ref, path).
+  const sharedToolsByRepo = new Map<string, SharedToolsConfig>();
   const resolved: ResolvedAgent[] = [];
   const seenNames = new Set<string>();
 
@@ -105,6 +133,25 @@ export async function loadAgents(
       cloneDir = join(configDir, slugifyRepoUrl(entry.repo));
       await git.cloneOrPull(entry.repo, cloneDir, entry.ref);
       cloneByRepo.set(entry.repo, cloneDir);
+    }
+
+    if (entry.sharedTools !== undefined) {
+      const previous = sharedToolsByRepo.get(entry.repo);
+      if (previous === undefined) {
+        const sharedDir = join(cloneDir, entry.sharedTools.path);
+        await git.clonePinned(entry.sharedTools.repo, sharedDir, entry.sharedTools.ref);
+        sharedToolsByRepo.set(entry.repo, entry.sharedTools);
+      } else if (
+        previous.repo !== entry.sharedTools.repo ||
+        previous.ref !== entry.sharedTools.ref ||
+        previous.path !== entry.sharedTools.path
+      ) {
+        throw new Error(
+          `Conflicting sharedTools for agent repo ${entry.repo}: ` +
+            `previously declared ${JSON.stringify(previous)}, ` +
+            `agent ${entry.name} declared ${JSON.stringify(entry.sharedTools)}`,
+        );
+      }
     }
 
     const agentDir = entry.path === undefined ? cloneDir : join(cloneDir, entry.path);

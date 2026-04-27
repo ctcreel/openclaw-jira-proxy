@@ -39,6 +39,27 @@ const providerSchema = z.object({
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
 
+/**
+ * Vendored shared-tools dependency. Cloned at a pinned ref alongside the
+ * agent repo so agents can import shared technical primitives (Gmail wrappers,
+ * Slack helpers, secret readers) without duplicating them across repos.
+ *
+ * `ref` should resolve to a tag or commit SHA — branches drift, which defeats
+ * the point of pinning. The schema accepts any non-empty string; the loader
+ * resolves the ref via `git fetch --tags origin + git reset --hard <ref>` and
+ * fails fast if the ref does not exist in the remote.
+ */
+export const sharedToolsSchema = z.object({
+  /** Git URL of the shared-tools repo (e.g. agency-tools). */
+  repo: z.string().min(1),
+  /** Pinned tag or commit SHA. */
+  ref: z.string().min(1),
+  /** Subdirectory under the agent's clone where the shared-tools repo lands. */
+  path: z.string().min(1).default('agency-tools'),
+});
+
+export type SharedToolsConfig = z.infer<typeof sharedToolsSchema>;
+
 export const agentEntrySchema = z.object({
   /** Logical agent name (matches the `agentId` referenced in routing rules). */
   name: z.string().min(1),
@@ -48,6 +69,8 @@ export const agentEntrySchema = z.object({
   path: z.string().optional(),
   /** Optional branch, tag, or commit SHA. Defaults to the repo's default branch. */
   ref: z.string().optional(),
+  /** Optional shared-tools dependency cloned at a pinned ref. */
+  sharedTools: sharedToolsSchema.optional(),
 });
 
 export type AgentEntry = z.infer<typeof agentEntrySchema>;
