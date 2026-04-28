@@ -7,6 +7,7 @@ import { buildMockSecretManager } from '../helpers/mock-secret-manager';
 
 const baseProvider: ProviderConfig = {
   name: 'jira',
+  transport: 'webhook',
   routePath: '/hooks/jira',
   hmacSecret: 'test-hmac',
   signatureStrategy: 'websub',

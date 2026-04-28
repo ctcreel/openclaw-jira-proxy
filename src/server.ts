@@ -1,6 +1,6 @@
 import { createApp } from './app';
 import { setupLogging, getLogger } from './lib/logging';
-import { getSettings } from './config';
+import { getSettings, isWebhookProvider, isSlackSocketProvider } from './config';
 import type { ProviderConfig, Settings } from './config';
 import type { Logger } from 'pino';
 import { getActiveJobsRegistry } from './services/active-jobs.service';
@@ -23,6 +23,8 @@ import { OnePasswordProvider } from './secrets/onepassword.provider';
 import { OAuthSecretProvider } from './secrets/oauth.provider';
 import { FileSecretProvider } from './secrets/file.provider';
 import { validateProviderEnvSecrets } from './secrets/validate-env-secrets';
+import { SlackSocketTransport } from './strategies/transport';
+import type { Transport } from './strategies/transport';
 
 async function initializeSecrets(settings: Settings): Promise<SecretManager> {
   registerSecretProvider(new EnvSecretProvider());
@@ -52,6 +54,7 @@ function resolveProviderHmacSecrets(
   secretManager: SecretManager,
 ): void {
   for (const provider of providers) {
+    if (!isWebhookProvider(provider)) continue;
     if (!provider.secrets || provider.hmacSecret) {
       continue;
     }
@@ -59,6 +62,45 @@ function resolveProviderHmacSecrets(
     if (hmacKey && secretManager.hasSecret(hmacKey)) {
       provider.hmacSecret = secretManager.getSecret(hmacKey);
     }
+  }
+}
+
+/**
+ * Validate slack-socket providers' app + bot tokens at startup.
+ *
+ * The bot token is not consumed until the outbound-posting ticket lands,
+ * but resolving + validating it now means a misconfig surfaces here at
+ * boot rather than at the first reply attempt. The validation is just a
+ * declared-key check against SecretManager — same shape as
+ * `validateProviderEnvSecrets`.
+ */
+function validateSlackSocketSecrets(
+  providers: readonly ProviderConfig[],
+  secretManager: SecretManager,
+): void {
+  const missing: Array<{ provider: string; key: string; field: string }> = [];
+  for (const provider of providers) {
+    if (!isSlackSocketProvider(provider)) continue;
+    if (!secretManager.hasSecret(provider.appTokenSecret)) {
+      missing.push({
+        provider: provider.name,
+        key: provider.appTokenSecret,
+        field: 'appTokenSecret',
+      });
+    }
+    if (!secretManager.hasSecret(provider.botTokenSecret)) {
+      missing.push({
+        provider: provider.name,
+        key: provider.botTokenSecret,
+        field: 'botTokenSecret',
+      });
+    }
+  }
+  if (missing.length > 0) {
+    const details = missing.map((m) => `${m.provider}.${m.field}=${m.key}`).join(', ');
+    throw new Error(
+      `slack-socket provider tokens reference undeclared secret keys (add them to SECRETS_CONFIG): ${details}`,
+    );
   }
 }
 
@@ -168,14 +210,47 @@ async function startWorkers(
   }
 }
 
+/**
+ * Open outbound transports for every slack-socket provider. Webhook
+ * routes are already mounted on the Express app via {@link registerRoutes}
+ * (called by `createApp`), so they don't need a startup phase here —
+ * they're served the moment `app.listen` resolves.
+ *
+ * Slack sockets are started in parallel via Promise.all so boot time
+ * scales with the slowest socket handshake, not the sum.
+ */
+async function startTransports(
+  providers: readonly ProviderConfig[],
+  agents: readonly ResolvedAgent[],
+  secretManager: SecretManager,
+  logger: Logger,
+): Promise<Transport[]> {
+  const transports: Transport[] = [];
+  for (const provider of providers) {
+    if (isSlackSocketProvider(provider)) {
+      const appToken = secretManager.getSecret(provider.appTokenSecret);
+      transports.push(new SlackSocketTransport({ provider, appToken, agents }));
+    }
+  }
+  await Promise.all(transports.map((t) => t.start()));
+  if (transports.length > 0) {
+    logger.info({ transports: transports.map((t) => t.name) }, 'Outbound transports started');
+  }
+  return transports;
+}
+
 function installShutdownHandlers(
   secretManager: SecretManager,
   runnersWithConnections: readonly AgentRunner[],
+  transports: readonly Transport[],
   logger: Logger,
 ): void {
   const shutdown = (): void => {
     logger.info('Shutting down...');
     secretManager.close();
+    for (const transport of transports) {
+      transport.stop().catch(() => {});
+    }
     for (const runner of runnersWithConnections) {
       if (runner.close) {
         runner.close().catch(() => {});
@@ -195,6 +270,7 @@ async function startServer(): Promise<void> {
   const secretManager = await initializeSecrets(settings);
   resolveProviderHmacSecrets(settings.providers, secretManager);
   validateProviderEnvSecrets(settings.providers, secretManager);
+  validateSlackSocketSecrets(settings.providers, secretManager);
 
   const runnersWithConnections = await registerSelectedRunners(settings, secretManager, logger);
 
@@ -207,11 +283,13 @@ async function startServer(): Promise<void> {
   await startWorkers(settings.providers, agents, logger);
 
   const app = createApp(agents);
+  const transports = await startTransports(settings.providers, agents, secretManager, logger);
+
   app.listen(settings.port, () => {
     logger.info({ port: settings.port }, `Server running on port ${settings.port}`);
   });
 
-  installShutdownHandlers(secretManager, runnersWithConnections, logger);
+  installShutdownHandlers(secretManager, runnersWithConnections, transports, logger);
 }
 
 try {

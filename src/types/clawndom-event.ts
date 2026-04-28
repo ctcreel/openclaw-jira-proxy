@@ -116,6 +116,37 @@ export interface RunnerResultEvent {
   costUsd: number;
 }
 
+export interface SocketConnectedEvent {
+  type: 'socket.connected';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+}
+
+export interface SocketDisconnectedEvent {
+  type: 'socket.disconnected';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  reason: string;
+}
+
+export interface SocketReconnectingEvent {
+  type: 'socket.reconnecting';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  attempt: number;
+}
+
+export interface SocketAuthFailedEvent {
+  type: 'socket.auth_failed';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  reason: string;
+}
+
 export type ClawndomEvent =
   | WebhookReceivedEvent
   | WebhookAcceptedEvent
@@ -127,4 +158,8 @@ export type ClawndomEvent =
   | JobFailedEvent
   | RunnerAssistantTextEvent
   | RunnerToolCallEvent
-  | RunnerResultEvent;
+  | RunnerResultEvent
+  | SocketConnectedEvent
+  | SocketDisconnectedEvent
+  | SocketReconnectingEvent
+  | SocketAuthFailedEvent;

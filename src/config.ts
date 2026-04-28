@@ -17,12 +17,8 @@ export const modelRuleSchema = z.object({
 
 export type ModelRule = z.infer<typeof modelRuleSchema>;
 
-const providerSchema = z.object({
+const baseProviderSchema = z.object({
   name: z.string().min(1),
-  routePath: z.string().min(1),
-  hmacSecret: z.string().min(1).optional(),
-  signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack']),
-  openclawHookUrl: z.string().url().optional(),
   /** Runner configuration. Defaults to openclaw when omitted. */
   runner: runnerConfigSchema.optional(),
   /** Logical secret keys this provider needs (resolved by SecretManager). */
@@ -37,7 +33,50 @@ const providerSchema = z.object({
   envSecrets: z.array(z.string().min(1)).optional(),
 });
 
+const webhookProviderSchema = baseProviderSchema.extend({
+  transport: z.literal('webhook'),
+  routePath: z.string().min(1),
+  hmacSecret: z.string().min(1).optional(),
+  signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack']),
+  openclawHookUrl: z.string().url().optional(),
+});
+
+const slackSocketProviderSchema = baseProviderSchema.extend({
+  transport: z.literal('slack-socket'),
+  /** Logical key for the Slack app-level token (xapp-*). Resolved via SecretManager. */
+  appTokenSecret: z.string().min(1),
+  /** Logical key for the Slack bot token (xoxb-*). Resolved + validated at startup; outbound posting is a separate ticket. */
+  botTokenSecret: z.string().min(1),
+});
+
+// zod's discriminatedUnion picks the branch from the input's discriminator
+// before any defaults run, so `transport` defaulting on the literal won't
+// preserve back-compat for existing PROVIDERS_CONFIG entries that omit it.
+// The preprocess step injects `transport: 'webhook'` when missing — every
+// pre-existing entry parses unchanged.
+const providerSchema = z.preprocess(
+  (input) => {
+    if (input && typeof input === 'object' && !('transport' in input)) {
+      return { ...(input as Record<string, unknown>), transport: 'webhook' };
+    }
+    return input;
+  },
+  z.discriminatedUnion('transport', [webhookProviderSchema, slackSocketProviderSchema]),
+);
+
 export type ProviderConfig = z.infer<typeof providerSchema>;
+export type WebhookProviderConfig = z.infer<typeof webhookProviderSchema>;
+export type SlackSocketProviderConfig = z.infer<typeof slackSocketProviderSchema>;
+
+export function isWebhookProvider(provider: ProviderConfig): provider is WebhookProviderConfig {
+  return provider.transport === 'webhook';
+}
+
+export function isSlackSocketProvider(
+  provider: ProviderConfig,
+): provider is SlackSocketProviderConfig {
+  return provider.transport === 'slack-socket';
+}
 
 /**
  * Vendored shared-tools dependency. Cloned at a pinned ref alongside the
