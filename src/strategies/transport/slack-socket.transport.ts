@@ -243,18 +243,13 @@ export class SlackSocketTransport implements Transport {
       return;
     }
 
-    try {
-      await args.ack();
-    } catch (error: unknown) {
-      logger.warn(
-        {
-          provider: this.provider.name,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-        'Slack ack failed; continuing with ingest',
-      );
-    }
-
+    // Per webhook-proxy-domain spec "Transport Durability" + "Ack Before
+    // Enqueue Rejected" scenario: enqueue MUST complete before ack. The
+    // local Redis SETNX + XADD is sub-millisecond and stays well inside
+    // Slack's 3s window. If ingestEvent throws, we deliberately do NOT
+    // ack — Slack redelivers after timeout, which is the durability
+    // guarantee. The reverse ordering would create an at-most-once gap
+    // because Slack does not redeliver after a successful ack.
     const traceId = randomUUID();
     const payload = mapSocketModeEnvelopeToWebhookPayload(args.body);
     const rawBodyString = JSON.stringify(payload);
@@ -269,15 +264,30 @@ export class SlackSocketTransport implements Transport {
         events: this.events,
       });
     } catch (error: unknown) {
-      // Slack already saw the ack; failure to enqueue is logged + observable
-      // via existing failed-job paths but must not throw back into the
-      // socket handler.
+      // Do NOT ack — let Slack redeliver. Failure is observable via the
+      // logger (and any failed-job emits inside ingestEvent itself).
       logger.error(
         {
           provider: this.provider.name,
           reason: error instanceof Error ? error.message : String(error),
         },
-        'Slack event ingest failed after ack',
+        'Slack ingest failed; not acknowledging to allow Slack redelivery',
+      );
+      return;
+    }
+
+    try {
+      await args.ack();
+    } catch (error: unknown) {
+      // Ingest succeeded; ack failure means Slack will redeliver and the
+      // existing dedup path will deduplicate the second arrival. Log so
+      // the redundant work is observable, but do not unwind the enqueue.
+      logger.warn(
+        {
+          provider: this.provider.name,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+        'Slack ack failed after successful ingest; redelivery will be deduplicated',
       );
     }
   }

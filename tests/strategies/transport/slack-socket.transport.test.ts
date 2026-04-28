@@ -210,7 +210,7 @@ describe('SlackSocketTransport', () => {
     expect(reconnects.map((e) => (e as { attempt: number }).attempt)).toEqual([1, 2, 1]);
   });
 
-  it('acks events_api envelopes before invoking ingestEvent', async () => {
+  it('enqueues events_api envelopes before acknowledging (Transport Durability)', async () => {
     const callOrder: string[] = [];
     const ack = vi.fn(async () => {
       callOrder.push('ack');
@@ -236,10 +236,14 @@ describe('SlackSocketTransport', () => {
       body: { event: { type: 'message', ts: '1.1', channel: 'C1' } },
     });
 
-    await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(ack).toHaveBeenCalledOnce());
 
-    expect(ack).toHaveBeenCalledOnce();
-    expect(callOrder).toEqual(['ack', 'ingest']);
+    // Per webhook-proxy-domain "Transport Durability" spec: enqueue first,
+    // ack second. The reverse ordering is explicitly forbidden by the
+    // "Ack Before Enqueue Rejected" scenario because Slack does not
+    // redeliver after a successful ack — ack-then-enqueue would create an
+    // at-most-once gap if the process crashed between the two operations.
+    expect(callOrder).toEqual(['ingest', 'ack']);
     expect(ingestSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         provider: baseProvider,
@@ -248,6 +252,35 @@ describe('SlackSocketTransport', () => {
         rawBodyString: JSON.stringify({ event: { type: 'message', ts: '1.1', channel: 'C1' } }),
       }),
     );
+  });
+
+  it('does NOT ack when ingestEvent rejects, so Slack redelivers', async () => {
+    const ack = vi.fn(async () => {});
+    ingestSpy.mockRejectedValue(new Error('redis unavailable'));
+
+    const transport = new SlackSocketTransport({
+      provider: baseProvider,
+      appToken: 'xapp-test-token',
+      agents: [],
+      events: bus,
+      clientFactory: factory,
+    });
+
+    await transport.start();
+    fakeClient.emit('slack_event', {
+      ack,
+      type: 'events_api',
+      envelope_id: 'env-fail',
+      body: { event: { type: 'message', ts: '3.3', channel: 'C3' } },
+    });
+
+    // Wait for the ingestEvent rejection to propagate through dispatchSlackEvent.
+    await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
+
+    // The handler must NOT crash, and ack MUST NOT be called — Slack
+    // will redeliver after its 3s timeout, which is the entire point
+    // of the durability requirement.
+    expect(ack).not.toHaveBeenCalled();
   });
 
   it('unwraps a Socket Mode payload envelope before passing to ingestEvent', async () => {
