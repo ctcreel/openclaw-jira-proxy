@@ -1,17 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-import type { ProviderConfig } from '../../src/config';
 import { extractWebhookContext } from '../../src/strategies/context';
-
-function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
-  return {
-    name: 'slack',
-    transport: 'webhook',
-    routePath: '/slack',
-    signatureStrategy: 'slack',
-    ...overrides,
-  } as ProviderConfig;
-}
+import { makeProvider } from '../helpers/make-provider';
 
 describe('slack context strategy', () => {
   const slackProvider = makeProvider();
