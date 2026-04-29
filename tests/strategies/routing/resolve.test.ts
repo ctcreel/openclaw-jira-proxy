@@ -67,7 +67,6 @@ describe('resolveAgentFromAgents', () => {
     expect(resolveAgentFromAgents({ assignee: 'Someone Else' }, 'jira', agents)).toMatchObject({
       agentId: 'scarlett',
       agentDir: '/agents/scarlett',
-      messageTemplate: undefined,
     });
   });
 
@@ -108,7 +107,6 @@ describe('resolveAgentFromAgents', () => {
     ).toMatchObject({
       agentId: 'patch',
       agentDir: '/agents/patch',
-      messageTemplate: undefined,
     });
 
     expect(resolveAgentFromAgents({ issuetype: 'Bug', status: 'Done' }, 'jira', agents)).toBeNull();
