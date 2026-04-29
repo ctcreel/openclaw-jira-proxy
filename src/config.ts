@@ -31,6 +31,13 @@ const baseProviderSchema = z.object({
    * the rendered prompt or the conversation transcript.
    */
   envSecrets: z.array(z.string().min(1)).optional(),
+  /**
+   * Override which context-extraction strategy this provider uses. When omitted,
+   * the resolver falls back to `provider.name`. Required for providers whose
+   * name doesn't match a registered strategy key (e.g. a `slack-winston`
+   * provider that should still use the `slack` extractor).
+   */
+  contextStrategy: z.enum(['jira', 'github', 'slack']).optional(),
 });
 
 const webhookProviderSchema = baseProviderSchema.extend({
@@ -54,7 +61,7 @@ const slackSocketProviderSchema = baseProviderSchema.extend({
 // preserve back-compat for existing PROVIDERS_CONFIG entries that omit it.
 // The preprocess step injects `transport: 'webhook'` when missing — every
 // pre-existing entry parses unchanged.
-const providerSchema = z.preprocess(
+export const providerSchema = z.preprocess(
   (input) => {
     if (input && typeof input === 'object' && !('transport' in input)) {
       return { ...(input as Record<string, unknown>), transport: 'webhook' };

@@ -1,13 +1,26 @@
 import { describe, it, expect } from 'vitest';
 
+import type { ProviderConfig } from '../../src/config';
 import { extractWebhookContext } from '../../src/strategies/context';
 
+function makeProvider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
+  return {
+    name: 'slack',
+    transport: 'webhook',
+    routePath: '/slack',
+    signatureStrategy: 'slack',
+    ...overrides,
+  } as ProviderConfig;
+}
+
 describe('slack context strategy', () => {
+  const slackProvider = makeProvider();
+
   it('should extract message timestamp as id', () => {
     const payload = {
       event: { ts: '1712345678.123456', channel: 'C08V6MV0VNV', blocks: [] },
     };
-    const context = extractWebhookContext('slack', payload);
+    const context = extractWebhookContext(slackProvider, payload);
     expect(context.id).toBe('1712345678.123456');
   });
 
@@ -20,7 +33,7 @@ describe('slack context strategy', () => {
         blocks: [{ text: { text: longText } }],
       },
     };
-    const context = extractWebhookContext('slack', payload);
+    const context = extractWebhookContext(slackProvider, payload);
     expect(context.title).toBe('A'.repeat(80));
   });
 
@@ -28,7 +41,7 @@ describe('slack context strategy', () => {
     const payload = {
       event: { ts: '1.0', channel: 'C08V6MV0VNV', blocks: [] },
     };
-    const context = extractWebhookContext('slack', payload);
+    const context = extractWebhookContext(slackProvider, payload);
     expect(context.status).toBe('development');
   });
 
@@ -36,7 +49,7 @@ describe('slack context strategy', () => {
     const payload = {
       event: { ts: '1.0', channel: 'C08UWMQJFBN', blocks: [] },
     };
-    const context = extractWebhookContext('slack', payload);
+    const context = extractWebhookContext(slackProvider, payload);
     expect(context.status).toBe('testing');
   });
 
@@ -44,7 +57,7 @@ describe('slack context strategy', () => {
     const payload = {
       event: { ts: '1.0', channel: 'C08UVJDJZTL', blocks: [] },
     };
-    const context = extractWebhookContext('slack', payload);
+    const context = extractWebhookContext(slackProvider, payload);
     expect(context.status).toBe('production');
   });
 
@@ -52,18 +65,18 @@ describe('slack context strategy', () => {
     const payload = {
       event: { ts: '1.0', channel: 'C00000000', blocks: [] },
     };
-    const context = extractWebhookContext('slack', payload);
+    const context = extractWebhookContext(slackProvider, payload);
     expect(context.status).toBe('unknown');
   });
 
   it('should set source to slack', () => {
     const payload = { event: { ts: '1.0', channel: 'C08V6MV0VNV', blocks: [] } };
-    const context = extractWebhookContext('slack', payload);
+    const context = extractWebhookContext(slackProvider, payload);
     expect(context.source).toBe('slack');
   });
 
   it('should return ? for missing fields', () => {
-    const context = extractWebhookContext('slack', {});
+    const context = extractWebhookContext(slackProvider, {});
     expect(context.id).toBe('?');
     expect(context.title).toBe('?');
     expect(context.status).toBe('unknown');

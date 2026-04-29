@@ -5,6 +5,7 @@
  * (ID, title, status) from its webhook payload shape.
  */
 
+import type { ProviderConfig } from '../config';
 import { resolveFieldPath } from './routing/field-path';
 
 export interface WebhookContext {
@@ -123,10 +124,11 @@ const strategies: Record<string, ContextStrategy> = {
   slack: slackStrategy,
 };
 
-export function getContextStrategy(providerName: string): ContextStrategy {
-  return strategies[providerName] ?? fallbackStrategy;
+export function getContextStrategy(provider: ProviderConfig): ContextStrategy {
+  const key = provider.contextStrategy ?? provider.name;
+  return strategies[key] ?? fallbackStrategy;
 }
 
-export function extractWebhookContext(providerName: string, payload: unknown): WebhookContext {
-  return getContextStrategy(providerName).extract(payload);
+export function extractWebhookContext(provider: ProviderConfig, payload: unknown): WebhookContext {
+  return getContextStrategy(provider).extract(payload);
 }
