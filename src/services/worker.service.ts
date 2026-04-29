@@ -128,7 +128,7 @@ export async function processJob(
   // routing an empty object.
   const parsedPayload: unknown = JSON.parse(envelope.payload);
 
-  const webhookContext = extractWebhookContext(provider.name, parsedPayload);
+  const webhookContext = extractWebhookContext(provider, parsedPayload);
   logger.info(
     {
       jobId: job.id,

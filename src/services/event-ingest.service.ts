@@ -43,7 +43,7 @@ export type IngestResult =
 export async function ingestEvent(request: IngestRequest): Promise<IngestResult> {
   const { provider, agents, rawBodyString, parsedPayload, traceId, events } = request;
 
-  const context = extractWebhookContext(provider.name, parsedPayload);
+  const context = extractWebhookContext(provider, parsedPayload);
 
   if (resolveAgentFromAgents(parsedPayload, provider.name, agents) === null) {
     logger.info(
