@@ -1,5 +1,5 @@
 import { getLogger } from '../../lib/logging';
-import type { ResolvedAgent } from '../../services/agent-loader.service';
+import type { AgentRule, ResolvedAgent } from '../../services/agent-loader.service';
 import { evaluateCondition } from './condition';
 
 const logger = getLogger('routing');
@@ -8,6 +8,8 @@ export interface ResolvedRoute {
   agentId: string;
   agentDir: string;
   messageTemplate?: string;
+  /** The matched rule itself — exposes session config and any future per-rule fields. */
+  rule: AgentRule;
 }
 
 /**
@@ -36,6 +38,7 @@ export function resolveAgentFromAgents(
           agentId: agent.name,
           agentDir: agent.dir,
           messageTemplate: rule.messageTemplate,
+          rule,
         };
       }
     }

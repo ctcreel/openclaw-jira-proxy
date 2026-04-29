@@ -6,8 +6,16 @@ import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 
 import { getLogger } from '../lib/logging';
-import type { AgentRunner, RunOptions, RunResult, ClaudeCliRunnerConfig } from './types';
+import { getSessionPool } from '../services/session-pool.service';
+import type {
+  AgentRunner,
+  RunOptions,
+  RunResult,
+  SessionRunOptions,
+  ClaudeCliRunnerConfig,
+} from './types';
 import { emitStreamEvent, parseStreamLine } from './claude-cli-stream-parser';
+import type { StreamEvent } from './claude-cli-stream-parser';
 
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 const KILL_GRACE_MS = 5_000;
@@ -146,6 +154,112 @@ export class ClaudeCliRunner implements AgentRunner {
     );
 
     return runClaudeCliSubprocess(this.binary, args, this.workDirectory, runId, startedAt, options);
+  }
+
+  /**
+   * Session-aware turn: acquires a warm subprocess from the SessionPool
+   * (or spawns/resumes if cold), sends the user message, awaits the result
+   * stream event, returns. The pool owns subprocess lifecycle; this method
+   * owns observability for the single turn.
+   */
+  async runSession(options: SessionRunOptions): Promise<RunResult> {
+    const startedAt = new Date().toISOString();
+    const runId = `cli-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const pool = getSessionPool();
+
+    logger.info(
+      {
+        runId,
+        provider: options.providerName,
+        sessionKey: options.sessionKey,
+        strategy: options.strategy.name,
+      },
+      'Acquiring session subprocess',
+    );
+
+    let handle;
+    try {
+      handle = await pool.acquire(
+        {
+          providerName: options.providerName,
+          key: options.sessionKey,
+          providerConfig: options.providerConfig,
+          sessionConfig: options.sessionConfig,
+          workDirectory: this.workDirectory,
+          binary: this.binary,
+          env: options.env,
+          model: options.model,
+        },
+        options.strategy,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ runId, error: message }, 'Session acquire failed');
+      return {
+        status: 'error',
+        runId,
+        error: message,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        renderedPrompt: options.userMessage,
+      };
+    }
+
+    // Brand-new sessions need the full template as their first user message;
+    // warm and resume paths just get the new event's payload (the prior
+    // template is already in the session JSONL).
+    const turnPayload =
+      handle.acquirePath === 'fresh' ? options.firstTurnPrompt : options.userMessage;
+
+    try {
+      const events = await Promise.race([
+        handle.runTurn(turnPayload),
+        rejectAfter(options.timeoutMs),
+      ]);
+      emitTurnEventsToBus(events, runId, options.traceId, options.jobId);
+      logger.info(
+        { runId, sessionId: handle.sessionId, eventCount: events.length },
+        'Session turn completed',
+      );
+      return {
+        status: 'ok',
+        runId,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        renderedPrompt: turnPayload,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isTimeout = message === TIMEOUT_SENTINEL;
+      logger.error({ runId, error: isTimeout ? 'turn timed out' : message }, 'Session turn failed');
+      return {
+        status: isTimeout ? 'timeout' : 'error',
+        runId,
+        error: isTimeout ? `Session turn timed out after ${options.timeoutMs}ms` : message,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        renderedPrompt: turnPayload,
+      };
+    }
+  }
+}
+
+const TIMEOUT_SENTINEL = '__session_turn_timeout__';
+
+function rejectAfter(ms: number): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    setTimeout(() => reject(new Error(TIMEOUT_SENTINEL)), ms);
+  });
+}
+
+function emitTurnEventsToBus(
+  events: readonly StreamEvent[],
+  runId: string,
+  traceId: string | undefined,
+  jobId: string | undefined,
+): void {
+  for (const event of events) {
+    emitStreamEvent(runId, traceId, jobId, event);
   }
 }
 
