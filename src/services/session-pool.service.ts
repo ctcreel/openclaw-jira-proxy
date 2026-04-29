@@ -28,7 +28,6 @@ import type { StreamEvent } from '../runners/claude-cli-stream-parser';
 
 const logger = getLogger('session-pool');
 
-const STARTUP_GRACE_MS = 15_000;
 const REAP_GRACE_MS = 5_000;
 
 type CliProcess = ChildProcessByStdio<Writable, Readable, Readable>;
@@ -137,7 +136,7 @@ export class SessionPool {
     const priorSessionId = await this.redis.get(redisKey);
     const acquirePath: SessionAcquirePath = priorSessionId === null ? 'fresh' : 'resume';
 
-    const session = await this.spawnSession(request, redisKey, priorSessionId, strategy);
+    const session = this.spawnSession(request, redisKey, priorSessionId, strategy);
     this.active.set(compositeKey, session);
     return this.toHandle(session, acquirePath);
   }
@@ -154,12 +153,19 @@ export class SessionPool {
     return this.active.size;
   }
 
-  private async spawnSession(
+  private spawnSession(
     request: SessionAcquireRequest,
     redisKey: string,
     priorSessionId: string | null,
     strategy: SessionKeyStrategy,
-  ): Promise<ActiveSession> {
+  ): ActiveSession {
+    // claude-cli with --input-format=stream-json doesn't emit its `init`
+    // event until it has received its first user message on stdin. So we
+    // CAN'T await init here — we'd deadlock waiting for output that won't
+    // come until we've sent input. Spawn, attach handlers, and return
+    // immediately. The init event lands during the first runTurn, mixed
+    // in with that turn's other stream events; the handler captures
+    // session_id and persists it to Redis at that point.
     const args = buildCliArgs(priorSessionId, request.model);
     const child = spawn(request.binary, args, {
       cwd: request.workDirectory,
@@ -179,20 +185,15 @@ export class SessionPool {
       pendingTurn: null,
       idleTimeoutMs: request.sessionConfig.idleTimeout,
       ready: false,
-      readyPromise: undefined as unknown as Promise<void>,
+      readyPromise: Promise.resolve(),
       resolveReady: () => {},
       rejectReady: () => {},
       expectedSessionId: priorSessionId,
       turnEvents: [],
     };
-    session.readyPromise = new Promise<void>((resolve, reject) => {
-      session.resolveReady = resolve;
-      session.rejectReady = reject;
-    });
 
     this.attachStreamHandlers(session, redisKey, request, priorSessionId, strategy);
 
-    // Surface logger context for this spawn.
     logger.info(
       {
         provider: session.providerName,
@@ -203,39 +204,8 @@ export class SessionPool {
       'Spawning session subprocess',
     );
 
-    // If the subprocess fails to emit its init event within the grace
-    // window, reject the readyPromise. Stale-session fallback (resume
-    // failed) is handled in the close handler below.
-    const startupTimer = setTimeout(() => {
-      if (!session.ready) {
-        session.rejectReady(
-          new Error(
-            `claude-cli session spawn timed out after ${STARTUP_GRACE_MS}ms (no init event received)`,
-          ),
-        );
-      }
-    }, STARTUP_GRACE_MS);
-
-    try {
-      await session.readyPromise;
-      clearTimeout(startupTimer);
-      this.scheduleIdleReap(session);
-      return session;
-    } catch (error) {
-      clearTimeout(startupTimer);
-      // Stale resume — drop Redis key and respawn fresh.
-      if (priorSessionId !== null) {
-        await this.handleStaleResume(request, redisKey, priorSessionId, error, strategy);
-        return this.spawnSession(request, redisKey, null, strategy);
-      }
-      // Fresh spawn that failed to initialize — propagate.
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
-      throw error;
-    }
+    this.scheduleIdleReap(session);
+    return session;
   }
 
   private attachStreamHandlers(
@@ -517,10 +487,11 @@ export class SessionPool {
       key: session.key,
       acquirePath,
       get sessionId(): string {
-        if (session.sessionId === null) {
-          throw new Error('Session not initialized — handle accessed before init event landed');
-        }
-        return session.sessionId;
+        // The init event lands during the first runTurn, so sessionId may be
+        // null right after acquire() but populated after the first turn
+        // completes. Callers that read it pre-turn get "<pending>" — fine
+        // for log lines, useless for any actual decision-making.
+        return session.sessionId ?? '<pending>';
       },
       runTurn: async (userMessage: string): Promise<StreamEvent[]> => {
         // Per-key turn lock: chain through turnLock so concurrent runTurn

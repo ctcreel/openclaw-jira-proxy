@@ -127,25 +127,28 @@ describe('SessionPool', () => {
     // Each test cleans up its own pool via shutdown()
   });
 
-  it('spawns fresh and persists session_id to Redis on first acquire (Redis miss)', async () => {
+  it('spawns fresh and persists session_id to Redis after the first turn (init lands mid-stream)', async () => {
     const proc = makeMockProcess();
     vi.mocked(spawn).mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
     const redis = makeFakeRedis();
     const bus = makeFakeEventBus();
-    const pool = new SessionPool({
-      redis: redis as unknown as Parameters<typeof SessionPool.prototype.acquire>[0] extends never
-        ? never
-        : Parameters<typeof SessionPool>[0] extends undefined
-          ? never
-          : never,
-      events: bus,
-    } as unknown as ConstructorParameters<typeof SessionPool>[0]);
-
-    setImmediate(() => emitInit(proc, 'session-fresh-1'));
+    const pool = new SessionPool({ redis, events: bus } as unknown as ConstructorParameters<
+      typeof SessionPool
+    >[0]);
 
     const handle = await pool.acquire(baseRequest, baseStrategy);
-
     expect(handle.acquirePath).toBe('fresh');
+    // Pre-turn, sessionId is pending — claude won't emit init until we send stdin.
+    expect(handle.sessionId).toBe('<pending>');
+
+    // Drive a turn: emit init then result in response to the stdin write.
+    setImmediate(() => {
+      emitInit(proc, 'session-fresh-1');
+      emitResult(proc);
+    });
+
+    await handle.runTurn('hello');
+
     expect(handle.sessionId).toBe('session-fresh-1');
     expect(redis.set).toHaveBeenCalledWith(
       'session:slack-winston:D123',
@@ -198,12 +201,18 @@ describe('SessionPool', () => {
       typeof SessionPool
     >[0]);
 
-    setImmediate(() => emitInit(proc, 'session-prior-1'));
-
     const handle = await pool.acquire(baseRequest, baseStrategy);
     expect(handle.acquirePath).toBe('resume');
-    expect(handle.sessionId).toBe('session-prior-1');
 
+    // claude emits init mid-turn after stdin write — drive that.
+    setImmediate(() => {
+      emitInit(proc, 'session-prior-1');
+      emitResult(proc);
+    });
+
+    await handle.runTurn('hello');
+
+    expect(handle.sessionId).toBe('session-prior-1');
     const spawnArgs = vi.mocked(spawn).mock.calls[0]![1] as string[];
     expect(spawnArgs).toContain('--resume');
     expect(spawnArgs).toContain('session-prior-1');
@@ -222,7 +231,7 @@ describe('SessionPool', () => {
     await pool.shutdown();
   });
 
-  it('falls back to fresh spawn when --resume produces a mismatched session_id', async () => {
+  it('emits session.stale when --resume produces a mismatched session_id during the first turn', async () => {
     const proc = makeMockProcess();
     vi.mocked(spawn).mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
     const redis = makeFakeRedis();
@@ -232,14 +241,17 @@ describe('SessionPool', () => {
       typeof SessionPool
     >[0]);
 
-    // Slack CLI returned a different session_id than we asked for.
-    setImmediate(() => emitInit(proc, 'session-actually-fresh'));
-
     const handle = await pool.acquire(baseRequest, baseStrategy);
-    // Even though we asked for resume, the mismatch is logged and we keep
-    // the new session_id; treat the path as 'resume' (the acquire path
-    // was determined before the mismatch was discovered) but persist the
-    // new id.
+
+    // claude returned a different session_id than we asked for — surfaces
+    // as a session.stale event mid-turn, but the new id is persisted and
+    // the turn proceeds.
+    setImmediate(() => {
+      emitInit(proc, 'session-actually-fresh');
+      emitResult(proc);
+    });
+    await handle.runTurn('hello');
+
     expect(handle.sessionId).toBe('session-actually-fresh');
     const staleEvent = bus.events.find((e: any) => (e as { type: string }).type === 'session.stale');
     expect(staleEvent).toMatchObject({
@@ -391,7 +403,7 @@ describe('SessionPool', () => {
     await pool.shutdown();
   });
 
-  it('treats an early subprocess exit (before init) as startup failure and propagates', async () => {
+  it('first turn rejects with mid-turn exit when the subprocess exits before result', async () => {
     const proc = makeMockProcess();
     vi.mocked(spawn).mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
     const redis = makeFakeRedis();
@@ -400,13 +412,18 @@ describe('SessionPool', () => {
       typeof SessionPool
     >[0]);
 
-    // Fail before init.
+    const handle = await pool.acquire(baseRequest, baseStrategy);
+
+    // Subprocess dies before emitting init or result — first turn should
+    // reject with the mid-turn-exit message. (Stale-session fallback is
+    // a known follow-up; for now BullMQ retries surface this to the
+    // caller.)
+    const turnPromise = handle.runTurn('hello');
     setImmediate(() => {
       proc.exitCode = 1;
       proc.emit('close', 1);
     });
-
-    await expect(pool.acquire(baseRequest, baseStrategy)).rejects.toThrow(/before init/);
+    await expect(turnPromise).rejects.toThrow(/exited mid-turn/);
   });
 
   it('subprocess crash mid-turn rejects the in-flight runTurn', async () => {
