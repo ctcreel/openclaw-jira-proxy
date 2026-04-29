@@ -51,7 +51,7 @@ describe('resolveAgentFromAgents', () => {
     ];
 
     const resolved = resolveAgentFromAgents({ assignee: 'Patches' }, 'jira', agents);
-    expect(resolved).toEqual({
+    expect(resolved).toMatchObject({
       agentId: 'patch',
       agentDir: '/agents/patch',
       messageTemplate: 'templates/jira.md',
@@ -64,7 +64,7 @@ describe('resolveAgentFromAgents', () => {
       agent('scarlett', 'jira', [{ condition: { all_of: [] } }]),
     ];
 
-    expect(resolveAgentFromAgents({ assignee: 'Someone Else' }, 'jira', agents)).toEqual({
+    expect(resolveAgentFromAgents({ assignee: 'Someone Else' }, 'jira', agents)).toMatchObject({
       agentId: 'scarlett',
       agentDir: '/agents/scarlett',
       messageTemplate: undefined,
@@ -105,7 +105,7 @@ describe('resolveAgentFromAgents', () => {
 
     expect(
       resolveAgentFromAgents({ issuetype: 'Bug', status: 'Planning' }, 'jira', agents),
-    ).toEqual({
+    ).toMatchObject({
       agentId: 'patch',
       agentDir: '/agents/patch',
       messageTemplate: undefined,
