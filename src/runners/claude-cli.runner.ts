@@ -217,8 +217,14 @@ export class ClaudeCliRunner implements AgentRunner {
         rejectAfter(options.timeoutMs),
       ]);
       emitTurnEventsToBus(events, runId, options.traceId, options.jobId);
+      const usage = extractTurnUsage(events);
       logger.info(
-        { runId, sessionId: handle.sessionId, eventCount: events.length },
+        {
+          runId,
+          sessionId: handle.sessionId,
+          eventCount: events.length,
+          ...usage,
+        },
         'Session turn completed',
       );
       return {
@@ -261,6 +267,43 @@ function emitTurnEventsToBus(
   for (const event of events) {
     emitStreamEvent(runId, traceId, jobId, event);
   }
+}
+
+/**
+ * Extract per-turn token usage from the result event for observability.
+ * Returns a plain object suitable for spreading into a log line. Lets us
+ * track context-window pressure (sum of input + cache_read + cache_creation)
+ * over time per session, so the eventual decision about auto-compaction
+ * cadence is grounded in real numbers rather than guesswork.
+ *
+ * Returns an empty object when no result event is found or it lacks usage.
+ */
+function extractTurnUsage(events: readonly StreamEvent[]): Record<string, number> {
+  const result = events.find((event) => event.type === 'result');
+  if (result === undefined) return {};
+  const raw = result as Record<string, unknown>;
+  const usage = raw['usage'];
+  if (usage === null || usage === undefined || typeof usage !== 'object') {
+    return {};
+  }
+  const usageRecord = usage as Record<string, unknown>;
+  const numberOf = (key: string): number =>
+    typeof usageRecord[key] === 'number' ? (usageRecord[key] as number) : 0;
+  const inputTokens = numberOf('input_tokens');
+  const cacheReadTokens = numberOf('cache_read_input_tokens');
+  const cacheCreationTokens = numberOf('cache_creation_input_tokens');
+  const outputTokens = numberOf('output_tokens');
+  const numTurns = typeof raw['num_turns'] === 'number' ? (raw['num_turns'] as number) : 0;
+  const costUsd = typeof raw['total_cost_usd'] === 'number' ? (raw['total_cost_usd'] as number) : 0;
+  return {
+    inputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    outputTokens,
+    contextTokens: inputTokens + cacheReadTokens + cacheCreationTokens,
+    numTurns,
+    costUsd,
+  };
 }
 
 function runClaudeCliSubprocess(
