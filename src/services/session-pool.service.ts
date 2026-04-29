@@ -319,8 +319,15 @@ export class SessionPool {
     priorSessionId: string | null,
     _strategy: SessionKeyStrategy,
   ): void {
-    if (event.type === 'init') {
-      // The CLI's stream-json `init` event carries `session_id` as a top-level
+    // Claude CLI's stream-json wraps init metadata in a `system` event with
+    // `subtype: 'init'` (NOT a top-level `type: 'init'`). The init carries
+    // `session_id` and a few other globals. Detect both shapes for safety
+    // in case the stream format ever simplifies.
+    const isInit =
+      event.type === 'init' ||
+      (event.type === 'system' && (event as Record<string, unknown>)['subtype'] === 'init');
+    if (isInit) {
+      // The CLI's stream-json init event carries `session_id` as a top-level
       // snake-case field; the StreamEvent schema is passthrough so we read it
       // via index access and narrow.
       const rawSessionId = (event as Record<string, unknown>)['session_id'];
