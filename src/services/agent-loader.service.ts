@@ -11,6 +11,9 @@ import { modelRuleSchema } from '../config';
 import type { AgentEntry, SharedToolsConfig } from '../config';
 import { getLogger } from '../lib/logging';
 import { runnerConfigSchema } from '../runners/types';
+import { listEmbeddingProviders } from './memory/embedding';
+import { agentMemorySchema, ruleMemorySchema } from './memory/config-schemas';
+import { listVectorStores } from './memory/vector-store';
 import { conditionSchema } from '../strategies/routing';
 
 const execFile = promisify(execFileCallback);
@@ -36,6 +39,8 @@ const agentRuleSchema = z.object({
   catchUp: z.boolean().optional().default(false),
   context: z.record(z.string(), z.unknown()).optional(),
   runner: runnerConfigSchema.optional(),
+  /** Opt-in memory binding for this rule. See `memory-aware-agent-runner` capability. */
+  memory: ruleMemorySchema.optional(),
 });
 
 const agentRoutingSchema = z.object({
@@ -45,6 +50,8 @@ const agentRoutingSchema = z.object({
 const agentConfigSchema = z.object({
   routing: z.record(z.string(), agentRoutingSchema).default({}),
   modelRules: z.record(z.string(), z.array(modelRuleSchema)).default({}),
+  /** Per-agent memory namespaces. Pruning + provider/store binding live here. */
+  memory: agentMemorySchema.optional(),
 });
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
@@ -167,8 +174,74 @@ export async function loadAgents(
     const parsed = parseYaml(rawYaml);
     const config = agentConfigSchema.parse(parsed);
 
+    validateMemoryConfig(entry.name, config);
+
     resolved.push({ name: entry.name, dir: agentDir, config });
   }
 
+  validateMemoryNamespaceUniqueness(resolved);
   return resolved;
+}
+
+/**
+ * Cross-cuts that Zod can't catch on the schema alone:
+ *  - Per-rule `memory.namespace` MUST refer to a declared namespace under
+ *    the agent's `memory.namespaces` block.
+ *  - Each namespace's `embeddingProvider` and `vectorStore` MUST resolve
+ *    to a registered Strategy.
+ *
+ * Throws on first violation with a message naming the offending agent + rule.
+ */
+function validateMemoryConfig(agentName: string, config: AgentConfig): void {
+  const namespaces = config.memory?.namespaces ?? {};
+  const knownEmbeddingProviders = new Set(listEmbeddingProviders());
+  const knownVectorStores = new Set(listVectorStores());
+
+  for (const [namespaceName, policy] of Object.entries(namespaces)) {
+    if (!knownEmbeddingProviders.has(policy.embeddingProvider)) {
+      throw new Error(
+        `Agent ${agentName}: namespace "${namespaceName}" declares unknown embeddingProvider "${policy.embeddingProvider}". Known: ${Array.from(knownEmbeddingProviders).join(', ') || '<none>'}.`,
+      );
+    }
+    if (!knownVectorStores.has(policy.vectorStore)) {
+      throw new Error(
+        `Agent ${agentName}: namespace "${namespaceName}" declares unknown vectorStore "${policy.vectorStore}". Known: ${Array.from(knownVectorStores).join(', ') || '<none>'}.`,
+      );
+    }
+  }
+
+  const namespaceNames = new Set(Object.keys(namespaces));
+  for (const [providerName, providerRouting] of Object.entries(config.routing)) {
+    for (const rule of providerRouting.rules) {
+      if (rule.memory === undefined) continue;
+      if (!namespaceNames.has(rule.memory.namespace)) {
+        const ruleLabel = rule.name ?? '<unnamed>';
+        throw new Error(
+          `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}" references undeclared memory namespace "${rule.memory.namespace}". Declare it under memory.namespaces.${rule.memory.namespace}.`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Reject cross-agent namespace name collisions. Two agents declaring the
+ * same namespace would either fight over pruning policy or accidentally
+ * read each other's stored memories (depending on which got registered
+ * last). Either is bad; fail at startup.
+ */
+function validateMemoryNamespaceUniqueness(agents: readonly ResolvedAgent[]): void {
+  const seen: Map<string, string> = new Map();
+  for (const agent of agents) {
+    const namespaces = agent.config.memory?.namespaces ?? {};
+    for (const namespaceName of Object.keys(namespaces)) {
+      const existing = seen.get(namespaceName);
+      if (existing !== undefined && existing !== agent.name) {
+        throw new Error(
+          `Memory namespace "${namespaceName}" is declared by both agent "${existing}" and agent "${agent.name}". Namespaces must be unique across all agents.`,
+        );
+      }
+      seen.set(namespaceName, agent.name);
+    }
+  }
 }

@@ -4,6 +4,8 @@ import type { VectorStore } from './types';
 export type { MemoryEntry, PruneOptions, SearchHit, SearchOptions, VectorStore } from './types';
 export { inMemoryVectorStore } from './in-memory';
 export type { InMemoryVectorStore } from './in-memory';
+export { createRedisVectorStore } from './redis';
+export type { RedisVectorStoreOptions } from './redis';
 
 const registry: Map<string, VectorStore> = new Map([
   [inMemoryVectorStore.name, inMemoryVectorStore],

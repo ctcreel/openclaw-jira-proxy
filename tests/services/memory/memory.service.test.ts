@@ -63,7 +63,9 @@ describe('MemoryService', () => {
       });
       expect(result.namespace).toBe('primary');
       expect(result.id).toBeTruthy();
-      const stored = bus.events.find((e: unknown) => (e as { type: string }).type === 'memory.stored');
+      const stored = bus.events.find(
+        (e: unknown) => (e as { type: string }).type === 'memory.stored',
+      );
       expect(stored).toMatchObject({
         type: 'memory.stored',
         namespace: 'primary',
@@ -268,7 +270,9 @@ describe('MemoryService', () => {
 
       const result = await localService.prune({ namespace: 'primary' });
       expect(result.deletedCount).toBe(1);
-      const event = bus.events.find((e: unknown) => (e as { type: string }).type === 'memory.pruned');
+      const event = bus.events.find(
+        (e: unknown) => (e as { type: string }).type === 'memory.pruned',
+      );
       expect(event).toMatchObject({
         type: 'memory.pruned',
         namespace: 'primary',
