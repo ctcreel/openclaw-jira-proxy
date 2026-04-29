@@ -132,6 +132,10 @@ export class SessionPool {
       this.active.delete(compositeKey);
     }
 
+    // Look up any persisted session_id for this key — present means we
+    // came up cold against an existing conversation (Clawndom restart,
+    // idle reap, or first event after the EC2 came back). Pass into
+    // spawnSession; missing means fresh.
     const redisKey = buildRedisKey(request.providerName, request.key);
     const priorSessionId = await this.redis.get(redisKey);
     const acquirePath: SessionAcquirePath = priorSessionId === null ? 'fresh' : 'resume';
