@@ -2,6 +2,7 @@ import express from 'express';
 import type { Express } from 'express';
 
 import { createHealthRoutes } from './health.routes';
+import { createMemoryRoutes } from './memory.routes';
 import { getSettings, isWebhookProvider } from '../config';
 import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
@@ -33,6 +34,8 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.post('/api/tasks', express.json({ limit: '1mb' }), createTaskHandler(agents));
   app.get('/api/tasks/:agent/:taskId', getTaskStatusHandler());
   app.get('/api/tasks/:agent/:taskId/wait', waitTaskHandler());
+
+  app.use('/api/memory', express.json({ limit: '1mb' }), createMemoryRoutes());
 
   for (const provider of getSettings().providers) {
     if (!isWebhookProvider(provider)) continue;
