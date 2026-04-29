@@ -147,6 +147,43 @@ export interface SocketAuthFailedEvent {
   reason: string;
 }
 
+export interface MemoryStoredEvent {
+  type: 'memory.stored';
+  timestamp: number;
+  traceId: string;
+  namespace: string;
+  id: string;
+  textLength: number;
+}
+
+export interface MemoryRetrievedEvent {
+  type: 'memory.retrieved';
+  timestamp: number;
+  traceId: string;
+  namespace: string;
+  queryLength: number;
+  hitCount: number;
+  topScore?: number;
+}
+
+export interface MemoryPrunedEvent {
+  type: 'memory.pruned';
+  timestamp: number;
+  traceId: string;
+  namespace: string;
+  deletedCount: number;
+  durationMs: number;
+}
+
+export interface MemoryErrorEvent {
+  type: 'memory.error';
+  timestamp: number;
+  traceId: string;
+  namespace?: string;
+  operation: 'store' | 'search' | 'delete' | 'prune';
+  errorMessage: string;
+}
+
 export type ClawndomEvent =
   | WebhookReceivedEvent
   | WebhookAcceptedEvent
@@ -162,4 +199,8 @@ export type ClawndomEvent =
   | SocketConnectedEvent
   | SocketDisconnectedEvent
   | SocketReconnectingEvent
-  | SocketAuthFailedEvent;
+  | SocketAuthFailedEvent
+  | MemoryStoredEvent
+  | MemoryRetrievedEvent
+  | MemoryPrunedEvent
+  | MemoryErrorEvent;
