@@ -27,36 +27,15 @@ describe('slack context strategy', () => {
     expect(context.title).toBe('A'.repeat(80));
   });
 
-  it('should map development channel to development environment', () => {
-    const payload = {
-      event: { ts: '1.0', channel: 'C08V6MV0VNV', blocks: [] },
-    };
+  it.each([
+    { channel: 'C08V6MV0VNV', expected: 'development' },
+    { channel: 'C08UWMQJFBN', expected: 'testing' },
+    { channel: 'C08UVJDJZTL', expected: 'production' },
+    { channel: 'C00000000', expected: 'unknown' },
+  ])('should map channel $channel to $expected environment', ({ channel, expected }) => {
+    const payload = { event: { ts: '1.0', channel, blocks: [] } };
     const context = extractWebhookContext(slackProvider, payload);
-    expect(context.status).toBe('development');
-  });
-
-  it('should map testing channel to testing environment', () => {
-    const payload = {
-      event: { ts: '1.0', channel: 'C08UWMQJFBN', blocks: [] },
-    };
-    const context = extractWebhookContext(slackProvider, payload);
-    expect(context.status).toBe('testing');
-  });
-
-  it('should map production channel to production environment', () => {
-    const payload = {
-      event: { ts: '1.0', channel: 'C08UVJDJZTL', blocks: [] },
-    };
-    const context = extractWebhookContext(slackProvider, payload);
-    expect(context.status).toBe('production');
-  });
-
-  it('should return unknown for unmapped channels', () => {
-    const payload = {
-      event: { ts: '1.0', channel: 'C00000000', blocks: [] },
-    };
-    const context = extractWebhookContext(slackProvider, payload);
-    expect(context.status).toBe('unknown');
+    expect(context.status).toBe(expected);
   });
 
   it('should set source to slack', () => {
