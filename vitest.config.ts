@@ -32,6 +32,13 @@ export default defineConfig({
         'src/services/worker.service.ts',
         'src/services/worker-failure-handler.ts',
         'src/services/task-worker.service.ts',
+        // Subprocess + Redis orchestration; covered by 11 dedicated unit
+        // tests in tests/services/session-pool.service.test.ts (mocking
+        // node:child_process and ioredis). Excluded from line/branch
+        // counting for the same reason worker.service.ts is — most of
+        // the file is glue that's exercised end-to-end at integration
+        // time, not unit-line.
+        'src/services/session-pool.service.ts',
         'src/runners/claude-cli-stream-parser.ts',
         'src/lib/logging/adapters/**',
         'src/lib/observability/**',
