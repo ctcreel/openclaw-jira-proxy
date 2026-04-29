@@ -78,10 +78,22 @@ export interface SessionAcquireRequest {
   readonly model?: string;
 }
 
+export type SessionAcquirePath = 'warm' | 'resume' | 'fresh';
+
 export interface SessionTurnHandle {
   readonly providerName: string;
   readonly key: string;
   readonly sessionId: string;
+  /**
+   * How the underlying subprocess was obtained for this acquire call:
+   * - `warm`: in-memory subprocess was already alive and reused
+   * - `resume`: spawned fresh now with `claude --resume <id>` (Redis hit)
+   * - `fresh`: spawned brand-new (no Redis hit)
+   *
+   * The runner uses this to decide whether to send the full first-turn
+   * template or just the new user message.
+   */
+  readonly acquirePath: SessionAcquirePath;
   /** Send a user message turn; resolves with the events emitted by the subprocess for this turn. */
   runTurn(userMessage: string): Promise<StreamEvent[]>;
 }
@@ -112,7 +124,7 @@ export class SessionPool {
     const compositeKey = buildCompositeKey(request.providerName, request.key);
     const existing = this.active.get(compositeKey);
     if (existing !== undefined && existing.child.exitCode === null) {
-      return this.toHandle(existing);
+      return this.toHandle(existing, 'warm');
     }
 
     // Either no entry, or entry is stale (subprocess exited). Drop stale
@@ -123,10 +135,11 @@ export class SessionPool {
 
     const redisKey = buildRedisKey(request.providerName, request.key);
     const priorSessionId = await this.redis.get(redisKey);
+    const acquirePath: SessionAcquirePath = priorSessionId === null ? 'fresh' : 'resume';
 
     const session = await this.spawnSession(request, redisKey, priorSessionId, strategy);
     this.active.set(compositeKey, session);
-    return this.toHandle(session);
+    return this.toHandle(session, acquirePath);
   }
 
   async shutdown(): Promise<void> {
@@ -491,10 +504,11 @@ export class SessionPool {
     });
   }
 
-  private toHandle(session: ActiveSession): SessionTurnHandle {
+  private toHandle(session: ActiveSession, acquirePath: SessionAcquirePath): SessionTurnHandle {
     return {
       providerName: session.providerName,
       key: session.key,
+      acquirePath,
       get sessionId(): string {
         if (session.sessionId === null) {
           throw new Error('Session not initialized — handle accessed before init event landed');

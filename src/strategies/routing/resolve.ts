@@ -9,6 +9,7 @@ export interface ResolvedRoute {
   agentDir: string;
   messageTemplate?: string;
   /** The matched rule itself — exposes memory + future per-rule fields. */
+  /** The matched rule itself — exposes session config and any future per-rule fields. */
   rule: AgentRule;
 }
 

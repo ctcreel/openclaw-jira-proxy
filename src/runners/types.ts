@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import type { ProviderConfig } from '../config';
+import type { SessionConfig, SessionKeyStrategy } from '../strategies/session-key';
+
 // ---------------------------------------------------------------------------
 // Runner interface
 // ---------------------------------------------------------------------------
@@ -24,6 +27,50 @@ export interface RunOptions {
    * Merged on top of `process.env` by runners that spawn child processes.
    * Runners that don't spawn subprocesses may ignore this field.
    */
+  env?: Record<string, string>;
+}
+
+/**
+ * Options for session-aware runs (warm subprocess + Redis-resume).
+ *
+ * `firstTurnPrompt` is the rendered template used to seed a fresh session
+ * (IDENTITY + SOUL + template + this event's payload). On subsequent turns
+ * within the same session, only `userMessage` is sent — the prior context
+ * is already in the subprocess's session JSONL.
+ */
+export interface SessionRunOptions {
+  /** Provider name (e.g. "slack-winston") — used for Redis key namespacing and observability. */
+  providerName: string;
+  /** Provider config — passed to strategies that need it. */
+  providerConfig: ProviderConfig;
+  /** Strategy-derived session key (e.g. a Slack channel id). */
+  sessionKey: string;
+  /** Session-key strategy — used by the pool when respawning to verify the key. */
+  strategy: SessionKeyStrategy;
+  /** Per-route session config (ttl, idleTimeout). */
+  sessionConfig: SessionConfig;
+  /**
+   * Rendered template for a freshly-spawned session — IDENTITY/SOUL/template
+   * + this event's payload. Sent as the first user message when the session
+   * is brand new. Ignored on warm-reuse and resume paths.
+   */
+  firstTurnPrompt: string;
+  /**
+   * The current event's user message — sent on every turn, warm or cold.
+   * On a fresh spawn this is implicitly part of `firstTurnPrompt`; on resume
+   * and warm paths this is the only thing the subprocess sees.
+   */
+  userMessage: string;
+  /** Target agent identifier. */
+  agentId: string;
+  /** Optional model override. */
+  model?: string;
+  /** Maximum time (ms) for this single turn. */
+  timeoutMs: number;
+  /** Trace + job correlation. */
+  traceId?: string;
+  jobId?: string;
+  /** Extra environment variables exposed when (re)spawning the subprocess. */
   env?: Record<string, string>;
 }
 
@@ -54,6 +101,13 @@ export interface AgentRunner {
 
   /** Execute a prompt and wait for a terminal result. */
   run(options: RunOptions): Promise<RunResult>;
+
+  /**
+   * Execute one turn against a session-aware (warm) subprocess. Optional —
+   * runners that don't support the session model should leave this
+   * undefined and the worker will fall back to `run()`.
+   */
+  runSession?(options: SessionRunOptions): Promise<RunResult>;
 
   /** Optional: establish persistent connections (called once at startup). */
   connect?(): Promise<void>;
