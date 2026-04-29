@@ -7,6 +7,8 @@ import { getActiveJobsRegistry } from './services/active-jobs.service';
 import { loadAgents } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
+import { bootstrapMemoryService } from './services/memory/bootstrap';
+import { MemoryPruningScheduler } from './services/memory/pruning.service';
 import { registerAgentSchedules } from './services/scheduler.service';
 import { createTaskWorker } from './services/task-worker.service';
 import { createWorker } from './services/worker.service';
@@ -244,9 +246,11 @@ function installShutdownHandlers(
   runnersWithConnections: readonly AgentRunner[],
   transports: readonly Transport[],
   logger: Logger,
+  pruningScheduler: MemoryPruningScheduler,
 ): void {
   const shutdown = (): void => {
     logger.info('Shutting down...');
+    pruningScheduler.stop();
     secretManager.close();
     for (const transport of transports) {
       transport.stop().catch(() => {});
@@ -280,6 +284,10 @@ async function startServer(): Promise<void> {
     'Agents loaded',
   );
 
+  const memoryNamespaces = await bootstrapMemoryService(agents, secretManager);
+  const pruningScheduler = new MemoryPruningScheduler(memoryNamespaces);
+  pruningScheduler.start();
+
   await startWorkers(settings.providers, agents, logger);
 
   const app = createApp(agents);
@@ -289,7 +297,13 @@ async function startServer(): Promise<void> {
     logger.info({ port: settings.port }, `Server running on port ${settings.port}`);
   });
 
-  installShutdownHandlers(secretManager, runnersWithConnections, transports, logger);
+  installShutdownHandlers(
+    secretManager,
+    runnersWithConnections,
+    transports,
+    logger,
+    pruningScheduler,
+  );
 }
 
 try {
