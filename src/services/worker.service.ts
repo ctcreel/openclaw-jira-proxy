@@ -13,7 +13,9 @@ import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
-import type { ResolvedAgent } from './agent-loader.service';
+import type { AgentRule, ResolvedAgent } from './agent-loader.service';
+import { getMemoryService } from './memory/memory.service';
+import type { MemoryHit } from '../lib/template/template-engine';
 import type { AlertRegistry } from './alerts';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
@@ -173,10 +175,25 @@ export async function processJob(
     );
   }
 
+  const memories = await fetchMemoriesForRule(resolved.rule, parsedPayload, traceId);
+  if (memories !== undefined) {
+    logger.info(
+      {
+        jobId: job.id,
+        provider: provider.name,
+        namespace: resolved.rule.memory?.namespace,
+        hitCount: memories.length,
+      },
+      'Memories retrieved for template',
+    );
+  }
+
   let prompt: string;
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
-    prompt = await renderTemplate(templateContent, parsedPayload, agentDir);
+    prompt = await renderTemplate(templateContent, parsedPayload, agentDir, {
+      ...(memories !== undefined ? { memories } : {}),
+    });
   } else {
     prompt = envelope.payload;
   }
@@ -308,4 +325,53 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
 
   logger.info({ provider: provider.name, queue: queueName, maxAttempts }, 'Worker started');
   return worker;
+}
+
+/**
+ * Pre-render memory retrieval. When the matched rule has a
+ * `memory.retrieve` block, resolve `queryField` against the parsed
+ * payload, call MemoryService.search, return the hits for template
+ * injection. Returns undefined when the rule has no retrieve config or
+ * the field path doesn't yield a string — both render `{{ memories }}`
+ * as empty.
+ */
+async function fetchMemoriesForRule(
+  rule: AgentRule,
+  parsedPayload: unknown,
+  traceId: string,
+): Promise<readonly MemoryHit[] | undefined> {
+  const memoryConfig = rule.memory;
+  if (memoryConfig === undefined || memoryConfig.retrieve === undefined) return undefined;
+
+  const queryRaw = resolveFieldPath(parsedPayload, memoryConfig.retrieve.queryField);
+  if (typeof queryRaw !== 'string' || queryRaw.length === 0) {
+    logger.debug(
+      {
+        namespace: memoryConfig.namespace,
+        queryField: memoryConfig.retrieve.queryField,
+      },
+      'Memory retrieve skipped — query field absent or non-string',
+    );
+    return undefined;
+  }
+
+  try {
+    const result = await getMemoryService().search({
+      namespace: memoryConfig.namespace,
+      query: queryRaw,
+      topK: memoryConfig.retrieve.topK,
+      minSimilarity: memoryConfig.retrieve.minSimilarity,
+      traceId,
+    });
+    return result.hits;
+  } catch (error) {
+    logger.error(
+      {
+        namespace: memoryConfig.namespace,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'Memory retrieve failed — proceeding with empty memories',
+    );
+    return undefined;
+  }
 }
