@@ -17,12 +17,16 @@ Env vars:
 """
 
 import argparse
+import atexit
 import json
 import os
+import select
 import signal
 import sys
+import termios
 import threading
 import time
+import tty
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -36,6 +40,10 @@ ACTIVE_STALE_SECONDS = 30  # treat a runner as "live" only if it emitted within 
 TOOL_HISTORY_MAX = 8  # rolling tool-call buffer per active job
 TEXT_HISTORY_MAX = 3  # rolling assistant-text buffer per active job
 TICKET_HISTORY_MAX = 6  # recent runs shown per ticket
+RECENT_SKIPPED_MAX = 50  # ring buffer for the `s` panel; server caps at 100
+SKIPPED_PANEL_VISIBLE = 20  # rows shown when `s` is pressed
+REPEAT_CONTEXT_WINDOW_SECONDS = 300  # 5-minute rolling window
+REPEAT_CONTEXT_THRESHOLD = 5  # ≥N hits on same contextId in window → spike
 
 # ANSI
 CLEAR = "\033[2J\033[H"
@@ -72,9 +80,24 @@ class State:
         self.ticket_history: dict[str, deque[dict[str, Any]]] = {}
         # Jira fan-out webhooks that don't match any routing rule (e.g. a
         # comment-added event on a ticket whose state Patch doesn't care
-        # about). Counted, not listed — otherwise they drown real work.
+        # about). Counted separately from duplicates so the header can
+        # render `Skipped: <total> (no-match: N, dup: M)` and a human can
+        # tell legitimate filter actions from re-delivery storms.
         self.routing_skipped_count: int = 0
         self.routing_skipped_last_time: int = 0
+        self.duplicate_skipped_count: int = 0
+        self.duplicate_skipped_last_time: int = 0
+        # Recent rejections with full per-event context, for the `s` panel.
+        # Newest first. Cap mirrors the server's REST cap so SSE + bootstrap
+        # don't drift past what the dashboard can show.
+        self.recent_skipped: deque[dict[str, Any]] = deque(maxlen=RECENT_SKIPPED_MAX)
+        # Per-contextId no-match timestamps, for the spike heuristic. Keys
+        # are evicted when their deque empties — a contextId that rejects
+        # once and never again would otherwise leave a 1-element deque
+        # forever.
+        self.repeat_context_window: dict[str, deque[float]] = {}
+        # Toggled by the `s` keybind; render() swaps panels accordingly.
+        self.show_skipped_panel: bool = False
         # wall-clock of last SSE event received
         self.last_event_at: float = 0.0
         # Whether the SSE reader is connected
@@ -235,22 +258,86 @@ def _handle_webhook_accepted(trace_id: str, payload: dict[str, Any]) -> None:
 
 def _handle_webhook_rejected(payload: dict[str, Any]) -> None:
     reason = payload.get("reason", "?")
-    # Jira fan-out noise — these fire constantly on any ticket edit
-    # whose new status doesn't match a routing rule. Count them so
-    # we're not lying about the volume, but keep them out of RECENT
-    # so real work stays visible.
+    timestamp = payload.get("timestamp", 0)
+
+    # Every rejection lands in the recent-skipped panel buffer with full
+    # context so pressing `s` answers "what got dropped, and why?" without
+    # log grep. The header counter only sums the routing reasons (no-match
+    # + dup); signature failures stay visible in RECENT today and are
+    # tracked separately via the server's getCounts() for completeness.
+    STATE.recent_skipped.appendleft(
+        {
+            "timestamp": timestamp,
+            "provider": payload.get("provider", "?"),
+            "reason": reason,
+            "contextId": payload.get("contextId", ""),
+            "contextStatus": payload.get("contextStatus", ""),
+            "contextTitle": payload.get("contextTitle", ""),
+            "traceId": payload.get("traceId", ""),
+        }
+    )
+
     if reason == "no-routing-match":
         STATE.routing_skipped_count += 1
-        STATE.routing_skipped_last_time = payload.get("timestamp", 0)
+        STATE.routing_skipped_last_time = timestamp
+        # Track repeat rejections on the same ticket — a real misconfig
+        # signal vs the steady drip of expected fan-out.
+        _record_repeat_context(payload.get("contextId", ""), now=time.time())
+    elif reason == "duplicate":
+        STATE.duplicate_skipped_count += 1
+        STATE.duplicate_skipped_last_time = timestamp
     else:
+        # Signature failures — keep them visible in RECENT (they're real
+        # security signal, not just routing noise) instead of burying them.
         STATE.recent.appendleft(
             {
                 "kind": "rejected",
-                "time": payload.get("timestamp", 0),
+                "time": timestamp,
                 "provider": payload.get("provider", "?"),
                 "reason": reason,
             }
         )
+
+
+def _record_repeat_context(context_id: str, *, now: float) -> None:
+    """Append a hit for `context_id` at `now`, ignoring unknown ids.
+
+    `now` is injected so the heuristic tests stay deterministic. Empty or
+    "?" ids are skipped — every rejection without an extractable context
+    would otherwise stack under one bucket and trip the spike heuristic
+    spuriously.
+    """
+    if not context_id or context_id == "?":
+        return
+    bucket = STATE.repeat_context_window.setdefault(context_id, deque())
+    bucket.append(now)
+
+
+def _evict_stale_repeat_context(now: float) -> None:
+    """Pop entries older than the window from each bucket; drop empty keys.
+
+    Called on every read so the dict can't grow unbounded with one-shot
+    contexts that never return — otherwise a contextId rejected once would
+    leave a 1-element deque in the dict for the lifetime of the dashboard.
+    """
+    cutoff = now - REPEAT_CONTEXT_WINDOW_SECONDS
+    drop: list[str] = []
+    for context_id, bucket in STATE.repeat_context_window.items():
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            drop.append(context_id)
+    for context_id in drop:
+        STATE.repeat_context_window.pop(context_id, None)
+
+
+def _repeat_context_active(now: float) -> bool:
+    """True if any contextId has crossed the threshold within the window."""
+    _evict_stale_repeat_context(now)
+    return any(
+        len(bucket) >= REPEAT_CONTEXT_THRESHOLD
+        for bucket in STATE.repeat_context_window.values()
+    )
 
 
 def _handle_job_queued(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
@@ -471,6 +558,55 @@ def refresh_health(url: str) -> None:
         STATE.health_checked_at = time.time()
 
 
+def bootstrap_skipped_webhooks(url: str) -> None:
+    """Seed STATE.recent_skipped + counters from /api/webhooks/skipped/recent
+    so a dashboard reconnecting mid-day doesn't reset to zeros. Same merge
+    discipline as bootstrap_active_jobs: SSE that already updated state
+    takes precedence — this only fills in pre-connect history."""
+    try:
+        with urllib_request.urlopen(
+            f"{url}/api/webhooks/skipped/recent?limit={RECENT_SKIPPED_MAX}", timeout=3
+        ) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return
+
+    skipped = body.get("skipped", [])
+    counts = body.get("counts", {})
+    if not isinstance(skipped, list):
+        return
+
+    with STATE.lock:
+        # Counts are cumulative on the server — only adopt them if our own
+        # session hasn't started counting yet, otherwise we'd double up.
+        if STATE.routing_skipped_count == 0 and STATE.duplicate_skipped_count == 0:
+            STATE.routing_skipped_count = int(counts.get("noMatch", 0) or 0)
+            STATE.duplicate_skipped_count = int(counts.get("duplicate", 0) or 0)
+        if not STATE.recent_skipped:
+            for entry in skipped:
+                if not isinstance(entry, dict):
+                    continue
+                STATE.recent_skipped.append(
+                    {
+                        "timestamp": entry.get("timestamp", 0),
+                        "provider": entry.get("provider", "?"),
+                        "reason": entry.get("reason", "?"),
+                        "contextId": entry.get("contextId", ""),
+                        "contextStatus": entry.get("contextStatus", ""),
+                        "contextTitle": entry.get("contextTitle", ""),
+                        "traceId": entry.get("traceId", ""),
+                    }
+                )
+                # Update last-seen timestamps from history so the header's
+                # "last <time>" is correct on reconnect.
+                ts = entry.get("timestamp", 0)
+                reason = entry.get("reason", "")
+                if reason == "no-routing-match" and ts > STATE.routing_skipped_last_time:
+                    STATE.routing_skipped_last_time = ts
+                elif reason == "duplicate" and ts > STATE.duplicate_skipped_last_time:
+                    STATE.duplicate_skipped_last_time = ts
+
+
 def bootstrap_active_jobs(url: str) -> None:
     """Seed STATE.active from /api/jobs/active so jobs that started before
     the dashboard connected are visible. Merges into existing state — SSE
@@ -554,17 +690,25 @@ def _render_header(
     sse_connected: bool,
     active_count: int,
     queued_count: int,
-    skipped_count: int,
+    no_match_count: int,
+    duplicate_count: int,
     skipped_last_time: int,
+    repeat_spike: bool,
 ) -> list[str]:
     hc = health_color(health)
     sse_state = f"{GREEN}SSE{RESET}" if sse_connected else f"{RED}SSE down{RESET}"
     now_text = datetime.now().strftime("%H:%M:%S")
     skipped_suffix = ""
-    if skipped_count > 0:
+    total = no_match_count + duplicate_count
+    if total > 0:
         last = format_time(skipped_last_time) if skipped_last_time else "—"
+        # Yellow when the repeat-context heuristic triggers — same ticket,
+        # ≥5 no-match rejections in 5 minutes, almost certainly a misconfig.
+        # Otherwise dim, so the counter doesn't compete with active work.
+        label_color = YELLOW if repeat_spike else DIM
         skipped_suffix = (
-            f"   {DIM}Skipped webhooks: {skipped_count} (last {last}){RESET}"
+            f"   {label_color}Skipped: {total} (no-match: {no_match_count}, "
+            f"dup: {duplicate_count}, last {last}){RESET}"
         )
     return [
         f"{BOLD}{'═' * 80}{RESET}",
@@ -576,6 +720,43 @@ def _render_header(
         ),
         f"{BOLD}{'═' * 80}{RESET}",
     ]
+
+
+def _render_skipped_panel(skipped: list[dict[str, Any]]) -> list[str]:
+    if not skipped:
+        return [
+            "",
+            f"  {BOLD}SKIPPED{RESET} {DIM}(press s to return){RESET}",
+            f"  {DIM}No skipped webhooks recorded yet.{RESET}",
+        ]
+    lines = [
+        "",
+        (
+            f"  {BOLD}SKIPPED{RESET} "
+            f"{DIM}(last {min(SKIPPED_PANEL_VISIBLE, len(skipped))}, press s to return){RESET}"
+        ),
+    ]
+    for entry in skipped[:SKIPPED_PANEL_VISIBLE]:
+        timestamp = format_time(entry.get("timestamp", 0))
+        reason = entry.get("reason", "?")
+        # Color the reason so no-match (expected filter) reads quieter than
+        # signature failures (real security signal).
+        if reason in ("invalid-signature", "missing-signature"):
+            reason_color = RED
+        elif reason == "duplicate":
+            reason_color = CYAN
+        else:
+            reason_color = DIM
+        provider = entry.get("provider", "?")
+        ctx_id = entry.get("contextId") or "—"
+        ctx_status = entry.get("contextStatus") or ""
+        title = (entry.get("contextTitle") or "")[:40]
+        status_suffix = f" [{ctx_status}]" if ctx_status else ""
+        lines.append(
+            f"     {DIM}{timestamp}{RESET}  {reason_color}{reason:<18}{RESET}"
+            f"{DIM}{provider:<8}{RESET}{ctx_id:<14}{DIM}{status_suffix} {title}{RESET}"
+        )
+    return lines
 
 
 def _render_active_job_header(
@@ -724,6 +905,7 @@ def _render_tickets(ticket_history: dict[str, deque[dict[str, Any]]]) -> list[st
 
 
 def render(url: str) -> str:
+    now = time.time()
     with STATE.lock:
         health = STATE.health
         active = list(STATE.active.items())
@@ -732,8 +914,15 @@ def render(url: str) -> str:
         trace_context = STATE.trace_context.copy()
         job_trace = STATE.job_trace.copy()
         ticket_history = {k: v.copy() for k, v in STATE.ticket_history.items()}
-        skipped_count = STATE.routing_skipped_count
-        skipped_last_time = STATE.routing_skipped_last_time
+        no_match_count = STATE.routing_skipped_count
+        duplicate_count = STATE.duplicate_skipped_count
+        # Header's "last" is the most recent of the two routing reasons.
+        skipped_last_time = max(
+            STATE.routing_skipped_last_time, STATE.duplicate_skipped_last_time
+        )
+        recent_skipped = list(STATE.recent_skipped)
+        show_skipped_panel = STATE.show_skipped_panel
+        repeat_spike = _repeat_context_active(now)
         sse_connected = STATE.sse_connected
         sse_error = STATE.sse_error
 
@@ -743,12 +932,22 @@ def render(url: str) -> str:
         sse_connected=sse_connected,
         active_count=len(active),
         queued_count=len(queued),
-        skipped_count=skipped_count,
+        no_match_count=no_match_count,
+        duplicate_count=duplicate_count,
         skipped_last_time=skipped_last_time,
+        repeat_spike=repeat_spike,
     )
 
     if not sse_connected and sse_error:
         lines.append(f"  {RED}SSE reader error: {sse_error[:70]}{RESET}")
+
+    if show_skipped_panel:
+        # Drill-down view: only the SKIPPED panel + footer. Everything else
+        # is suppressed so the operator sees what they came for.
+        lines.extend(_render_skipped_panel(recent_skipped))
+        lines.append("")
+        lines.append(f"  {DIM}Press s to return.  Ctrl+C to exit.{RESET}")
+        return CLEAR + "\n".join(lines) + "\n"
 
     lines.append("")
     if active:
@@ -762,9 +961,64 @@ def render(url: str) -> str:
     lines.extend(_render_tickets(ticket_history))
 
     lines.append("")
-    lines.append(f"  {DIM}Ctrl+C to exit.{RESET}")
+    lines.append(f"  {DIM}Press s for skipped panel.  Ctrl+C to exit.{RESET}")
 
     return CLEAR + "\n".join(lines) + "\n"
+
+
+# ── Keyboard input ───────────────────────────────────────────────────
+_TTY_ORIGINAL_MODE: list[Any] | None = None
+_TTY_FD: int | None = None
+
+
+def _setup_cbreak_terminal() -> bool:
+    """Switch stdin to cbreak so single keypresses arrive without Enter.
+
+    Returns True on success. Falls back gracefully when stdin isn't a TTY
+    (e.g. piped input, --once mode) — the dashboard still renders, just
+    without the `s` keybind.
+    """
+    global _TTY_ORIGINAL_MODE, _TTY_FD
+    if not sys.stdin.isatty():
+        return False
+    try:
+        _TTY_FD = sys.stdin.fileno()
+        _TTY_ORIGINAL_MODE = termios.tcgetattr(_TTY_FD)
+        tty.setcbreak(_TTY_FD)
+        atexit.register(_restore_terminal)
+        return True
+    except (termios.error, OSError):
+        return False
+
+
+def _restore_terminal() -> None:
+    if _TTY_FD is not None and _TTY_ORIGINAL_MODE is not None:
+        try:
+            termios.tcsetattr(_TTY_FD, termios.TCSADRAIN, _TTY_ORIGINAL_MODE)
+        except (termios.error, OSError):
+            pass
+
+
+def _poll_key() -> str | None:
+    """Non-blocking keypress read; returns the character or None."""
+    if _TTY_FD is None:
+        return None
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+    except (OSError, ValueError):
+        return None
+    if not ready:
+        return None
+    try:
+        return sys.stdin.read(1)
+    except (OSError, ValueError):
+        return None
+
+
+def _handle_keypress(key: str) -> None:
+    if key == "s":
+        with STATE.lock:
+            STATE.show_skipped_panel = not STATE.show_skipped_panel
 
 
 # ── Main loop ────────────────────────────────────────────────────────
@@ -787,6 +1041,7 @@ def main() -> None:
         # One-shot: fetch health synchronously, render whatever state we have.
         refresh_health(url)
         bootstrap_active_jobs(url)
+        bootstrap_skipped_webhooks(url)
         sys.stdout.write(render(url))
         sys.stdout.flush()
         return
@@ -808,17 +1063,25 @@ def main() -> None:
     # events that arrive after this point still win on jobs they touch
     # because `bootstrap_active_jobs` only fills gaps.
     bootstrap_active_jobs(url)
+    bootstrap_skipped_webhooks(url)
     last_health = time.time()
+
+    keys_enabled = _setup_cbreak_terminal()
 
     try:
         while not stop_event.is_set():
             if time.time() - last_health > HEALTH_REFRESH_SECONDS:
                 refresh_health(url)
                 last_health = time.time()
+            if keys_enabled:
+                key = _poll_key()
+                if key is not None:
+                    _handle_keypress(key)
             sys.stdout.write(render(url))
             sys.stdout.flush()
             stop_event.wait(args.interval)
     finally:
+        _restore_terminal()
         print(f"\n{DIM}Dashboard stopped.{RESET}")
 
 

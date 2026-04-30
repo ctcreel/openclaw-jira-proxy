@@ -5,6 +5,7 @@ import { createHealthRoutes } from './health.routes';
 import { getSettings, isWebhookProvider } from '../config';
 import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
+import { listRecentSkippedWebhooks } from '../controllers/skipped-webhooks.controller';
 import {
   createTaskHandler,
   getTaskStatusHandler,
@@ -25,6 +26,7 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.use('/api/health', createHealthRoutes());
   app.get('/api/events', handleEventStream);
   app.get('/api/jobs/active', listActiveJobs);
+  app.get('/api/webhooks/skipped/recent', listRecentSkippedWebhooks);
 
   app.post('/api/tasks', express.json({ limit: '1mb' }), createTaskHandler(agents));
   app.get('/api/tasks/:agent/:taskId', getTaskStatusHandler());

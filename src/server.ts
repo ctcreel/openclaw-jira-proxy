@@ -4,6 +4,7 @@ import { getSettings, isWebhookProvider, isSlackSocketProvider } from './config'
 import type { ProviderConfig, Settings } from './config';
 import type { Logger } from 'pino';
 import { getActiveJobsRegistry } from './services/active-jobs.service';
+import { getSkippedWebhooksRegistry } from './services/skipped-webhooks.service';
 import { loadAgents } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
@@ -179,6 +180,10 @@ async function startWorkers(
   // job.started — otherwise bootstrap snapshots (GET /api/jobs/active)
   // would miss jobs that started before the first dashboard connects.
   getActiveJobsRegistry();
+  // Same reasoning for the skipped-webhooks registry: rejection events
+  // can fire before the first dashboard connects and we want
+  // GET /api/webhooks/skipped/recent to reflect them.
+  getSkippedWebhooksRegistry();
 
   const alertRegistry = buildAlertRegistry();
   for (const provider of providers) {

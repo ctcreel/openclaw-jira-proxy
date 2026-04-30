@@ -32,6 +32,12 @@ export interface WebhookRejectedEvent {
   traceId: string;
   provider: string;
   reason: 'invalid-signature' | 'missing-signature' | 'no-routing-match' | 'duplicate';
+  // Optional because signature-failure rejections happen before the body is
+  // parsed — there's no payload to extract context from. Routing rejections
+  // (no-routing-match, duplicate) populate these from extractWebhookContext.
+  contextId?: string;
+  contextStatus?: string;
+  contextTitle?: string;
 }
 
 export interface JobQueuedEvent {
