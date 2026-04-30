@@ -632,7 +632,6 @@ describe('processJob message templates', () => {
       'Issue {{ issue.key }}',
       expect.objectContaining({ type: 'bug' }),
       '/agents/patch',
-      expect.any(Object),
     );
     expect(runSpy.mock.calls[0]![0].prompt).toBe('rendered rule template');
   });

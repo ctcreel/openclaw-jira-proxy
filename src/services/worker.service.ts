@@ -15,7 +15,8 @@ import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
 import { getMemoryService } from './memory/memory.service';
-import type { MemoryHit } from '../lib/template/template-engine';
+import { renderRetrievePreamble, renderStorePostamble } from './memory/prompt-fragments';
+import type { MemoryHit } from './memory/prompt-fragments';
 import type { AlertRegistry } from './alerts';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
@@ -191,9 +192,13 @@ export async function processJob(
   let prompt: string;
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
-    prompt = await renderTemplate(templateContent, parsedPayload, agentDir, {
-      ...(memories !== undefined ? { memories } : {}),
-    });
+    const renderedAgentBody = await renderTemplate(templateContent, parsedPayload, agentDir);
+    prompt = wrapWithMemoryFragments(
+      renderedAgentBody,
+      resolved.rule.memory?.namespace,
+      memories,
+      traceId,
+    );
   } else {
     prompt = envelope.payload;
   }
@@ -328,12 +333,44 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
 }
 
 /**
+ * Wrap the agent's rendered template with memory prompt fragments.
+ *
+ * When the matched rule declares a `memory.namespace`, prepend the
+ * retrieve-preamble (with the pre-fetched hits interpolated) and append
+ * the store-postamble (with namespace + traceId bound). The fragments
+ * live in Clawndom and are uniform across agents — agent templates stay
+ * focused on their domain logic; memory instructions are infrastructure.
+ *
+ * Returns the agent body unchanged when no memory namespace is set.
+ */
+function wrapWithMemoryFragments(
+  agentBody: string,
+  namespace: string | undefined,
+  memories: readonly MemoryHit[] | undefined,
+  traceId: string,
+): string {
+  if (namespace === undefined) {
+    return agentBody;
+  }
+  const preamble = renderRetrievePreamble({
+    memories: memories ?? [],
+    memoryNamespace: namespace,
+    traceId,
+  });
+  const postamble = renderStorePostamble({
+    memories: memories ?? [],
+    memoryNamespace: namespace,
+    traceId,
+  });
+  return `${preamble}\n${agentBody}\n${postamble}`;
+}
+
+/**
  * Pre-render memory retrieval. When the matched rule has a
  * `memory.retrieve` block, resolve `queryField` against the parsed
- * payload, call MemoryService.search, return the hits for template
+ * payload, call MemoryService.search, return the hits for fragment
  * injection. Returns undefined when the rule has no retrieve config or
- * the field path doesn't yield a string — both render `{{ memories }}`
- * as empty.
+ * the field path doesn't yield a string.
  */
 async function fetchMemoriesForRule(
   rule: AgentRule,

@@ -54,41 +54,18 @@ const nunjucksEnvironment = new nunjucks.Environment(null, {
   throwOnUndefined: false,
 });
 
-export interface MemoryHit {
-  readonly id: string;
-  readonly text: string;
-  readonly score: number;
-  readonly metadata: Record<string, unknown>;
-}
-
-export interface RenderTemplateOptions {
-  /**
-   * Pre-fetched memories from the per-route memory.retrieve config.
-   * Inlined as `{{ memories }}` — formatted block of `- text [score: N]`
-   * lines when present, empty string when undefined or empty.
-   */
-  readonly memories?: readonly MemoryHit[];
-}
-
 export async function renderTemplate(
   template: string,
   payload: unknown,
   baseDir: string,
-  options: RenderTemplateOptions = {},
 ): Promise<string> {
   const preprocessed = await preprocessDocTags(template, baseDir);
 
   const spreadable = typeof payload === 'object' && payload !== null ? payload : {};
   const context = {
     payload: JSON.stringify(payload, null, 2),
-    memories: formatMemories(options.memories),
     ...spreadable,
   };
 
   return nunjucksEnvironment.renderString(preprocessed, context);
-}
-
-function formatMemories(hits: readonly MemoryHit[] | undefined): string {
-  if (hits === undefined || hits.length === 0) return '';
-  return hits.map((hit) => `- ${hit.text} [score: ${hit.score.toFixed(2)}]`).join('\n');
 }
