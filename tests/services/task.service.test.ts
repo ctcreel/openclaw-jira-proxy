@@ -12,13 +12,23 @@ vi.mock('bullmq', () => {
     constructor() {
       queueInstances.push(this);
     }
-    async add(name: string, data: string, opts?: { jobId?: string }) {
+    async add(name: string, data: string, opts?: { jobId?: string }): Promise<{ id: string }> {
       added.push({ name, data, opts });
       const id = opts?.jobId ?? `auto-${added.length}`;
       jobs.set(id, { data, state: 'waiting' });
       return { id };
     }
-    async getJob(id: string) {
+    async getJob(id: string): Promise<
+      | undefined
+      | {
+          id: string;
+          data: string;
+          returnvalue: unknown;
+          failedReason: string | undefined;
+          getState: () => Promise<string>;
+          waitUntilFinished: () => Promise<unknown>;
+        }
+    > {
       const raw = jobs.get(id);
       if (!raw) return undefined;
       return {
@@ -26,21 +36,21 @@ vi.mock('bullmq', () => {
         data: raw.data,
         returnvalue: raw.returnvalue,
         failedReason: raw.failedReason,
-        async getState() {
+        async getState(): Promise<string> {
           return raw.state;
         },
-        async waitUntilFinished() {
+        async waitUntilFinished(): Promise<unknown> {
           return raw.returnvalue;
         },
       };
     }
-    async close() {
+    async close(): Promise<undefined> {
       return undefined;
     }
   }
 
   class QueueEventsMock {
-    async close() {
+    async close(): Promise<undefined> {
       return undefined;
     }
   }

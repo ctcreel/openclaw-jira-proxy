@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import type { ProviderConfig } from '../../src/config';
-import { SecretManager } from '../../src/secrets/manager';
+import type { SecretManager } from '../../src/secrets/manager';
 import { validateProviderEnvSecrets } from '../../src/secrets/validate-env-secrets';
 import { buildMockSecretManager } from '../helpers/mock-secret-manager';
 

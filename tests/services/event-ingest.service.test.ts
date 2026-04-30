@@ -12,11 +12,11 @@ const { dedupSetMock, queueAddMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/services/dedup.service', () => ({
-  getDedupRedis: () => ({ set: dedupSetMock }),
+  getDedupRedis: (): { set: typeof dedupSetMock } => ({ set: dedupSetMock }),
 }));
 
 vi.mock('../../src/services/queue.service', () => ({
-  getProviderQueue: () => ({ add: queueAddMock }),
+  getProviderQueue: (): { add: typeof queueAddMock } => ({ add: queueAddMock }),
 }));
 
 import { ingestEvent } from '../../src/services/event-ingest.service';

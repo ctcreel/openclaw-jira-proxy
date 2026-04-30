@@ -9,6 +9,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
+import type { Express } from 'express';
+import type { Worker as BullMQWorker } from 'bullmq';
 import request from 'supertest';
 
 import { resetSettings } from '../../src/config';
@@ -190,22 +192,26 @@ function deliveriesForCurrentTest(): DeliveredPayload[] {
 
 async function waitForDeliveries(count: number, timeoutMs = 8000): Promise<DeliveredPayload[]> {
   const start = Date.now();
-  while (true) {
+  let elapsed = Date.now() - start;
+  while (elapsed <= timeoutMs) {
     const matched = deliveriesForCurrentTest();
     if (matched.length >= count) {
       return matched;
     }
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`Timed out waiting for ${count} deliveries (got ${matched.length})`);
-    }
     await sleep(50);
+    elapsed = Date.now() - start;
   }
+  const finalMatched = deliveriesForCurrentTest();
+  if (finalMatched.length >= count) {
+    return finalMatched;
+  }
+  throw new Error(`Timed out waiting for ${count} deliveries (got ${finalMatched.length})`);
 }
 
 // -- Test suite --
 describe('E2E: webhook → queue → runner.run (mock)', () => {
-  let app: import('express').Express;
-  let workers: Array<import('bullmq').Worker>;
+  let app: Express;
+  let workers: Array<BullMQWorker>;
 
   beforeAll(async () => {
     // Isolate test queues from production Clawndom workers sharing the same Redis

@@ -12,21 +12,21 @@ vi.mock('bullmq', () => {
       schedulerId: string,
       repeatOpts: { pattern: string; tz?: string },
       template: { name: string; data: string; opts?: unknown },
-    ) {
+    ): Promise<void> {
       upsertCalls.push({
         schedulerId,
         repeatOpts,
         template: { name: template.name, data: template.data },
       });
     }
-    async close() {
+    async close(): Promise<undefined> {
       return undefined;
     }
   }
   return {
     Queue: QueueMock,
     QueueEvents: class {
-      async close() {
+      async close(): Promise<undefined> {
         return undefined;
       }
     },

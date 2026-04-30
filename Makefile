@@ -12,7 +12,7 @@ install: ## Install all dependencies
 # ============================================================================
 
 lint-quick: ## Quick lint (ESLint + TypeScript type check)
-	pnpm exec eslint --ext .ts src/
+	pnpm exec eslint --ext .ts src/ tests/
 	pnpm exec tsc --noEmit
 
 lint: lint-quick ## Full lint (includes Prettier format check)
@@ -29,8 +29,8 @@ test: ## Run tests with 95% coverage threshold
 # SECURITY
 # ============================================================================
 
-security: ## Security checks
-	pnpm audit --audit-level=moderate || true
+security: ## Security checks (report all vulnerabilities, currently non-blocking — upstream openclaw deps have known criticals)
+	pnpm audit || true
 
 # ============================================================================
 # NAMING CONVENTIONS

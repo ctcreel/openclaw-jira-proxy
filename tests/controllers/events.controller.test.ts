@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
-import { createServer, Server } from 'node:http';
-import { AddressInfo } from 'node:net';
+import type { Server } from 'node:http';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 import { handleEventStream } from '../../src/controllers/events.controller';
 import { getEventBus, resetEventBus } from '../../src/services/event-bus.service';

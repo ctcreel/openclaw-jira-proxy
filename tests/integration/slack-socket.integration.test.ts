@@ -8,6 +8,7 @@
  * unwrapped Slack event payload.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import type { Worker as BullMQWorker } from 'bullmq';
 
 import { resetSettings, getSettings } from '../../src/config';
 import type { SlackSocketProviderConfig } from '../../src/config';
@@ -114,18 +115,20 @@ function deliveriesForCurrentTest(): DeliveredPayload[] {
 
 async function waitForDeliveries(count: number, timeoutMs = 8000): Promise<DeliveredPayload[]> {
   const start = Date.now();
-  while (true) {
+  let elapsed = Date.now() - start;
+  while (elapsed <= timeoutMs) {
     const matched = deliveriesForCurrentTest();
     if (matched.length >= count) return matched;
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`Timed out waiting for ${count} deliveries (got ${matched.length})`);
-    }
     await sleep(50);
+    elapsed = Date.now() - start;
   }
+  const finalMatched = deliveriesForCurrentTest();
+  if (finalMatched.length >= count) return finalMatched;
+  throw new Error(`Timed out waiting for ${count} deliveries (got ${finalMatched.length})`);
 }
 
 describe('Integration: slack-socket transport → BullMQ → runner', () => {
-  let workers: Array<import('bullmq').Worker>;
+  let workers: Array<BullMQWorker>;
   let transport: SlackSocketTransport;
   let fakeClient: FakeSocketModeClient;
 

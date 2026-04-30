@@ -38,7 +38,7 @@ const agents: ResolvedAgent[] = [
   { name: 'scarlett', dir: '/agents/scarlett', config: { routing: {}, modelRules: {} } },
 ];
 
-function buildApp() {
+function buildApp(): ReturnType<typeof express> {
   const app = express();
   app.post('/api/tasks', express.json({ limit: '1mb' }), createTaskHandler(agents));
   app.get('/api/tasks/:agent/:taskId', getTaskStatusHandler());

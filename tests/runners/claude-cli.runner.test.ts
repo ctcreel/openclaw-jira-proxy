@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
+import type * as NodeFs from 'node:fs';
 
 // Mock child_process before importing the runner
 vi.mock('node:child_process', () => ({
@@ -10,7 +11,7 @@ vi.mock('node:child_process', () => ({
 // Mock node:fs so isHealthy() doesn't pick up the developer's real
 // ~/.claude/.credentials.json file. isHealthy is OR: env token OR file.
 vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return { ...actual, existsSync: vi.fn(() => false) };
 });
 
