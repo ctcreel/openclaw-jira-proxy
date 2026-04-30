@@ -36,7 +36,15 @@ interface MockChildOpts {
   emitError?: Error;
 }
 
-function createMockChild(opts: MockChildOpts = {}) {
+function createMockChild(opts: MockChildOpts = {}): EventEmitter & {
+  stdout: Readable;
+  stderr: Readable;
+  pid?: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  killed: boolean;
+  kill: (sig: NodeJS.Signals) => boolean;
+} {
   const proc = new EventEmitter() as EventEmitter & {
     stdout: Readable;
     stderr: Readable;
@@ -63,7 +71,7 @@ function createMockChild(opts: MockChildOpts = {}) {
     return proc;
   }
 
-  const fire = () => {
+  const fire = (): void => {
     proc.exitCode = opts.exitCode ?? 0;
     proc.signalCode = opts.signal ?? null;
     proc.emit('close', opts.exitCode ?? 0, opts.signal ?? null);

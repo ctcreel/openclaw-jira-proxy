@@ -36,7 +36,12 @@ describe('OnePasswordProvider', () => {
   it('should resolve secrets via op read', async () => {
     // Mock execFile to simulate `op read` returning a value
     vi.mocked(execFile).mockImplementation(
-      (_cmd: string, args: readonly string[], _opts: unknown, callback?: Function) => {
+      (
+        _cmd: string,
+        args: readonly string[],
+        _opts: unknown,
+        callback?: (...args: unknown[]) => void,
+      ) => {
         if (typeof _opts === 'function') {
           callback = _opts;
         }
@@ -64,7 +69,12 @@ describe('OnePasswordProvider', () => {
 
   it('should omit secrets that fail to resolve', async () => {
     vi.mocked(execFile).mockImplementation(
-      (_cmd: string, args: readonly string[], _opts: unknown, callback?: Function) => {
+      (
+        _cmd: string,
+        args: readonly string[],
+        _opts: unknown,
+        callback?: (...args: unknown[]) => void,
+      ) => {
         if (typeof _opts === 'function') {
           callback = _opts;
         }

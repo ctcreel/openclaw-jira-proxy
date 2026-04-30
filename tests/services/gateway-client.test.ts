@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type * as NodeFs from 'node:fs';
 
 // Mock the SDK — this wrapper is thin, so tests only assert the contract
 // it exposes (start/stop, hello-ok promise wiring, agent + agent.wait RPC
@@ -41,7 +42,7 @@ vi.mock('openclaw/plugin-sdk/gateway-runtime', () => ({
 
 // Mock device-identity file I/O so tests don't touch the real HOME.
 vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return {
     ...actual,
     existsSync: vi.fn(() => true),

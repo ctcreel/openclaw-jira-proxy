@@ -61,14 +61,14 @@ describe('loadAgents', () => {
       calls,
       pinnedCalls,
       failPinnedWith: undefined as Error | undefined,
-      async cloneOrPull(repoUrl: string, cloneDir: string, ref?: string) {
+      async cloneOrPull(repoUrl: string, cloneDir: string, ref?: string): Promise<void> {
         calls.push({ repo: repoUrl, dir: cloneDir, ref });
         const source = join(fakeRemotes, slugifyRepoUrl(repoUrl));
         await mkdir(cloneDir, { recursive: true });
         // shallow copy via platform-neutral recursive mkdir + file walk
         await copyTree(source, cloneDir);
       },
-      async clonePinned(repoUrl: string, cloneDir: string, ref: string) {
+      async clonePinned(repoUrl: string, cloneDir: string, ref: string): Promise<void> {
         pinnedCalls.push({ repo: repoUrl, dir: cloneDir, ref });
         if (fake.failPinnedWith) throw fake.failPinnedWith;
         // Real impl writes a .git directory; for the fake we just need the

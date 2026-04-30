@@ -31,7 +31,7 @@ const { loggerInfoSpy, loggerDebugSpy, loggerWarnSpy, loggerErrorSpy } = vi.hois
 }));
 
 vi.mock('../../src/lib/logging', () => ({
-  getLogger: () => ({
+  getLogger: (): Record<string, ReturnType<typeof vi.fn>> => ({
     info: loggerInfoSpy,
     debug: loggerDebugSpy,
     warn: loggerWarnSpy,
@@ -54,7 +54,7 @@ import { renderTemplate } from '../../src/lib/template/template-engine';
 import { readFile } from 'node:fs/promises';
 import { registerRunner, resetRunners } from '../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
-import { SecretManager } from '../../src/secrets/manager';
+import type { SecretManager } from '../../src/secrets/manager';
 import { buildMockSecretManager } from '../helpers/mock-secret-manager';
 
 const runSpy = vi.fn<[RunOptions], Promise<RunResult>>().mockResolvedValue({
