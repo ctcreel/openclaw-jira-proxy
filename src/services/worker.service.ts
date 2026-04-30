@@ -15,7 +15,7 @@ import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
 import { getMemoryService } from './memory/memory.service';
-import { renderRetrievePreamble, renderStorePostamble } from './memory/prompt-fragments';
+import { renderMemoryRecallBlock, renderMemoryStorageBlock } from './memory/prompt-fragments';
 import type { MemoryHit } from './memory/prompt-fragments';
 import { getSessionKeyStrategy } from '../strategies/session-key';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
@@ -458,6 +458,13 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
  *
  * Returns the agent body unchanged when no memory namespace is set.
  */
+/**
+ * Append memory blocks to the bottom of an agent's rendered template.
+ * Recall block (variable per turn) goes right above where the model
+ * generates output — recency bias means it gets stronger attention
+ * there than at the top. Storage block (stable instructions) follows
+ * the recall block on first turn only.
+ */
 function wrapWithMemoryFragments(
   agentBody: string,
   namespace: string | undefined,
@@ -467,27 +474,29 @@ function wrapWithMemoryFragments(
   if (namespace === undefined) {
     return agentBody;
   }
-  const preamble = renderRetrievePreamble({
+  const recall = renderMemoryRecallBlock({
     memories: memories ?? [],
     memoryNamespace: namespace,
     traceId,
   });
-  const postamble = renderStorePostamble({
+  const storage = renderMemoryStorageBlock({
     memories: memories ?? [],
     memoryNamespace: namespace,
     traceId,
   });
-  return `${preamble}\n${agentBody}\n${postamble}`;
+  return `${agentBody}\n${recall}\n${storage}`;
 }
 
 /**
- * Wrap the per-turn userMessage (sent on every session turn, warm or
- * fresh) with the memory retrieve preamble. Without this, warm-reuse
- * turns get only the raw event payload — no memories — and the agent
- * answers from session-history alone, missing freshly-retrieved facts.
+ * Append the memory-recall block to the per-turn userMessage. Sent on
+ * EVERY session turn (warm or fresh) because pre-fetched hits change
+ * with the inbound. The storage block stays first-turn-only — the
+ * agent learned how to call memory.store on turn 1 and remembers via
+ * the session JSONL on subsequent turns.
  *
- * Postamble (the store snippet) lives in the firstTurnPrompt only; the
- * agent learned it once in the session's first turn and remembers it.
+ * Bottom-positioned: variable per-turn context near the user message,
+ * not at the top. Recency bias and prompt-cache efficiency both favor
+ * this layout.
  */
 function wrapPerTurnUserMessageWithMemory(
   userMessage: string,
@@ -498,12 +507,12 @@ function wrapPerTurnUserMessageWithMemory(
   if (namespace === undefined) {
     return userMessage;
   }
-  const preamble = renderRetrievePreamble({
+  const recall = renderMemoryRecallBlock({
     memories: memories ?? [],
     memoryNamespace: namespace,
     traceId,
   });
-  return `${preamble}\n${userMessage}`;
+  return `${userMessage}\n${recall}`;
 }
 
 /**
