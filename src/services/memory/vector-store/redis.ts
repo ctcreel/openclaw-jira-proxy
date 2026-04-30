@@ -232,12 +232,13 @@ function buildIndexKey(namespace: string): string {
 }
 
 function bufferToFloat32Array(buffer: Buffer): Float32Array {
-  const floats = new Float32Array(
-    buffer.buffer,
-    buffer.byteOffset,
-    buffer.byteLength / Float32Array.BYTES_PER_ELEMENT,
-  );
-  return floats;
+  // ioredis Buffers come from a shared pool and have arbitrary byteOffsets
+  // that aren't guaranteed to be 4-byte aligned. Constructing a Float32Array
+  // view directly over the pooled ArrayBuffer throws on misaligned offsets.
+  // Copy into a fresh, owned ArrayBuffer so the view is always aligned.
+  const aligned = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(aligned).set(buffer);
+  return new Float32Array(aligned);
 }
 
 function cosineSimilarity(a: Float32Array, b: readonly number[]): number {
