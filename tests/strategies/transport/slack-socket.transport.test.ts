@@ -10,7 +10,8 @@ const ingestSpy = vi.hoisted(() =>
 );
 
 vi.mock('../../../src/services/event-ingest.service', () => ({
-  ingestEvent: (req: unknown) => ingestSpy(req),
+  ingestEvent: (req: unknown): Promise<{ readonly outcome: 'enqueued'; readonly jobTraceId: string }> =>
+    ingestSpy(req),
 }));
 
 import {
