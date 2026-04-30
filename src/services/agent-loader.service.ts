@@ -14,6 +14,7 @@ import { listEmbeddingProviders } from './memory/embedding';
 import { agentMemorySchema, ruleMemorySchema } from './memory/config-schemas';
 import { listVectorStores } from './memory/vector-store';
 import { conditionSchema } from '../strategies/routing';
+import { listSessionKeyStrategies, sessionConfigSchema } from '../strategies/session-key';
 
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
@@ -32,6 +33,13 @@ const agentRuleSchema = z.object({
   timezone: z.string().optional(),
   catchUp: z.boolean().optional().default(false),
   context: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Opt-in session-aware runner mode. When present, events matching this
+   * rule dispatch through the SessionPool (warm subprocess + Redis-backed
+   * session_id resume) instead of the per-event-spawn path. NOT supported
+   * on `routing.schedule` rules — each scheduled run is a snapshot.
+   */
+  session: sessionConfigSchema.optional(),
   /** Opt-in memory binding for this rule. See `memory-aware-agent-runner` capability. */
   memory: ruleMemorySchema.optional(),
 });
@@ -167,6 +175,7 @@ export async function loadAgents(
     const parsed = parseYaml(rawYaml);
     const config = agentConfigSchema.parse(parsed);
 
+    validateSessionConfig(entry.name, config);
     validateMemoryConfig(entry.name, config);
 
     resolved.push({ name: entry.name, dir: agentDir, config });
@@ -174,6 +183,36 @@ export async function loadAgents(
 
   validateMemoryNamespaceUniqueness(resolved);
   return resolved;
+}
+
+/**
+ * Cross-cuts that Zod can't catch at parse time:
+ *  - `session` is forbidden on `routing.schedule.rules[*]` because each
+ *    scheduled run is a snapshot — conversational continuity is meaningless.
+ *  - `session.strategy` must reference a registered SessionKeyStrategy.
+ *
+ * Throws on the first violation with a message identifying the offending
+ * agent and rule. Failing fast at startup is preferable to discovering the
+ * issue when the first event arrives.
+ */
+function validateSessionConfig(agentName: string, config: AgentConfig): void {
+  const knownStrategies = new Set(listSessionKeyStrategies());
+  for (const [providerName, providerRouting] of Object.entries(config.routing)) {
+    for (const rule of providerRouting.rules) {
+      if (rule.session === undefined) continue;
+      const ruleLabel = rule.name ?? '<unnamed>';
+      if (providerName === 'schedule') {
+        throw new Error(
+          `Agent ${agentName}: routing.schedule rule "${ruleLabel}" declares session — schedule rules do not support session-aware runners.`,
+        );
+      }
+      if (!knownStrategies.has(rule.session.strategy)) {
+        throw new Error(
+          `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}" declares unknown session.strategy "${rule.session.strategy}". Known strategies: ${Array.from(knownStrategies).join(', ') || '<none>'}.`,
+        );
+      }
+    }
+  }
 }
 
 /**

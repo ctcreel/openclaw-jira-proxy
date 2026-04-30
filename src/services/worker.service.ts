@@ -13,6 +13,7 @@ import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
+import { getSessionKeyStrategy } from '../strategies/session-key';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
 import { getMemoryService } from './memory/memory.service';
 import { renderRetrievePreamble, renderStorePostamble } from './memory/prompt-fragments';
@@ -23,6 +24,8 @@ import { getRunner } from '../runners/registry';
 import { buildQueueName } from './queue.service';
 import { buildFailedHandler } from './worker-failure-handler';
 import { getSecretManager } from '../secrets/manager';
+import type { AgentRunner, RunOptions, RunResult } from '../runners/types';
+import type { SessionConfig, SessionKeyStrategy } from '../strategies/session-key';
 
 const logger = getLogger('worker');
 
@@ -258,7 +261,7 @@ export async function processJob(
     model: selectedModel,
   });
 
-  const result = await runner.run({
+  const result = await dispatchToRunner(runner, {
     prompt,
     sessionKey,
     agentId,
@@ -267,6 +270,13 @@ export async function processJob(
     traceId,
     jobId: jobIdString,
     ...(envOverlay ? { env: envOverlay } : {}),
+    sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
+    // For session-aware turns: warm/resume turns only send the new event's
+    // raw payload — the template's instructions are already in the
+    // subprocess's session JSONL from the first turn. The dispatcher passes
+    // `prompt` as firstTurnPrompt (full template, used on fresh spawn) and
+    // this string as userMessage (used on warm/resume).
+    sessionUserMessage: envelope.payload,
   });
 
   if (result.status === 'error') {
@@ -299,6 +309,103 @@ export async function processJob(
     { jobId: job.id, provider: provider.name, sessionKey, runId: result.runId },
     'Agent run completed — job complete',
   );
+}
+
+/**
+ * Per-job session dispatch info, when the matched routing rule has opted in
+ * via a `session` block. `null` means dispatch through the existing per-event
+ * `runner.run()` path.
+ */
+interface SessionDispatch {
+  sessionKey: string;
+  strategy: SessionKeyStrategy;
+  config: SessionConfig;
+  providerConfig: ProviderConfig;
+}
+
+/**
+ * Resolve the session key for this event if the matched rule opted in.
+ * Returns null when the rule has no session config, when the runner doesn't
+ * support session-aware mode, or when the strategy declines (fall back to
+ * the per-event-spawn path).
+ */
+function buildSessionDispatch(
+  provider: ProviderConfig,
+  parsedPayload: unknown,
+  rule: AgentRule,
+): SessionDispatch | null {
+  if (rule.session === undefined) return null;
+  const strategy = getSessionKeyStrategy(rule.session.strategy);
+  if (strategy === undefined) {
+    // Should be impossible if validateSessionConfig ran at startup, but
+    // belt-and-suspenders for the loaded-after-startup case.
+    logger.warn(
+      { provider: provider.name, strategy: rule.session.strategy },
+      'Unknown session strategy — falling back to per-event spawn',
+    );
+    return null;
+  }
+  const sessionKey = strategy.extract(parsedPayload, provider);
+  if (sessionKey === null) {
+    return null;
+  }
+  return {
+    sessionKey,
+    strategy,
+    config: rule.session,
+    providerConfig: provider,
+  };
+}
+
+/**
+ * Dispatch through `runner.runSession()` when a session is configured AND
+ * the runner supports session mode; otherwise fall through to `runner.run()`.
+ *
+ * The session-aware path passes the rendered prompt as `firstTurnPrompt`
+ * (used only on fresh spawns) and as `userMessage` (used on warm/resume
+ * turns). The runner picks the right one via the handle's `acquirePath`.
+ */
+async function dispatchToRunner(
+  runner: AgentRunner,
+  options: RunOptions & {
+    sessionDispatch: SessionDispatch | null;
+    sessionUserMessage: string;
+  },
+): Promise<RunResult> {
+  const { sessionDispatch, sessionUserMessage, ...runOptions } = options;
+  if (sessionDispatch === null || runner.runSession === undefined) {
+    if (sessionDispatch !== null && runner.runSession === undefined) {
+      logger.warn(
+        { runner: runner.name, sessionKey: sessionDispatch.sessionKey },
+        'Runner does not support session mode — dispatching via run()',
+      );
+    }
+    return runner.run(runOptions);
+  }
+  logger.info(
+    {
+      runner: runner.name,
+      provider: sessionDispatch.providerConfig.name,
+      sessionKey: sessionDispatch.sessionKey,
+      strategy: sessionDispatch.strategy.name,
+    },
+    'Dispatching via session-aware runner',
+  );
+  return runner.runSession({
+    providerName: sessionDispatch.providerConfig.name,
+    providerConfig: sessionDispatch.providerConfig,
+    sessionKey: sessionDispatch.sessionKey,
+    strategy: sessionDispatch.strategy,
+    sessionConfig: sessionDispatch.config,
+    firstTurnPrompt: runOptions.prompt,
+    userMessage: sessionUserMessage,
+    agentId: runOptions.agentId,
+    ...(runOptions.model !== undefined ? { model: runOptions.model } : {}),
+    timeoutMs: runOptions.timeoutMs,
+    ...(runOptions.traceId !== undefined ? { traceId: runOptions.traceId } : {}),
+    ...(runOptions.jobId !== undefined ? { jobId: runOptions.jobId } : {}),
+    ...(runOptions.env !== undefined ? { env: runOptions.env } : {}),
+  });
 }
 
 export interface CreateWorkerOptions {
