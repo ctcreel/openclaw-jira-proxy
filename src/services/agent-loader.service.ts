@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { modelRuleSchema } from '../config';
 import type { AgentEntry, SharedToolsConfig } from '../config';
 import { getLogger } from '../lib/logging';
+import { runnerConfigSchema } from '../runners/types';
 import { conditionSchema } from '../strategies/routing';
 
 const execFile = promisify(execFileCallback);
@@ -21,6 +22,11 @@ const logger = getLogger('agent-loader');
 // have a cron, condition rules have a condition — happens in the
 // schedulers/workers that consume the rules, not at parse time. This
 // keeps the schema flat and the type one shape across providers.
+//
+// `runner` is consumed today only by the schedule provider's task-worker;
+// other providers ignore it. A non-schedule rule with `runner` set parses
+// successfully but has no runtime effect — acceptable v1 trade-off
+// against splitting the schema per provider.
 const agentRuleSchema = z.object({
   name: z.string().optional(),
   condition: conditionSchema.optional(),
@@ -29,6 +35,7 @@ const agentRuleSchema = z.object({
   timezone: z.string().optional(),
   catchUp: z.boolean().optional().default(false),
   context: z.record(z.string(), z.unknown()).optional(),
+  runner: runnerConfigSchema.optional(),
 });
 
 const agentRoutingSchema = z.object({

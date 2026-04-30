@@ -101,11 +101,29 @@ const bedrockRunnerConfigSchema = z.object({
   region: z.string().min(1),
 });
 
+// Shell runner config — used on a per-rule basis for `routing.schedule`
+// rules that execute maintenance commands instead of LLM prompts. Unlike
+// the other runner types, shell runners are constructed per-firing and
+// never registered in the global runner registry, because their config
+// (the command) varies per rule rather than per deployment.
+const shellRunnerConfigSchema = z.object({
+  type: z.literal('shell'),
+  /** Command to execute, parsed by /bin/sh. */
+  command: z.string().min(1),
+  /** Working directory; defaults to the agent workspace directory. */
+  cwd: z.string().optional(),
+  /** Extra environment variables, merged on top of process.env (and any per-firing env). */
+  env: z.record(z.string(), z.string()).optional(),
+  /** Wall-clock timeout in milliseconds. SIGTERM at this point, SIGKILL after a 5s grace period. */
+  timeoutMs: z.number().int().positive().default(300_000),
+});
+
 export const runnerConfigSchema = z.discriminatedUnion('type', [
   openclawRunnerConfigSchema,
   claudeCliRunnerConfigSchema,
   openaiRunnerConfigSchema,
   bedrockRunnerConfigSchema,
+  shellRunnerConfigSchema,
 ]);
 
 export type RunnerConfig = z.infer<typeof runnerConfigSchema>;
@@ -113,3 +131,4 @@ export type OpenClawRunnerConfig = z.infer<typeof openclawRunnerConfigSchema>;
 export type ClaudeCliRunnerConfig = z.infer<typeof claudeCliRunnerConfigSchema>;
 export type OpenAiRunnerConfig = z.infer<typeof openaiRunnerConfigSchema>;
 export type BedrockRunnerConfig = z.infer<typeof bedrockRunnerConfigSchema>;
+export type ShellRunnerConfig = z.infer<typeof shellRunnerConfigSchema>;

@@ -116,6 +116,30 @@ export interface RunnerResultEvent {
   costUsd: number;
 }
 
+export interface RunnerCompleteEvent {
+  type: 'runner.complete';
+  timestamp: number;
+  traceId: string;
+  jobId: string;
+  runId: string;
+  exitCode: number;
+  durationMs: number;
+}
+
+export type RunnerErrorReason = 'non-zero-exit' | 'timeout' | 'signal' | 'spawn-error';
+
+export interface RunnerErrorEvent {
+  type: 'runner.error';
+  timestamp: number;
+  traceId: string;
+  jobId: string;
+  runId: string;
+  reason: RunnerErrorReason;
+  exitCode?: number;
+  signal?: string;
+  stderrTail: string;
+}
+
 export interface SocketConnectedEvent {
   type: 'socket.connected';
   timestamp: number;
@@ -159,6 +183,8 @@ export type ClawndomEvent =
   | RunnerAssistantTextEvent
   | RunnerToolCallEvent
   | RunnerResultEvent
+  | RunnerCompleteEvent
+  | RunnerErrorEvent
   | SocketConnectedEvent
   | SocketDisconnectedEvent
   | SocketReconnectingEvent

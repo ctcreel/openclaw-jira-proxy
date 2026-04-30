@@ -49,7 +49,10 @@ export async function registerAgentSchedules(
           `Agent "${agent.name}" routing.schedule rule "${ruleName}" is missing a "cron" field.`,
         );
       }
-      if (!rule.messageTemplate) {
+      // Shell-runner rules execute a configured command instead of an
+      // LLM prompt — they don't render a template, so the requirement
+      // doesn't apply. Every other runner type still needs one.
+      if (!rule.messageTemplate && rule.runner?.type !== 'shell') {
         throw new Error(
           `Agent "${agent.name}" routing.schedule rule "${ruleName}" is missing a "messageTemplate" field.`,
         );
