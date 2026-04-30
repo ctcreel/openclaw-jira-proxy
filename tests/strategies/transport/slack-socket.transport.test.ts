@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { resetSettings } from '../../../src/config';
+import { providerSchema, resetSettings } from '../../../src/config';
 import type { SlackSocketProviderConfig } from '../../../src/config';
 import { EventBus } from '../../../src/services/event-bus.service';
 import type { ClawndomEvent } from '../../../src/types/clawndom-event';
@@ -468,6 +468,127 @@ describe('SlackSocketTransport', () => {
     await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
   });
 
+  describe('channelMap enrichment', () => {
+    const providerWithChannelMap: SlackSocketProviderConfig = {
+      ...baseProvider,
+      channelMap: { ops: 'C123', alerts: 'C456' },
+    };
+
+    it('injects event.channel_name when an inbound channel id matches the map', async () => {
+      const ack = vi.fn(async () => {});
+      const transport = new SlackSocketTransport({
+        provider: providerWithChannelMap,
+        appToken: 'xapp-test-token',
+        agents: [],
+        events: bus,
+        clientFactory: factory,
+      });
+
+      await transport.start();
+      fakeClient.emit('slack_event', {
+        ack,
+        type: 'events_api',
+        envelope_id: 'env-cm-1',
+        body: { event: { type: 'message', ts: '1.1', channel: 'C123' } },
+      });
+
+      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
+      const call = ingestSpy.mock.calls[0]?.[0] as {
+        parsedPayload: { event: { channel: string; channel_name?: string } };
+        rawBodyString: string;
+      };
+      expect(call.parsedPayload.event.channel_name).toBe('ops');
+      expect(call.parsedPayload.event.channel).toBe('C123');
+      // rawBodyString must reflect the enriched payload — downstream
+      // signature verification + dedup keys hash this exact string.
+      expect(JSON.parse(call.rawBodyString).event.channel_name).toBe('ops');
+    });
+
+    it('leaves event.channel_name unset when the inbound channel id has no mapping', async () => {
+      const ack = vi.fn(async () => {});
+      const transport = new SlackSocketTransport({
+        provider: providerWithChannelMap,
+        appToken: 'xapp-test-token',
+        agents: [],
+        events: bus,
+        clientFactory: factory,
+      });
+
+      await transport.start();
+      fakeClient.emit('slack_event', {
+        ack,
+        type: 'events_api',
+        envelope_id: 'env-cm-2',
+        body: { event: { type: 'message', ts: '1.1', channel: 'C999' } },
+      });
+
+      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
+      const call = ingestSpy.mock.calls[0]?.[0] as {
+        parsedPayload: { event: Record<string, unknown> };
+      };
+      expect(call.parsedPayload.event.channel).toBe('C999');
+      expect(call.parsedPayload.event).not.toHaveProperty('channel_name');
+    });
+
+    it('leaves payload unchanged when provider has no channelMap', async () => {
+      // baseProvider has no channelMap — backward compat regression guard.
+      const ack = vi.fn(async () => {});
+      const transport = new SlackSocketTransport({
+        provider: baseProvider,
+        appToken: 'xapp-test-token',
+        agents: [],
+        events: bus,
+        clientFactory: factory,
+      });
+
+      await transport.start();
+      fakeClient.emit('slack_event', {
+        ack,
+        type: 'events_api',
+        envelope_id: 'env-cm-3',
+        body: { event: { type: 'message', ts: '1.1', channel: 'C123' } },
+      });
+
+      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
+      const call = ingestSpy.mock.calls[0]?.[0] as {
+        parsedPayload: { event: Record<string, unknown> };
+      };
+      expect(call.parsedPayload.event).not.toHaveProperty('channel_name');
+    });
+
+    it('enriches payloads after the Socket Mode envelope is unwrapped', async () => {
+      const ack = vi.fn(async () => {});
+      const inner = {
+        token: 'xoxb',
+        team_id: 'T1',
+        event: { type: 'app_mention', ts: '2.2', channel: 'C456' },
+      };
+
+      const transport = new SlackSocketTransport({
+        provider: providerWithChannelMap,
+        appToken: 'xapp-test-token',
+        agents: [],
+        events: bus,
+        clientFactory: factory,
+      });
+
+      await transport.start();
+      fakeClient.emit('slack_event', {
+        ack,
+        type: 'events_api',
+        envelope_id: 'env-cm-4',
+        body: { envelope_id: 'env-cm-4', type: 'events_api', payload: inner },
+      });
+
+      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
+      const call = ingestSpy.mock.calls[0]?.[0] as {
+        parsedPayload: { event: { channel_name?: string; channel: string } };
+      };
+      expect(call.parsedPayload.event.channel_name).toBe('alerts');
+      expect(call.parsedPayload.event.channel).toBe('C456');
+    });
+  });
+
   it('logs error events from the client without throwing', async () => {
     const transport = new SlackSocketTransport({
       provider: baseProvider,
@@ -480,5 +601,43 @@ describe('SlackSocketTransport', () => {
 
     expect(() => fakeClient.emit('error', new Error('socket error'))).not.toThrow();
     expect(() => fakeClient.emit('error', 'string error')).not.toThrow();
+  });
+});
+
+describe('slackSocketProviderSchema channelMap', () => {
+  const baseProviderInput = {
+    name: 'slack-bot',
+    transport: 'slack-socket' as const,
+    appTokenSecret: 'slack_app_token',
+    botTokenSecret: 'slack_bot_token',
+  };
+
+  it('accepts a channelMap with valid Slack channel and DM IDs', () => {
+    const result = providerSchema.safeParse({
+      ...baseProviderInput,
+      channelMap: { ops: 'C08V6MV0VNV', winston: 'D07ABCDE123' },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an absent channelMap (backward compat)', () => {
+    const result = providerSchema.safeParse(baseProviderInput);
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a channelMap whose value is not a Slack channel/DM ID', () => {
+    const result = providerSchema.safeParse({
+      ...baseProviderInput,
+      channelMap: { ops: 'not-a-channel-id' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a channelMap whose value uses a lowercase prefix', () => {
+    const result = providerSchema.safeParse({
+      ...baseProviderInput,
+      channelMap: { ops: 'c08v6mv0vnv' },
+    });
+    expect(result.success).toBe(false);
   });
 });
