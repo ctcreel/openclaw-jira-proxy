@@ -7,6 +7,8 @@ export type { InMemoryVectorStore } from './in-memory';
 export { createRedisVectorStore } from './redis';
 export type { RedisVectorStoreOptions } from './redis';
 
+const KNOWN_STORE_NAMES: readonly string[] = ['in-memory', 'redis'];
+
 const registry: Map<string, VectorStore> = new Map([
   [inMemoryVectorStore.name, inMemoryVectorStore],
 ]);
@@ -19,8 +21,12 @@ export function getVectorStore(name: string): VectorStore | undefined {
   return registry.get(name);
 }
 
+/**
+ * All vector-store names Clawndom recognizes — used by config validation,
+ * NOT runtime resolution. Superset of currently-instantiated stores.
+ */
 export function listVectorStores(): readonly string[] {
-  return Array.from(registry.keys());
+  return KNOWN_STORE_NAMES;
 }
 
 /**
