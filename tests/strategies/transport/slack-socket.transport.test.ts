@@ -396,92 +396,60 @@ describe('SlackSocketTransport', () => {
       channelMap: { ops: 'C123', alerts: 'C456' },
     };
 
-    it('injects event.channel_name when an inbound channel id matches the map', async () => {
+    /** Start a transport, emit a slack_event, wait for ingest, return the ingested call. */
+    async function emitAndCapture(
+      opts: { provider?: SlackSocketProviderConfig; channel: string; envelopeId: string; body?: unknown },
+    ): Promise<{ parsedPayload: { event: Record<string, unknown> }; rawBodyString: string }> {
       const ack = vi.fn(async () => {});
-      const { transport, fakeClient } = buildTransport({ provider: providerWithChannelMap });
-
+      const { transport, fakeClient } = buildTransport({ provider: opts.provider });
       await transport.start();
       fakeClient.emit('slack_event', {
         ack,
         type: 'events_api',
-        envelope_id: 'env-cm-1',
-        body: { event: { type: 'message', ts: '1.1', channel: 'C123' } },
+        envelope_id: opts.envelopeId,
+        body: opts.body ?? { event: { type: 'message', ts: '1.1', channel: opts.channel } },
       });
-
       await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
-      const call = ingestSpy.mock.calls[0]?.[0] as {
-        parsedPayload: { event: { channel: string; channel_name?: string } };
+      return ingestSpy.mock.calls[0]?.[0] as {
+        parsedPayload: { event: Record<string, unknown> };
         rawBodyString: string;
       };
+    }
+
+    it('injects event.channel_name when an inbound channel id matches the map', async () => {
+      const call = await emitAndCapture({
+        provider: providerWithChannelMap, channel: 'C123', envelopeId: 'env-cm-1',
+      });
       expect(call.parsedPayload.event.channel_name).toBe('ops');
       expect(call.parsedPayload.event.channel).toBe('C123');
-      // rawBodyString must reflect the enriched payload — downstream
-      // signature verification + dedup keys hash this exact string.
       expect(JSON.parse(call.rawBodyString).event.channel_name).toBe('ops');
     });
 
     it('leaves event.channel_name unset when the inbound channel id has no mapping', async () => {
-      const ack = vi.fn(async () => {});
-      const { transport, fakeClient } = buildTransport({ provider: providerWithChannelMap });
-
-      await transport.start();
-      fakeClient.emit('slack_event', {
-        ack,
-        type: 'events_api',
-        envelope_id: 'env-cm-2',
-        body: { event: { type: 'message', ts: '1.1', channel: 'C999' } },
+      const call = await emitAndCapture({
+        provider: providerWithChannelMap, channel: 'C999', envelopeId: 'env-cm-2',
       });
-
-      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
-      const call = ingestSpy.mock.calls[0]?.[0] as {
-        parsedPayload: { event: Record<string, unknown> };
-      };
       expect(call.parsedPayload.event.channel).toBe('C999');
       expect(call.parsedPayload.event).not.toHaveProperty('channel_name');
     });
 
     it('leaves payload unchanged when provider has no channelMap', async () => {
-      // baseProvider has no channelMap — backward compat regression guard.
-      const ack = vi.fn(async () => {});
-      const { transport, fakeClient } = buildTransport();
-
-      await transport.start();
-      fakeClient.emit('slack_event', {
-        ack,
-        type: 'events_api',
-        envelope_id: 'env-cm-3',
-        body: { event: { type: 'message', ts: '1.1', channel: 'C123' } },
-      });
-
-      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
-      const call = ingestSpy.mock.calls[0]?.[0] as {
-        parsedPayload: { event: Record<string, unknown> };
-      };
+      const call = await emitAndCapture({ channel: 'C123', envelopeId: 'env-cm-3' });
       expect(call.parsedPayload.event).not.toHaveProperty('channel_name');
     });
 
     it('enriches payloads after the Socket Mode envelope is unwrapped', async () => {
-      const ack = vi.fn(async () => {});
       const inner = {
         token: 'xoxb',
         team_id: 'T1',
         event: { type: 'app_mention', ts: '2.2', channel: 'C456' },
       };
-
-      const { transport, fakeClient } = buildTransport({ provider: providerWithChannelMap });
-
-      await transport.start();
-      fakeClient.emit('slack_event', {
-        ack,
-        type: 'events_api',
-        envelope_id: 'env-cm-4',
+      const call = await emitAndCapture({
+        provider: providerWithChannelMap,
+        channel: 'C456',
+        envelopeId: 'env-cm-4',
         body: { envelope_id: 'env-cm-4', type: 'events_api', payload: inner },
       });
-
-      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
-      const call = ingestSpy.mock.calls[0]?.[0] as {
-        parsedPayload: { event: { channel_name?: string; channel: string } };
-      };
       expect(call.parsedPayload.event.channel_name).toBe('alerts');
       expect(call.parsedPayload.event.channel).toBe('C456');
     });
