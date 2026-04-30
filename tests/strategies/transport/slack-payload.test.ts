@@ -32,7 +32,12 @@ describe('enrichSlackPayload', () => {
   const inverse = buildChannelIdToNameMap({ ops: 'C123' });
 
   function slackEvent(
-    overrides: Partial<{ token: string; channel: string; ts: string; extra: Record<string, unknown> }> = {},
+    overrides: Partial<{
+      token: string;
+      channel: string;
+      ts: string;
+      extra: Record<string, unknown>;
+    }> = {},
   ): { token?: string; event: Record<string, unknown> } {
     const { token = 'xoxb', channel = 'C123', ts = '1.1', extra = {} } = overrides;
     return { ...(token ? { token } : {}), event: { type: 'message', ts, channel, ...extra } };

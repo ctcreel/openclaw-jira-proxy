@@ -10,8 +10,9 @@ const ingestSpy = vi.hoisted(() =>
 );
 
 vi.mock('../../../src/services/event-ingest.service', () => ({
-  ingestEvent: (req: unknown): Promise<{ readonly outcome: 'enqueued'; readonly jobTraceId: string }> =>
-    ingestSpy(req),
+  ingestEvent: (
+    req: unknown,
+  ): Promise<{ readonly outcome: 'enqueued'; readonly jobTraceId: string }> => ingestSpy(req),
 }));
 
 import {
@@ -397,9 +398,12 @@ describe('SlackSocketTransport', () => {
     };
 
     /** Start a transport, emit a slack_event, wait for ingest, return the ingested call. */
-    async function emitAndCapture(
-      opts: { provider?: SlackSocketProviderConfig; channel: string; envelopeId: string; body?: unknown },
-    ): Promise<{ parsedPayload: { event: Record<string, unknown> }; rawBodyString: string }> {
+    async function emitAndCapture(opts: {
+      provider?: SlackSocketProviderConfig;
+      channel: string;
+      envelopeId: string;
+      body?: unknown;
+    }): Promise<{ parsedPayload: { event: Record<string, unknown> }; rawBodyString: string }> {
       const ack = vi.fn(async () => {});
       const { transport, fakeClient } = buildTransport({ provider: opts.provider });
       await transport.start();
@@ -418,7 +422,9 @@ describe('SlackSocketTransport', () => {
 
     it('injects event.channel_name when an inbound channel id matches the map', async () => {
       const call = await emitAndCapture({
-        provider: providerWithChannelMap, channel: 'C123', envelopeId: 'env-cm-1',
+        provider: providerWithChannelMap,
+        channel: 'C123',
+        envelopeId: 'env-cm-1',
       });
       expect(call.parsedPayload.event.channel_name).toBe('ops');
       expect(call.parsedPayload.event.channel).toBe('C123');
@@ -427,7 +433,9 @@ describe('SlackSocketTransport', () => {
 
     it('leaves event.channel_name unset when the inbound channel id has no mapping', async () => {
       const call = await emitAndCapture({
-        provider: providerWithChannelMap, channel: 'C999', envelopeId: 'env-cm-2',
+        provider: providerWithChannelMap,
+        channel: 'C999',
+        envelopeId: 'env-cm-2',
       });
       expect(call.parsedPayload.event.channel).toBe('C999');
       expect(call.parsedPayload.event).not.toHaveProperty('channel_name');
