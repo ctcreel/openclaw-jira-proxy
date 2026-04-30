@@ -6,7 +6,20 @@ export { nullEmbeddingProvider } from './null';
 export { createOpenAIEmbeddingProvider } from './openai';
 
 /**
- * Process-local registry of EmbeddingProvider instances, keyed by
+ * The set of all provider NAMES Clawndom recognizes. Validation at
+ * config-load time checks against this list (so a YAML referencing
+ * `embeddingProvider: openai` doesn't fail validation just because
+ * the OpenAI instance hasn't been bootstrapped yet — the bootstrap
+ * may resolve the API key after validation runs).
+ *
+ * Adding a new provider type means adding the name here AND
+ * registering an instance via `registerEmbeddingProvider` (typically
+ * in the memory bootstrap).
+ */
+const KNOWN_PROVIDER_NAMES: readonly string[] = ['null-fake', 'openai'];
+
+/**
+ * Process-local registry of EmbeddingProvider INSTANCES, keyed by
  * `provider.name`. Populated at startup by the MemoryService bootstrap
  * (which knows how to construct providers that need credentials).
  *
@@ -27,8 +40,13 @@ export function getEmbeddingProvider(name: string): EmbeddingProvider | undefine
   return registry.get(name);
 }
 
+/**
+ * All provider names Clawndom recognizes — used by config validation,
+ * NOT runtime resolution. Returns a superset of currently-instantiated
+ * providers (an unbootstrapped provider is still a known name).
+ */
 export function listEmbeddingProviders(): readonly string[] {
-  return Array.from(registry.keys());
+  return KNOWN_PROVIDER_NAMES;
 }
 
 /**
