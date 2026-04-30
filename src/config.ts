@@ -54,6 +54,14 @@ const slackSocketProviderSchema = baseProviderSchema.extend({
   appTokenSecret: z.string().min(1),
   /** Logical key for the Slack bot token (xoxb-*). Resolved + validated at startup; outbound posting is a separate ticket. */
   botTokenSecret: z.string().min(1),
+  /**
+   * Optional human-readable name → channel ID map. When set, the transport
+   * builds the inverse (id → name) map once at startup and enriches every
+   * inbound event with `event.channel_name`, so routing rules can match on
+   * a readable name instead of pasting raw `Cxxxx` IDs. The regex guards
+   * against typos in the value (channel/DM IDs always start with C or D).
+   */
+  channelMap: z.record(z.string().min(1), z.string().regex(/^[CD][A-Z0-9]+$/)).optional(),
 });
 
 // zod's discriminatedUnion picks the branch from the input's discriminator

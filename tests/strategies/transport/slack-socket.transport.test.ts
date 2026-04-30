@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { resetSettings } from '../../../src/config';
+import { providerSchema, resetSettings } from '../../../src/config';
 import type { SlackSocketProviderConfig } from '../../../src/config';
 import { EventBus } from '../../../src/services/event-bus.service';
 import type { ClawndomEvent } from '../../../src/types/clawndom-event';
@@ -10,7 +10,9 @@ const ingestSpy = vi.hoisted(() =>
 );
 
 vi.mock('../../../src/services/event-ingest.service', () => ({
-  ingestEvent: (req: unknown) => ingestSpy(req),
+  ingestEvent: (
+    req: unknown,
+  ): Promise<{ readonly outcome: 'enqueued'; readonly jobTraceId: string }> => ingestSpy(req),
 }));
 
 import {
@@ -72,18 +74,36 @@ function captureEvents(bus: EventBus): ClawndomEvent[] {
   return captured;
 }
 
-describe('SlackSocketTransport', () => {
-  let fakeClient: FakeSocketModeClient;
-  let factory: SocketModeClientFactory;
-  let bus: EventBus;
+function buildTransport(
+  overrides: Partial<{
+    provider: SlackSocketProviderConfig;
+    appToken: string;
+    events: EventBus;
+  }> = {},
+): {
+  transport: SlackSocketTransport;
+  fakeClient: FakeSocketModeClient;
+  factory: SocketModeClientFactory;
+  events: EventBus;
+} {
+  const fakeClient = new FakeSocketModeClient();
+  const factory = vi.fn(() => fakeClient) as unknown as SocketModeClientFactory;
+  const events = overrides.events ?? new EventBus();
+  const transport = new SlackSocketTransport({
+    provider: overrides.provider ?? baseProvider,
+    appToken: overrides.appToken ?? 'xapp-test-token',
+    agents: [],
+    events,
+    clientFactory: factory,
+  });
+  return { transport, fakeClient, factory, events };
+}
 
+describe('SlackSocketTransport', () => {
   beforeEach(() => {
     resetSettings();
     ingestSpy.mockReset();
     ingestSpy.mockResolvedValue({ outcome: 'enqueued', jobTraceId: 'job-1' });
-    fakeClient = new FakeSocketModeClient();
-    factory = vi.fn(() => fakeClient) as unknown as SocketModeClientFactory;
-    bus = new EventBus();
   });
 
   afterEach(() => {
@@ -91,13 +111,7 @@ describe('SlackSocketTransport', () => {
   });
 
   it('start() builds the client with the app token and attaches handlers', async () => {
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, factory } = buildTransport();
 
     await transport.start();
 
@@ -111,19 +125,13 @@ describe('SlackSocketTransport', () => {
   });
 
   it('publishes socket.connected when the client emits "connected"', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('connected');
 
-    const connected = events.find((e) => e.type === 'socket.connected');
+    const connected = captured.find((e) => e.type === 'socket.connected');
     expect(connected).toBeDefined();
     expect(connected).toMatchObject({
       type: 'socket.connected',
@@ -133,19 +141,13 @@ describe('SlackSocketTransport', () => {
   });
 
   it('publishes socket.disconnected with reason from the client', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('disconnected', 'pong-timeout');
 
-    const disconnected = events.find((e) => e.type === 'socket.disconnected');
+    const disconnected = captured.find((e) => e.type === 'socket.disconnected');
     expect(disconnected).toMatchObject({
       type: 'socket.disconnected',
       provider: 'slack-bot',
@@ -154,51 +156,33 @@ describe('SlackSocketTransport', () => {
   });
 
   it('publishes socket.disconnected with reason "unknown" when no reason given', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('disconnected');
 
-    const disconnected = events.find((e) => e.type === 'socket.disconnected');
+    const disconnected = captured.find((e) => e.type === 'socket.disconnected');
     expect(disconnected).toMatchObject({ reason: 'unknown' });
   });
 
   it('publishes socket.reconnecting with an incrementing attempt counter', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('reconnecting');
     fakeClient.emit('reconnecting');
 
-    const reconnects = events.filter((e) => e.type === 'socket.reconnecting');
+    const reconnects = captured.filter((e) => e.type === 'socket.reconnecting');
     expect(reconnects).toHaveLength(2);
     expect(reconnects[0]).toMatchObject({ attempt: 1 });
     expect(reconnects[1]).toMatchObject({ attempt: 2 });
   });
 
   it('resets the reconnect counter once the socket reconnects', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('reconnecting');
@@ -206,7 +190,7 @@ describe('SlackSocketTransport', () => {
     fakeClient.emit('connected');
     fakeClient.emit('reconnecting');
 
-    const reconnects = events.filter((e) => e.type === 'socket.reconnecting');
+    const reconnects = captured.filter((e) => e.type === 'socket.reconnecting');
     expect(reconnects.map((e) => (e as { attempt: number }).attempt)).toEqual([1, 2, 1]);
   });
 
@@ -220,13 +204,7 @@ describe('SlackSocketTransport', () => {
       return { outcome: 'enqueued', jobTraceId: 'job-1' };
     });
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -258,13 +236,7 @@ describe('SlackSocketTransport', () => {
     const ack = vi.fn(async () => {});
     ingestSpy.mockRejectedValue(new Error('redis unavailable'));
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -291,13 +263,7 @@ describe('SlackSocketTransport', () => {
       event: { type: 'app_mention', ts: '2.2', channel: 'C2' },
     };
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -315,13 +281,7 @@ describe('SlackSocketTransport', () => {
 
   it('acks but does not ingest non-events_api envelopes', async () => {
     const ack = vi.fn(async () => {});
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -340,22 +300,15 @@ describe('SlackSocketTransport', () => {
 
   it('emits socket.auth_failed and retries 60s later when start() rejects', async () => {
     vi.useFakeTimers();
-    const events = captureEvents(bus);
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
     fakeClient.startMock
       .mockRejectedValueOnce(new Error('invalid_auth'))
       .mockResolvedValueOnce(undefined);
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
-
     await transport.start();
 
-    const authFailed = events.find((e) => e.type === 'socket.auth_failed');
+    const authFailed = captured.find((e) => e.type === 'socket.auth_failed');
     expect(authFailed).toMatchObject({
       type: 'socket.auth_failed',
       provider: 'slack-bot',
@@ -369,15 +322,9 @@ describe('SlackSocketTransport', () => {
 
   it('does not retry once stop() has been called', async () => {
     vi.useFakeTimers();
+    const { transport, fakeClient } = buildTransport();
     fakeClient.startMock.mockRejectedValue(new Error('invalid_auth'));
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
     await transport.start();
     await transport.stop();
 
@@ -386,13 +333,7 @@ describe('SlackSocketTransport', () => {
   });
 
   it('stop() disconnects the client and detaches handlers', async () => {
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
     await transport.start();
 
     expect(fakeClient.listenerCount('slack_event')).toBe(1);
@@ -408,14 +349,8 @@ describe('SlackSocketTransport', () => {
   });
 
   it('stop() swallows disconnect errors during shutdown', async () => {
+    const { transport, fakeClient } = buildTransport();
     fakeClient.disconnectMock.mockRejectedValue(new Error('socket already closed'));
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
     await transport.start();
 
     await expect(transport.stop()).resolves.toBeUndefined();
@@ -426,13 +361,7 @@ describe('SlackSocketTransport', () => {
       throw new Error('ack-failed');
     });
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -447,13 +376,7 @@ describe('SlackSocketTransport', () => {
 
   it('does not throw out of the socket handler when ingestEvent rejects', async () => {
     ingestSpy.mockRejectedValueOnce(new Error('redis-down'));
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     expect(() =>
@@ -468,17 +391,121 @@ describe('SlackSocketTransport', () => {
     await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
   });
 
-  it('logs error events from the client without throwing', async () => {
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
+  describe('channelMap enrichment', () => {
+    const providerWithChannelMap: SlackSocketProviderConfig = {
+      ...baseProvider,
+      channelMap: { ops: 'C123', alerts: 'C456' },
+    };
+
+    /** Start a transport, emit a slack_event, wait for ingest, return the ingested call. */
+    async function emitAndCapture(opts: {
+      provider?: SlackSocketProviderConfig;
+      channel: string;
+      envelopeId: string;
+      body?: unknown;
+    }): Promise<{ parsedPayload: { event: Record<string, unknown> }; rawBodyString: string }> {
+      const ack = vi.fn(async () => {});
+      const { transport, fakeClient } = buildTransport({ provider: opts.provider });
+      await transport.start();
+      fakeClient.emit('slack_event', {
+        ack,
+        type: 'events_api',
+        envelope_id: opts.envelopeId,
+        body: opts.body ?? { event: { type: 'message', ts: '1.1', channel: opts.channel } },
+      });
+      await vi.waitFor(() => expect(ingestSpy).toHaveBeenCalledOnce());
+      return ingestSpy.mock.calls[0]?.[0] as {
+        parsedPayload: { event: Record<string, unknown> };
+        rawBodyString: string;
+      };
+    }
+
+    it('injects event.channel_name when an inbound channel id matches the map', async () => {
+      const call = await emitAndCapture({
+        provider: providerWithChannelMap,
+        channel: 'C123',
+        envelopeId: 'env-cm-1',
+      });
+      expect(call.parsedPayload.event.channel_name).toBe('ops');
+      expect(call.parsedPayload.event.channel).toBe('C123');
+      expect(JSON.parse(call.rawBodyString).event.channel_name).toBe('ops');
     });
+
+    it('leaves event.channel_name unset when the inbound channel id has no mapping', async () => {
+      const call = await emitAndCapture({
+        provider: providerWithChannelMap,
+        channel: 'C999',
+        envelopeId: 'env-cm-2',
+      });
+      expect(call.parsedPayload.event.channel).toBe('C999');
+      expect(call.parsedPayload.event).not.toHaveProperty('channel_name');
+    });
+
+    it('leaves payload unchanged when provider has no channelMap', async () => {
+      const call = await emitAndCapture({ channel: 'C123', envelopeId: 'env-cm-3' });
+      expect(call.parsedPayload.event).not.toHaveProperty('channel_name');
+    });
+
+    it('enriches payloads after the Socket Mode envelope is unwrapped', async () => {
+      const inner = {
+        token: 'xoxb',
+        team_id: 'T1',
+        event: { type: 'app_mention', ts: '2.2', channel: 'C456' },
+      };
+      const call = await emitAndCapture({
+        provider: providerWithChannelMap,
+        channel: 'C456',
+        envelopeId: 'env-cm-4',
+        body: { envelope_id: 'env-cm-4', type: 'events_api', payload: inner },
+      });
+      expect(call.parsedPayload.event.channel_name).toBe('alerts');
+      expect(call.parsedPayload.event.channel).toBe('C456');
+    });
+  });
+
+  it('logs error events from the client without throwing', async () => {
+    const { transport, fakeClient } = buildTransport();
     await transport.start();
 
     expect(() => fakeClient.emit('error', new Error('socket error'))).not.toThrow();
     expect(() => fakeClient.emit('error', 'string error')).not.toThrow();
+  });
+});
+
+describe('slackSocketProviderSchema channelMap', () => {
+  const baseProviderInput = {
+    name: 'slack-bot',
+    transport: 'slack-socket' as const,
+    appTokenSecret: 'slack_app_token',
+    botTokenSecret: 'slack_bot_token',
+  };
+
+  it('accepts a channelMap with valid Slack channel and DM IDs', () => {
+    const result = providerSchema.safeParse({
+      ...baseProviderInput,
+      channelMap: { ops: 'C08V6MV0VNV', winston: 'D07ABCDE123' },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an absent channelMap (backward compat)', () => {
+    const result = providerSchema.safeParse(baseProviderInput);
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a channelMap whose value is not a Slack channel/DM ID', () => {
+    const result = providerSchema.safeParse({
+      ...baseProviderInput,
+      channelMap: { ops: 'not-a-channel-id' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a channelMap whose value uses a lowercase prefix', () => {
+    const result = providerSchema.safeParse({
+      ...baseProviderInput,
+      channelMap: { ops: 'c08v6mv0vnv' },
+    });
+    expect(result.success).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import { ingestEvent } from '../../services/event-ingest.service';
 import { getLogger } from '../../lib/logging';
 
 import { mapSocketModeEnvelopeToWebhookPayload } from './event-mapper';
+import { buildChannelIdToNameMap, enrichSlackPayload } from './slack-payload';
 import type { Transport } from './types';
 
 const logger = getLogger('slack-socket-transport');
@@ -71,6 +72,7 @@ export class SlackSocketTransport implements Transport {
   private readonly agents: readonly ResolvedAgent[];
   private readonly events: EventBus;
   private readonly clientFactory: SocketModeClientFactory;
+  private readonly channelIdToName: ReadonlyMap<string, string>;
 
   private client: SocketModeClientLike | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -90,6 +92,7 @@ export class SlackSocketTransport implements Transport {
     this.events = options.events ?? getEventBus();
     this.clientFactory = options.clientFactory ?? defaultClientFactory;
     this.name = options.provider.name;
+    this.channelIdToName = buildChannelIdToNameMap(options.provider.channelMap);
 
     this.handleSlackEvent = (...args: unknown[]): void => {
       const argument = args[0];
@@ -251,7 +254,8 @@ export class SlackSocketTransport implements Transport {
     // guarantee. The reverse ordering would create an at-most-once gap
     // because Slack does not redeliver after a successful ack.
     const traceId = randomUUID();
-    const payload = mapSocketModeEnvelopeToWebhookPayload(args.body);
+    const mappedPayload = mapSocketModeEnvelopeToWebhookPayload(args.body);
+    const payload = enrichSlackPayload(mappedPayload, this.channelIdToName);
     const rawBodyString = JSON.stringify(payload);
 
     try {
