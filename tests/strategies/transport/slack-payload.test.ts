@@ -31,12 +31,15 @@ describe('buildChannelIdToNameMap', () => {
 describe('enrichSlackPayload', () => {
   const inverse = buildChannelIdToNameMap({ ops: 'C123' });
 
+  function slackEvent(
+    overrides: Partial<{ token: string; channel: string; ts: string; extra: Record<string, unknown> }> = {},
+  ): { token?: string; event: Record<string, unknown> } {
+    const { token = 'xoxb', channel = 'C123', ts = '1.1', extra = {} } = overrides;
+    return { ...(token ? { token } : {}), event: { type: 'message', ts, channel, ...extra } };
+  }
+
   it('injects event.channel_name when the channel id matches', () => {
-    const payload = {
-      token: 'xoxb',
-      event: { type: 'message', ts: '1.1', channel: 'C123' },
-    };
-    const enriched = enrichSlackPayload(payload, inverse) as {
+    const enriched = enrichSlackPayload(slackEvent(), inverse) as {
       event: { channel: string; channel_name?: string };
     };
     expect(enriched.event.channel_name).toBe('ops');
@@ -44,10 +47,7 @@ describe('enrichSlackPayload', () => {
   });
 
   it('does NOT mutate the input payload', () => {
-    const payload = {
-      token: 'xoxb',
-      event: { type: 'message', ts: '1.1', channel: 'C123' },
-    };
+    const payload = slackEvent();
     const before = JSON.stringify(payload);
     enrichSlackPayload(payload, inverse);
     expect(JSON.stringify(payload)).toBe(before);
@@ -55,17 +55,12 @@ describe('enrichSlackPayload', () => {
   });
 
   it('returns the same reference when the channel id has no mapping', () => {
-    const payload = {
-      token: 'xoxb',
-      event: { type: 'message', ts: '1.1', channel: 'C999' },
-    };
+    const payload = slackEvent({ channel: 'C999' });
     expect(enrichSlackPayload(payload, inverse)).toBe(payload);
   });
 
   it('returns the same reference when channelIdToName is empty', () => {
-    const payload = {
-      event: { type: 'message', channel: 'C123' },
-    };
+    const payload = { event: { type: 'message', channel: 'C123' } };
     const empty = buildChannelIdToNameMap(undefined);
     expect(enrichSlackPayload(payload, empty)).toBe(payload);
   });
@@ -92,14 +87,7 @@ describe('enrichSlackPayload', () => {
   });
 
   it('produces a payload that routing can match by event.channel_name', () => {
-    // DoD assertion: a routing rule keyed on the synthetic field name
-    // matches an enriched payload via the existing condition machinery.
-    // The field-path resolver is generic, so this works without any
-    // routing-side change — this test pins that contract.
-    const payload = {
-      event: { type: 'message', ts: '1.1', channel: 'C123' },
-    };
-    const enriched = enrichSlackPayload(payload, inverse);
+    const enriched = enrichSlackPayload(slackEvent(), inverse);
     const matched = evaluateCondition(enriched, {
       equals: { field: 'event.channel_name', value: 'ops' },
     });
@@ -107,17 +95,8 @@ describe('enrichSlackPayload', () => {
   });
 
   it('preserves siblings on the event object when enriching', () => {
-    const payload = {
-      token: 'xoxb',
-      team_id: 'T1',
-      event: {
-        type: 'message',
-        ts: '1.1',
-        channel: 'C123',
-        user: 'U1',
-        blocks: [{ text: 'hi' }],
-      },
-    };
+    const payload = slackEvent({ extra: { user: 'U1', blocks: [{ text: 'hi' }] } });
+    (payload as Record<string, unknown>).team_id = 'T1';
     const enriched = enrichSlackPayload(payload, inverse) as {
       token: string;
       team_id: string;
