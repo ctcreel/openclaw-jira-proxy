@@ -261,6 +261,18 @@ export async function processJob(
     model: selectedModel,
   });
 
+  // Session-aware warm/resume turns send only the userMessage (not the
+  // full template). But memories CHANGE between turns — what's relevant
+  // to "what's my dog's name" wasn't relevant to the prior conversation.
+  // So the freshly-retrieved memory preamble must be wrapped around the
+  // userMessage on every turn, not just the first turn's full prompt.
+  const sessionUserMessage = wrapPerTurnUserMessageWithMemory(
+    envelope.payload,
+    resolved.rule.memory?.namespace,
+    memories,
+    traceId,
+  );
+
   const result = await dispatchToRunner(runner, {
     prompt,
     sessionKey,
@@ -271,12 +283,7 @@ export async function processJob(
     jobId: jobIdString,
     ...(envOverlay ? { env: envOverlay } : {}),
     sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
-    // For session-aware turns: warm/resume turns only send the new event's
-    // raw payload — the template's instructions are already in the
-    // subprocess's session JSONL from the first turn. The dispatcher passes
-    // `prompt` as firstTurnPrompt (full template, used on fresh spawn) and
-    // this string as userMessage (used on warm/resume).
-    sessionUserMessage: envelope.payload,
+    sessionUserMessage,
   });
 
   if (result.status === 'error') {
@@ -470,6 +477,32 @@ function wrapWithMemoryFragments(
     traceId,
   });
   return `${preamble}\n${agentBody}\n${postamble}`;
+}
+
+/**
+ * Wrap the per-turn userMessage (sent on every session turn, warm or
+ * fresh) with the memory retrieve preamble. Without this, warm-reuse
+ * turns get only the raw event payload — no memories — and the agent
+ * answers from session-history alone, missing freshly-retrieved facts.
+ *
+ * Postamble (the store snippet) lives in the firstTurnPrompt only; the
+ * agent learned it once in the session's first turn and remembers it.
+ */
+function wrapPerTurnUserMessageWithMemory(
+  userMessage: string,
+  namespace: string | undefined,
+  memories: readonly MemoryHit[] | undefined,
+  traceId: string,
+): string {
+  if (namespace === undefined) {
+    return userMessage;
+  }
+  const preamble = renderRetrievePreamble({
+    memories: memories ?? [],
+    memoryNamespace: namespace,
+    traceId,
+  });
+  return `${preamble}\n${userMessage}`;
 }
 
 /**
