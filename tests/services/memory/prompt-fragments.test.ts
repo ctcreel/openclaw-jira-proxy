@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  renderRetrievePreamble,
-  renderStorePostamble,
+  renderMemoryRecallBlock,
+  renderMemoryStorageBlock,
   type MemoryHit,
 } from '../../../src/services/memory/prompt-fragments';
 
@@ -14,20 +14,20 @@ const sampleHits: MemoryHit[] = [
   { id: '2', text: 'Heather prefers email follow-ups before noon', score: 0.78, metadata: {} },
 ];
 
-describe('renderRetrievePreamble', () => {
+describe('renderMemoryRecallBlock', () => {
   it('formats hits as bullet lines with score', () => {
-    const output = renderRetrievePreamble({
+    const output = renderMemoryRecallBlock({
       memories: sampleHits,
       memoryNamespace: NS,
       traceId: TRACE,
     });
     expect(output).toContain('- Chris has a cat named Porter [score: 0.92]');
     expect(output).toContain('- Heather prefers email follow-ups before noon [score: 0.78]');
-    expect(output).toContain('Memory — what you already know');
+    expect(output).toContain('Memory — durable facts you know');
   });
 
   it('renders an explicit empty marker when there are no hits', () => {
-    const output = renderRetrievePreamble({
+    const output = renderMemoryRecallBlock({
       memories: [],
       memoryNamespace: NS,
       traceId: TRACE,
@@ -36,7 +36,7 @@ describe('renderRetrievePreamble', () => {
   });
 
   it('does not leak namespace or traceId into the preamble (those belong in the postamble)', () => {
-    const output = renderRetrievePreamble({
+    const output = renderMemoryRecallBlock({
       memories: sampleHits,
       memoryNamespace: NS,
       traceId: TRACE,
@@ -46,9 +46,9 @@ describe('renderRetrievePreamble', () => {
   });
 });
 
-describe('renderStorePostamble', () => {
+describe('renderMemoryStorageBlock', () => {
   it('binds namespace and traceId into the store snippet', () => {
-    const output = renderStorePostamble({
+    const output = renderMemoryStorageBlock({
       memories: [],
       memoryNamespace: 'winston-personal',
       traceId: 'job-42',
@@ -58,7 +58,7 @@ describe('renderStorePostamble', () => {
   });
 
   it('contains the do/do-not guidance and rate-limit reminder', () => {
-    const output = renderStorePostamble({
+    const output = renderMemoryStorageBlock({
       memories: [],
       memoryNamespace: NS,
       traceId: TRACE,
@@ -69,7 +69,7 @@ describe('renderStorePostamble', () => {
   });
 
   it('warns about HIPAA / never-store-PHI', () => {
-    const output = renderStorePostamble({
+    const output = renderMemoryStorageBlock({
       memories: [],
       memoryNamespace: NS,
       traceId: TRACE,

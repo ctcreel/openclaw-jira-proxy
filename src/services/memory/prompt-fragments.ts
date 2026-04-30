@@ -23,22 +23,22 @@ export interface MemoryHit {
  * memory-enabled route gets the same instructions; if we improve them,
  * every agent benefits without an agent-repo PR.
  */
-const RETRIEVE_PREAMBLE_TEMPLATE = `# Memory — what you already know about this conversation
+const RETRIEVE_PREAMBLE_TEMPLATE = `---
 
-Before composing, read this block. These are durable facts you've recorded in past conversations — names, preferences, ongoing context, things this person has already told you. They were retrieved by semantic similarity to the inbound, ranked by relevance.
+# Memory — durable facts you know about this conversation
+
+Below are facts you've recorded in past conversations — names, preferences, ongoing context, things this person has already told you. They were retrieved by semantic similarity to the current inbound, ranked by relevance. They are AUTHORITATIVE: if you say "I don't know" about something that's listed here, you are wrong.
 
 \`\`\`
 {{ memories }}
 \`\`\`
 
-If the block is empty, you have no prior context for this exact query (you may still have related context elsewhere, but pre-fetch keys on the inbound text and won't surface it here).
+If the block is empty, you have no specific prior context for this exact query (related context may exist elsewhere, but pre-fetch keys on the inbound text and won't surface it here — answer honestly that you don't know rather than invent).
 
-How to use them:
-- Weave relevant facts into your reply naturally.
-- Don't quote them verbatim. Don't list them. Don't say "I remember that…" or "according to my notes".
-- Just behave like someone who remembers. If a fact contradicts what the person just said, the person is the authority — update your model, don't argue.
-
----
+How to use them when generating your reply:
+- Weave relevant facts in naturally. Don't quote verbatim, don't list, don't say "I remember…" or "according to my notes" — just behave like someone who remembers.
+- If a fact contradicts what the person just said in this turn, the person is the authority — update your model and respond accordingly, don't argue from notes.
+- If the fact is sensitive (someone has died, a relationship ended, a diagnosis), match the tone. Don't be cheerful about it.
 `;
 
 const STORE_POSTAMBLE_TEMPLATE = `---
@@ -105,19 +105,25 @@ interface PromptContext {
 }
 
 /**
- * Render the retrieve-preamble fragment with the given memory hits.
- * Synchronous (template lives in a TS constant); kept async-shaped so
- * callers don't have to special-case the await pattern that the
- * postamble uses for symmetry.
+ * Render the memory-recall block — appears at the BOTTOM of the prompt,
+ * close to where the model generates output. Per Anthropic + OpenAI
+ * prompt-engineering guidance, variable per-turn context should sit near
+ * the user message (recency bias + cache efficiency); putting it at the
+ * top buries it under the stable IDENTITY/SOUL/template prefix.
  */
-export function renderRetrievePreamble(context: PromptContext): string {
+export function renderMemoryRecallBlock(context: PromptContext): string {
   return fragmentEnvironment.renderString(RETRIEVE_PREAMBLE_TEMPLATE, {
     memories: formatMemories(context.memories),
   });
 }
 
-/** Render the store-postamble fragment with namespace + traceId bound. */
-export function renderStorePostamble(context: PromptContext): string {
+/**
+ * Render the memory-storage block — appears once on the first turn of a
+ * session (the storage instructions are stable; the agent learns them
+ * once and remembers via the session JSONL on subsequent turns). Bound
+ * with namespace + traceId for the agency_tools.memory.store snippet.
+ */
+export function renderMemoryStorageBlock(context: PromptContext): string {
   return fragmentEnvironment.renderString(STORE_POSTAMBLE_TEMPLATE, {
     memoryNamespace: context.memoryNamespace,
     traceId: context.traceId,
