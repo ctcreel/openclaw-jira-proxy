@@ -72,18 +72,36 @@ function captureEvents(bus: EventBus): ClawndomEvent[] {
   return captured;
 }
 
-describe('SlackSocketTransport', () => {
-  let fakeClient: FakeSocketModeClient;
-  let factory: SocketModeClientFactory;
-  let bus: EventBus;
+function buildTransport(
+  overrides: Partial<{
+    provider: SlackSocketProviderConfig;
+    appToken: string;
+    events: EventBus;
+  }> = {},
+): {
+  transport: SlackSocketTransport;
+  fakeClient: FakeSocketModeClient;
+  factory: SocketModeClientFactory;
+  events: EventBus;
+} {
+  const fakeClient = new FakeSocketModeClient();
+  const factory = vi.fn(() => fakeClient) as unknown as SocketModeClientFactory;
+  const events = overrides.events ?? new EventBus();
+  const transport = new SlackSocketTransport({
+    provider: overrides.provider ?? baseProvider,
+    appToken: overrides.appToken ?? 'xapp-test-token',
+    agents: [],
+    events,
+    clientFactory: factory,
+  });
+  return { transport, fakeClient, factory, events };
+}
 
+describe('SlackSocketTransport', () => {
   beforeEach(() => {
     resetSettings();
     ingestSpy.mockReset();
     ingestSpy.mockResolvedValue({ outcome: 'enqueued', jobTraceId: 'job-1' });
-    fakeClient = new FakeSocketModeClient();
-    factory = vi.fn(() => fakeClient) as unknown as SocketModeClientFactory;
-    bus = new EventBus();
   });
 
   afterEach(() => {
@@ -91,13 +109,7 @@ describe('SlackSocketTransport', () => {
   });
 
   it('start() builds the client with the app token and attaches handlers', async () => {
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, factory } = buildTransport();
 
     await transport.start();
 
@@ -111,19 +123,13 @@ describe('SlackSocketTransport', () => {
   });
 
   it('publishes socket.connected when the client emits "connected"', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('connected');
 
-    const connected = events.find((e) => e.type === 'socket.connected');
+    const connected = captured.find((e) => e.type === 'socket.connected');
     expect(connected).toBeDefined();
     expect(connected).toMatchObject({
       type: 'socket.connected',
@@ -133,19 +139,13 @@ describe('SlackSocketTransport', () => {
   });
 
   it('publishes socket.disconnected with reason from the client', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('disconnected', 'pong-timeout');
 
-    const disconnected = events.find((e) => e.type === 'socket.disconnected');
+    const disconnected = captured.find((e) => e.type === 'socket.disconnected');
     expect(disconnected).toMatchObject({
       type: 'socket.disconnected',
       provider: 'slack-bot',
@@ -154,51 +154,33 @@ describe('SlackSocketTransport', () => {
   });
 
   it('publishes socket.disconnected with reason "unknown" when no reason given', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('disconnected');
 
-    const disconnected = events.find((e) => e.type === 'socket.disconnected');
+    const disconnected = captured.find((e) => e.type === 'socket.disconnected');
     expect(disconnected).toMatchObject({ reason: 'unknown' });
   });
 
   it('publishes socket.reconnecting with an incrementing attempt counter', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('reconnecting');
     fakeClient.emit('reconnecting');
 
-    const reconnects = events.filter((e) => e.type === 'socket.reconnecting');
+    const reconnects = captured.filter((e) => e.type === 'socket.reconnecting');
     expect(reconnects).toHaveLength(2);
     expect(reconnects[0]).toMatchObject({ attempt: 1 });
     expect(reconnects[1]).toMatchObject({ attempt: 2 });
   });
 
   it('resets the reconnect counter once the socket reconnects', async () => {
-    const events = captureEvents(bus);
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
 
     await transport.start();
     fakeClient.emit('reconnecting');
@@ -206,7 +188,7 @@ describe('SlackSocketTransport', () => {
     fakeClient.emit('connected');
     fakeClient.emit('reconnecting');
 
-    const reconnects = events.filter((e) => e.type === 'socket.reconnecting');
+    const reconnects = captured.filter((e) => e.type === 'socket.reconnecting');
     expect(reconnects.map((e) => (e as { attempt: number }).attempt)).toEqual([1, 2, 1]);
   });
 
@@ -220,13 +202,7 @@ describe('SlackSocketTransport', () => {
       return { outcome: 'enqueued', jobTraceId: 'job-1' };
     });
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -258,13 +234,7 @@ describe('SlackSocketTransport', () => {
     const ack = vi.fn(async () => {});
     ingestSpy.mockRejectedValue(new Error('redis unavailable'));
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -291,13 +261,7 @@ describe('SlackSocketTransport', () => {
       event: { type: 'app_mention', ts: '2.2', channel: 'C2' },
     };
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -315,13 +279,7 @@ describe('SlackSocketTransport', () => {
 
   it('acks but does not ingest non-events_api envelopes', async () => {
     const ack = vi.fn(async () => {});
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -340,22 +298,15 @@ describe('SlackSocketTransport', () => {
 
   it('emits socket.auth_failed and retries 60s later when start() rejects', async () => {
     vi.useFakeTimers();
-    const events = captureEvents(bus);
+    const { transport, fakeClient, events } = buildTransport();
+    const captured = captureEvents(events);
     fakeClient.startMock
       .mockRejectedValueOnce(new Error('invalid_auth'))
       .mockResolvedValueOnce(undefined);
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
-
     await transport.start();
 
-    const authFailed = events.find((e) => e.type === 'socket.auth_failed');
+    const authFailed = captured.find((e) => e.type === 'socket.auth_failed');
     expect(authFailed).toMatchObject({
       type: 'socket.auth_failed',
       provider: 'slack-bot',
@@ -369,15 +320,9 @@ describe('SlackSocketTransport', () => {
 
   it('does not retry once stop() has been called', async () => {
     vi.useFakeTimers();
+    const { transport, fakeClient } = buildTransport();
     fakeClient.startMock.mockRejectedValue(new Error('invalid_auth'));
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
     await transport.start();
     await transport.stop();
 
@@ -386,13 +331,7 @@ describe('SlackSocketTransport', () => {
   });
 
   it('stop() disconnects the client and detaches handlers', async () => {
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
     await transport.start();
 
     expect(fakeClient.listenerCount('slack_event')).toBe(1);
@@ -408,14 +347,8 @@ describe('SlackSocketTransport', () => {
   });
 
   it('stop() swallows disconnect errors during shutdown', async () => {
+    const { transport, fakeClient } = buildTransport();
     fakeClient.disconnectMock.mockRejectedValue(new Error('socket already closed'));
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
     await transport.start();
 
     await expect(transport.stop()).resolves.toBeUndefined();
@@ -426,13 +359,7 @@ describe('SlackSocketTransport', () => {
       throw new Error('ack-failed');
     });
 
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     fakeClient.emit('slack_event', {
@@ -447,13 +374,7 @@ describe('SlackSocketTransport', () => {
 
   it('does not throw out of the socket handler when ingestEvent rejects', async () => {
     ingestSpy.mockRejectedValueOnce(new Error('redis-down'));
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
 
     await transport.start();
     expect(() =>
@@ -476,13 +397,7 @@ describe('SlackSocketTransport', () => {
 
     it('injects event.channel_name when an inbound channel id matches the map', async () => {
       const ack = vi.fn(async () => {});
-      const transport = new SlackSocketTransport({
-        provider: providerWithChannelMap,
-        appToken: 'xapp-test-token',
-        agents: [],
-        events: bus,
-        clientFactory: factory,
-      });
+      const { transport, fakeClient } = buildTransport({ provider: providerWithChannelMap });
 
       await transport.start();
       fakeClient.emit('slack_event', {
@@ -506,13 +421,7 @@ describe('SlackSocketTransport', () => {
 
     it('leaves event.channel_name unset when the inbound channel id has no mapping', async () => {
       const ack = vi.fn(async () => {});
-      const transport = new SlackSocketTransport({
-        provider: providerWithChannelMap,
-        appToken: 'xapp-test-token',
-        agents: [],
-        events: bus,
-        clientFactory: factory,
-      });
+      const { transport, fakeClient } = buildTransport({ provider: providerWithChannelMap });
 
       await transport.start();
       fakeClient.emit('slack_event', {
@@ -533,13 +442,7 @@ describe('SlackSocketTransport', () => {
     it('leaves payload unchanged when provider has no channelMap', async () => {
       // baseProvider has no channelMap — backward compat regression guard.
       const ack = vi.fn(async () => {});
-      const transport = new SlackSocketTransport({
-        provider: baseProvider,
-        appToken: 'xapp-test-token',
-        agents: [],
-        events: bus,
-        clientFactory: factory,
-      });
+      const { transport, fakeClient } = buildTransport();
 
       await transport.start();
       fakeClient.emit('slack_event', {
@@ -564,13 +467,7 @@ describe('SlackSocketTransport', () => {
         event: { type: 'app_mention', ts: '2.2', channel: 'C456' },
       };
 
-      const transport = new SlackSocketTransport({
-        provider: providerWithChannelMap,
-        appToken: 'xapp-test-token',
-        agents: [],
-        events: bus,
-        clientFactory: factory,
-      });
+      const { transport, fakeClient } = buildTransport({ provider: providerWithChannelMap });
 
       await transport.start();
       fakeClient.emit('slack_event', {
@@ -590,13 +487,7 @@ describe('SlackSocketTransport', () => {
   });
 
   it('logs error events from the client without throwing', async () => {
-    const transport = new SlackSocketTransport({
-      provider: baseProvider,
-      appToken: 'xapp-test-token',
-      agents: [],
-      events: bus,
-      clientFactory: factory,
-    });
+    const { transport, fakeClient } = buildTransport();
     await transport.start();
 
     expect(() => fakeClient.emit('error', new Error('socket error'))).not.toThrow();
