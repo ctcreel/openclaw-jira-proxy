@@ -201,6 +201,40 @@ describe('registerAgentSchedules', () => {
     );
   });
 
+  it('does not require messageTemplate for shell-runner schedule rules', async () => {
+    const agents = [
+      buildAgent('winston', [
+        {
+          name: 'gmail-watch-refresh',
+          cron: '0 9 * * 1',
+          catchUp: false,
+          runner: { type: 'shell', command: 'python3 ./tools/refresh.py', timeoutMs: 60_000 },
+        },
+      ]),
+    ];
+
+    const result = await registerAgentSchedules(agents);
+    expect(result).toHaveLength(1);
+    expect(upsertCalls[0]!.schedulerId).toBe('schedule:winston:gmail-watch-refresh');
+  });
+
+  it('still requires messageTemplate when a non-shell runner override is specified', async () => {
+    const agents = [
+      buildAgent('scarlett', [
+        {
+          name: 'override-claude',
+          cron: '0 9 * * *',
+          catchUp: false,
+          runner: { type: 'claude-cli', workDirectory: '/tmp/x' },
+        },
+      ]),
+    ];
+
+    await expect(registerAgentSchedules(agents)).rejects.toThrow(
+      /missing a "messageTemplate" field/,
+    );
+  });
+
   it('registers schedules for multiple agents in one pass', async () => {
     const agents = [
       buildAgent('scarlett', [

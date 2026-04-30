@@ -9,6 +9,8 @@ import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { getRunner } from '../runners/registry';
+import { ShellRunner } from '../runners/shell.runner';
+import type { AgentRunner } from '../runners/types';
 import { evaluateCondition } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
 import {
@@ -102,17 +104,8 @@ async function runRule(
   agent: ResolvedAgent,
   runOpts: RunRuleOptions,
 ): Promise<TaskRunSummary> {
-  let prompt: string;
-  if (rule.messageTemplate) {
-    const templateContent = await readFile(join(agent.dir, rule.messageTemplate), 'utf-8');
-    prompt = await renderTemplate(templateContent, payload, agent.dir);
-  } else {
-    prompt = JSON.stringify(payload);
-  }
-
+  const { runner, prompt } = await resolveRunnerAndPrompt(rule, payload, agent);
   const settings = getSettings();
-  const runnerName = 'claude-cli'; // Tasks use the default runner; per-agent override via config is a follow-up.
-  const runner = getRunner(runnerName);
 
   const result = await runner.run({
     prompt,
@@ -135,6 +128,33 @@ async function runRule(
     runId: result.runId ?? 'unknown',
     status: result.status,
   };
+}
+
+// Shell runners are constructed per-firing because their config (the
+// command) varies per rule, not per deployment. Other runner types stay
+// in the global registry: their configuration is fixed at startup.
+//
+// Exported for unit-testing the dispatch decision in isolation; the
+// production callsite is `runRule` above.
+export async function resolveRunnerAndPrompt(
+  rule: AgentRule,
+  payload: Record<string, unknown>,
+  agent: ResolvedAgent,
+): Promise<{ runner: AgentRunner; prompt: string }> {
+  if (rule.runner?.type === 'shell') {
+    return { runner: new ShellRunner(rule.runner, agent.dir), prompt: '' };
+  }
+
+  let prompt: string;
+  if (rule.messageTemplate) {
+    const templateContent = await readFile(join(agent.dir, rule.messageTemplate), 'utf-8');
+    prompt = await renderTemplate(templateContent, payload, agent.dir);
+  } else {
+    prompt = JSON.stringify(payload);
+  }
+
+  const runnerName = rule.runner?.type ?? 'claude-cli';
+  return { runner: getRunner(runnerName), prompt };
 }
 
 export function createTaskWorker(agent: ResolvedAgent): Worker<string> | null {
