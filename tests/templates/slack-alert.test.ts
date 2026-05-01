@@ -62,22 +62,22 @@ describe('slack-alert template', () => {
 
   it('should render the template with a sample payload', async () => {
     const template = await loadTemplate();
-    const result = await renderTemplate(template, samplePayload, __dirname);
+    const rendered = await renderTemplate(template, samplePayload, __dirname);
 
-    expect(result).toContain('production');
-    expect(result).toContain('[PRODUCTION] Pipeline failure: invoice-processing');
-    expect(result).toContain('Request ID: req-abc-123');
-    expect(result).toContain('Execution time: 12.5s');
-    expect(result).toContain('validate-input');
-    expect(result).toContain('ValidationError');
+    expect(rendered.body).toContain('production');
+    expect(rendered.body).toContain('[PRODUCTION] Pipeline failure: invoice-processing');
+    expect(rendered.body).toContain('Request ID: req-abc-123');
+    expect(rendered.body).toContain('Execution time: 12.5s');
+    expect(rendered.body).toContain('validate-input');
+    expect(rendered.body).toContain('ValidationError');
   });
 
   it('should include the raw payload JSON', async () => {
     const template = await loadTemplate();
-    const result = await renderTemplate(template, samplePayload, __dirname);
+    const rendered = await renderTemplate(template, samplePayload, __dirname);
 
-    expect(result).toContain('"type": "event_callback"');
-    expect(result).toContain('```json');
+    expect(rendered.body).toContain('"type": "event_callback"');
+    expect(rendered.body).toContain('```json');
   });
 
   it('should map channel to correct environment', async () => {
@@ -87,8 +87,8 @@ describe('slack-alert template', () => {
       ...samplePayload,
       event: { ...samplePayload.event, channel: 'C08V6MV0VNV' },
     };
-    const result = await renderTemplate(template, devPayload, __dirname);
-    expect(result).toContain('development');
+    const rendered = await renderTemplate(template, devPayload, __dirname);
+    expect(rendered.body).toContain('development');
   });
 
   it('should handle missing blocks gracefully', async () => {
@@ -97,8 +97,8 @@ describe('slack-alert template', () => {
       type: 'event_callback',
       event: { type: 'message', ts: '1.0', channel: 'C08V6MV0VNV' },
     };
-    const result = await renderTemplate(template, minimalPayload, __dirname);
-    expect(result).toContain('development');
-    expect(result).toContain('Raw Event Payload');
+    const rendered = await renderTemplate(template, minimalPayload, __dirname);
+    expect(rendered.body).toContain('development');
+    expect(rendered.body).toContain('Raw Event Payload');
   });
 });

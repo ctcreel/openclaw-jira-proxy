@@ -3,8 +3,18 @@ import { dirname, join, resolve, sep } from 'node:path';
 
 import nunjucks from 'nunjucks';
 
+// Body-level tags — content is inlined into the rendered user prompt.
 const DOC_TAG_PATTERN = /\{\{doc:([^}]+)\}\}/g;
 const SHARED_TAG_PATTERN = /\{\{shared:([^}]+)\}\}/g;
+
+// System-prompt tags — content is extracted from the template body and
+// returned separately as a system-prompt string. Same path-resolution shape
+// as the body tags (agent dir vs shared dir), but the content lands in the
+// system slot of the runner so it can be cached by Anthropic's prompt cache
+// on each run. Stable content (IDENTITY, SOUL, anti-patterns, etc.) belongs
+// here; per-event variable content stays in the body.
+const SYSTEM_DOC_TAG_PATTERN = /\{\{system-doc:([^}]+)\}\}/g;
+const SYSTEM_SHARED_TAG_PATTERN = /\{\{system-shared:([^}]+)\}\}/g;
 
 async function readAgentDoc(agentDir: string, relativePath: string): Promise<string> {
   return await readFile(join(agentDir, relativePath), 'utf-8');
@@ -22,6 +32,57 @@ async function readSharedDoc(agentDir: string, relativePath: string): Promise<st
     );
   }
   return await readFile(fullPath, 'utf-8');
+}
+
+interface SystemTagMatch {
+  match: RegExpMatchArray;
+  source: 'agent' | 'shared';
+}
+
+/**
+ * Extract `{{system-doc:…}}` and `{{system-shared:…}}` tags from the template.
+ * Returns the body with those tags removed (replaced by empty string) and the
+ * collected system-prompt content in document order.
+ *
+ * Document order matters for cache reuse: Anthropic's prompt cache keys on
+ * the prefix of the system block, so the same templates rendered with the
+ * same `{{system-…}}` tags in the same order produce identical cacheable
+ * prefixes. Reordering `{{system-…}}` tags between renders is a cache-bust.
+ */
+async function extractSystemTags(
+  template: string,
+  agentDir: string,
+): Promise<{ body: string; systemContent: string }> {
+  const docMatches = [...template.matchAll(SYSTEM_DOC_TAG_PATTERN)].map(
+    (m): SystemTagMatch => ({ match: m, source: 'agent' }),
+  );
+  const sharedMatches = [...template.matchAll(SYSTEM_SHARED_TAG_PATTERN)].map(
+    (m): SystemTagMatch => ({ match: m, source: 'shared' }),
+  );
+
+  if (docMatches.length === 0 && sharedMatches.length === 0) {
+    return { body: template, systemContent: '' };
+  }
+
+  // Sort by index so concatenation order matches document order.
+  const ordered = [...docMatches, ...sharedMatches].sort(
+    (a, b) => (a.match.index ?? 0) - (b.match.index ?? 0),
+  );
+
+  const contents = await Promise.all(
+    ordered.map(({ match, source }) =>
+      source === 'shared'
+        ? readSharedDoc(agentDir, match[1]!.trim())
+        : readAgentDoc(agentDir, match[1]!.trim()),
+    ),
+  );
+
+  let body = template;
+  for (const { match } of ordered) {
+    body = body.replace(match[0], '');
+  }
+
+  return { body, systemContent: contents.join('\n\n') };
 }
 
 async function preprocessDocTags(template: string, agentDir: string): Promise<string> {
@@ -54,12 +115,32 @@ const nunjucksEnvironment = new nunjucks.Environment(null, {
   throwOnUndefined: false,
 });
 
+export interface RenderedTemplate {
+  /**
+   * Stable, cacheable content extracted from `{{system-doc:…}}` /
+   * `{{system-shared:…}}` tags. Empty string if the template has no system
+   * tags. Runners that support a separate system slot (e.g. `claude-cli`
+   * via `--system-prompt`) MUST forward this here rather than inlining it
+   * in the body — that's what enables prompt-cache reuse across runs.
+   */
+  systemPrompt: string;
+  /**
+   * The rendered template body — per-event variable content. Goes into
+   * the user prompt (e.g. `claude -p <body>`).
+   */
+  body: string;
+}
+
 export async function renderTemplate(
   template: string,
   payload: unknown,
   baseDir: string,
-): Promise<string> {
-  const preprocessed = await preprocessDocTags(template, baseDir);
+): Promise<RenderedTemplate> {
+  const { body: bodyAfterSystemExtraction, systemContent } = await extractSystemTags(
+    template,
+    baseDir,
+  );
+  const bodyAfterDocTags = await preprocessDocTags(bodyAfterSystemExtraction, baseDir);
 
   const spreadable = typeof payload === 'object' && payload !== null ? payload : {};
   const context = {
@@ -67,5 +148,11 @@ export async function renderTemplate(
     ...spreadable,
   };
 
-  return nunjucksEnvironment.renderString(preprocessed, context);
+  const body = nunjucksEnvironment.renderString(bodyAfterDocTags, context);
+  // Render Nunjucks tags in the system content too — the per-agent
+  // identity bits may reference variables (e.g. `{{ agentName }}`).
+  const systemPrompt =
+    systemContent.length > 0 ? nunjucksEnvironment.renderString(systemContent, context) : '';
+
+  return { systemPrompt, body };
 }

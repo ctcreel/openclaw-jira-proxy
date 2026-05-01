@@ -16,7 +16,7 @@ vi.mock('ioredis', () => ({
 }));
 
 vi.mock('../../src/lib/template/template-engine', () => ({
-  renderTemplate: vi.fn().mockResolvedValue('rendered-template-output'),
+  renderTemplate: vi.fn().mockResolvedValue({ systemPrompt: '', body: 'rendered-template-output' }),
 }));
 
 vi.mock('node:fs/promises', () => ({
@@ -607,7 +607,10 @@ describe('processJob message templates', () => {
 
   it('reads the template file from the agent dir and renders with agentDir as baseDir', async () => {
     vi.mocked(readFile).mockResolvedValueOnce('Issue {{ issue.key }}');
-    vi.mocked(renderTemplate).mockResolvedValueOnce('rendered rule template');
+    vi.mocked(renderTemplate).mockResolvedValueOnce({
+      systemPrompt: '',
+      body: 'rendered rule template',
+    });
 
     const agents = [
       buildAgent(

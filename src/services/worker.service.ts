@@ -174,9 +174,12 @@ export async function processJob(
   }
 
   let prompt: string;
+  let systemPrompt = '';
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
-    prompt = await renderTemplate(templateContent, parsedPayload, agentDir);
+    const rendered = await renderTemplate(templateContent, parsedPayload, agentDir);
+    prompt = rendered.body;
+    systemPrompt = rendered.systemPrompt;
   } else {
     prompt = envelope.payload;
   }
@@ -245,6 +248,7 @@ export async function processJob(
     traceId,
     jobId: jobIdString,
     ...(envOverlay ? { env: envOverlay } : {}),
+    ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
   });
 
   if (result.status === 'error') {

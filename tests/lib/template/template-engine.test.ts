@@ -14,16 +14,17 @@ describe('renderTemplate', () => {
     vi.clearAllMocks();
   });
 
-  it('renders {{ payload }} as full JSON string', async () => {
+  it('renders {{ payload }} as full JSON string in the body', async () => {
     const payload = { issue: { key: 'SPE-123' } };
     const result = await renderTemplate('{{ payload }}', payload, BASE_DIR);
-    expect(result).toBe(JSON.stringify(payload, null, 2));
+    expect(result.body).toBe(JSON.stringify(payload, null, 2));
+    expect(result.systemPrompt).toBe('');
   });
 
   it('resolves top-level payload keys via Nunjucks', async () => {
     const payload = { issue: { key: 'SPE-456' } };
     const result = await renderTemplate('{{ issue.key }}', payload, BASE_DIR);
-    expect(result).toBe('SPE-456');
+    expect(result.body).toBe('SPE-456');
   });
 
   it('inlines file contents for relative {{doc:...}} tags resolved under baseDir', async () => {
@@ -32,7 +33,8 @@ describe('renderTemplate', () => {
     const result = await renderTemplate('{{doc:docs/jira-policy.md}}', { foo: 'bar' }, BASE_DIR);
 
     expect(readFile).toHaveBeenCalledWith('/agents/patch/docs/jira-policy.md', 'utf-8');
-    expect(result).toBe('# Instructions\nDo the thing.');
+    expect(result.body).toBe('# Instructions\nDo the thing.');
+    expect(result.systemPrompt).toBe('');
   });
 
   it('propagates read errors instead of masking them with a fallback', async () => {
@@ -43,7 +45,7 @@ describe('renderTemplate', () => {
 
   it('renders missing field as empty string', async () => {
     const result = await renderTemplate('value={{ nonexistent }}', { foo: 'bar' }, BASE_DIR);
-    expect(result).toBe('value=');
+    expect(result.body).toBe('value=');
   });
 
   it('handles both doc tags and Nunjucks variables in the same template', async () => {
@@ -55,7 +57,7 @@ describe('renderTemplate', () => {
       BASE_DIR,
     );
 
-    expect(result).toBe('Key: SPE-789\nDoc: file content here');
+    expect(result.body).toBe('Key: SPE-789\nDoc: file content here');
   });
 
   it('handles multiple doc tags', async () => {
@@ -67,7 +69,7 @@ describe('renderTemplate', () => {
       BASE_DIR,
     );
 
-    expect(result).toBe('first file and second file');
+    expect(result.body).toBe('first file and second file');
   });
 
   it('resolves {{shared:...}} from the sibling "shared" directory', async () => {
@@ -76,7 +78,7 @@ describe('renderTemplate', () => {
     const result = await renderTemplate('{{shared:sc0red-engineering-pipeline.md}}', {}, BASE_DIR);
 
     expect(readFile).toHaveBeenCalledWith('/agents/shared/sc0red-engineering-pipeline.md', 'utf-8');
-    expect(result).toBe('# Engineering Pipeline\nShared content.');
+    expect(result.body).toBe('# Engineering Pipeline\nShared content.');
   });
 
   it('rejects {{shared:...}} paths that escape the shared root', async () => {
@@ -96,6 +98,103 @@ describe('renderTemplate', () => {
       BASE_DIR,
     );
 
-    expect(result).toBe('agent-only body then shared body');
+    expect(result.body).toBe('agent-only body then shared body');
+  });
+
+  describe('{{system-doc:…}} / {{system-shared:…}} extraction', () => {
+    it('extracts {{system-doc:…}} content into systemPrompt and removes from body', async () => {
+      vi.mocked(readFile).mockResolvedValueOnce('You are Patch. Senior engineer.');
+
+      const result = await renderTemplate(
+        'Body before {{system-doc:docs/IDENTITY.md}} body after',
+        {},
+        BASE_DIR,
+      );
+
+      expect(readFile).toHaveBeenCalledWith('/agents/patch/docs/IDENTITY.md', 'utf-8');
+      expect(result.systemPrompt).toBe('You are Patch. Senior engineer.');
+      expect(result.body).toBe('Body before  body after');
+    });
+
+    it('extracts {{system-shared:…}} content into systemPrompt and removes from body', async () => {
+      vi.mocked(readFile).mockResolvedValueOnce('# Anti-patterns\nDo not do X.');
+
+      const result = await renderTemplate(
+        '{{system-shared:docs/anti-patterns.md}}\n\nNow the body.',
+        {},
+        BASE_DIR,
+      );
+
+      expect(readFile).toHaveBeenCalledWith('/agents/shared/docs/anti-patterns.md', 'utf-8');
+      expect(result.systemPrompt).toBe('# Anti-patterns\nDo not do X.');
+      expect(result.body.trim()).toBe('Now the body.');
+    });
+
+    it('concatenates multiple system tags in document order with double-newline separator', async () => {
+      vi.mocked(readFile)
+        .mockResolvedValueOnce('FIRST identity content')
+        .mockResolvedValueOnce('SECOND shared anti-patterns')
+        .mockResolvedValueOnce('THIRD soul content');
+
+      const result = await renderTemplate(
+        '{{system-doc:docs/IDENTITY.md}}\n{{system-shared:docs/anti-patterns.md}}\n{{system-doc:docs/SOUL.md}}\n\nbody',
+        {},
+        BASE_DIR,
+      );
+
+      expect(result.systemPrompt).toBe(
+        'FIRST identity content\n\nSECOND shared anti-patterns\n\nTHIRD soul content',
+      );
+      expect(result.body.trim()).toBe('body');
+    });
+
+    it('renders Nunjucks variables inside the extracted system content', async () => {
+      vi.mocked(readFile).mockResolvedValueOnce('You are {{ agent.name }}.');
+
+      const result = await renderTemplate(
+        '{{system-doc:docs/IDENTITY.md}}',
+        { agent: { name: 'Patch' } },
+        BASE_DIR,
+      );
+
+      expect(result.systemPrompt).toBe('You are Patch.');
+    });
+
+    it('returns empty systemPrompt when the template has no system tags', async () => {
+      const result = await renderTemplate('plain template, no system tags', {}, BASE_DIR);
+      expect(result.systemPrompt).toBe('');
+      expect(result.body).toBe('plain template, no system tags');
+    });
+
+    it('coexists with body-level {{doc:…}} / {{shared:…}} tags in the same template', async () => {
+      // Mock order matches read order: extractSystemTags reads ALL system
+      // tags first (in document order), then preprocessDocTags reads
+      // body-level tags. So: identity (system-doc), anti-patterns
+      // (system-shared), then per-event (body doc).
+      vi.mocked(readFile)
+        .mockResolvedValueOnce('STABLE identity (system)') // {{system-doc:docs/IDENTITY.md}}
+        .mockResolvedValueOnce('STABLE shared anti-patterns (system)') // {{system-shared:...}}
+        .mockResolvedValueOnce('VARIABLE doc (body)'); // {{doc:templates/per-event.md}}
+
+      const result = await renderTemplate(
+        '{{system-doc:docs/IDENTITY.md}}\n{{doc:templates/per-event.md}}\n{{system-shared:docs/anti-patterns.md}}\nfinal body',
+        {},
+        BASE_DIR,
+      );
+
+      // System content is concatenated in document order, body-level tags
+      // are resolved in place, body-level remains in body.
+      expect(result.systemPrompt).toBe(
+        'STABLE identity (system)\n\nSTABLE shared anti-patterns (system)',
+      );
+      expect(result.body).toContain('VARIABLE doc (body)');
+      expect(result.body).toContain('final body');
+    });
+
+    it('rejects {{system-shared:…}} paths that escape the shared root', async () => {
+      await expect(
+        renderTemplate('{{system-shared:../patch/docs/SOUL.md}}', {}, BASE_DIR),
+      ).rejects.toThrow(/escapes shared root/);
+    });
   });
 });

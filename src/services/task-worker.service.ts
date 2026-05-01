@@ -104,7 +104,7 @@ async function runRule(
   agent: ResolvedAgent,
   runOpts: RunRuleOptions,
 ): Promise<TaskRunSummary> {
-  const { runner, prompt } = await resolveRunnerAndPrompt(rule, payload, agent);
+  const { runner, prompt, systemPrompt } = await resolveRunnerAndPrompt(rule, payload, agent);
   const settings = getSettings();
 
   const result = await runner.run({
@@ -115,6 +115,7 @@ async function runRule(
     timeoutMs: settings.agentWaitTimeoutMs,
     traceId: runOpts.traceId,
     jobId: runOpts.jobId,
+    ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
   });
 
   if (result.status === 'error') {
@@ -140,21 +141,28 @@ export async function resolveRunnerAndPrompt(
   rule: AgentRule,
   payload: Record<string, unknown>,
   agent: ResolvedAgent,
-): Promise<{ runner: AgentRunner; prompt: string }> {
+): Promise<{ runner: AgentRunner; prompt: string; systemPrompt: string }> {
   if (rule.runner?.type === 'shell') {
-    return { runner: new ShellRunner(rule.runner, agent.dir), prompt: '' };
+    return {
+      runner: new ShellRunner(rule.runner, agent.dir),
+      prompt: '',
+      systemPrompt: '',
+    };
   }
 
   let prompt: string;
+  let systemPrompt = '';
   if (rule.messageTemplate) {
     const templateContent = await readFile(join(agent.dir, rule.messageTemplate), 'utf-8');
-    prompt = await renderTemplate(templateContent, payload, agent.dir);
+    const rendered = await renderTemplate(templateContent, payload, agent.dir);
+    prompt = rendered.body;
+    systemPrompt = rendered.systemPrompt;
   } else {
     prompt = JSON.stringify(payload);
   }
 
   const runnerName = rule.runner?.type ?? 'claude-cli';
-  return { runner: getRunner(runnerName), prompt };
+  return { runner: getRunner(runnerName), prompt, systemPrompt };
 }
 
 export function createTaskWorker(agent: ResolvedAgent): Worker<string> | null {

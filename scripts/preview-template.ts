@@ -64,7 +64,12 @@ async function main(): Promise<void> {
 
   const baseDir = dirname(resolve(args.template));
   const rendered = await renderTemplate(templateContent, parsedPayload, baseDir);
-  process.stdout.write(rendered);
+  if (rendered.systemPrompt.length > 0) {
+    process.stdout.write('=== SYSTEM PROMPT (cacheable) ===\n');
+    process.stdout.write(rendered.systemPrompt);
+    process.stdout.write('\n\n=== USER PROMPT (per-event) ===\n');
+  }
+  process.stdout.write(rendered.body);
 }
 
 try {
