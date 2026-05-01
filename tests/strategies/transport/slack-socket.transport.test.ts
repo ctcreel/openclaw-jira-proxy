@@ -68,7 +68,7 @@ const baseProvider: SlackSocketProviderConfig = {
 
 function captureEvents(bus: EventBus): ClawndomEvent[] {
   const captured: ClawndomEvent[] = [];
-  bus.subscribe((e) => captured.push(e));
+  bus.subscribe((s) => captured.push(s.event));
   return captured;
 }
 

@@ -50,7 +50,7 @@ function catchAllAgent(providerName: string): ResolvedAgent {
 
 function captureEvents(bus: EventBus): ClawndomEvent[] {
   const out: ClawndomEvent[] = [];
-  bus.subscribe((e) => out.push(e));
+  bus.subscribe((s) => out.push(s.event));
   return out;
 }
 

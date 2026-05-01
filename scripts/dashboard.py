@@ -44,6 +44,7 @@ RECENT_SKIPPED_MAX = 50  # ring buffer for the `s` panel; server caps at 100
 SKIPPED_PANEL_VISIBLE = 20  # rows shown when `s` is pressed
 REPEAT_CONTEXT_WINDOW_SECONDS = 300  # 5-minute rolling window
 REPEAT_CONTEXT_THRESHOLD = 5  # ≥N hits on same contextId in window → spike
+STREAM_STALL_SECONDS = 60  # silent-SSE watchdog window — see staleness_watchdog
 
 # ANSI
 CLEAR = "\033[2J\033[H"
@@ -98,8 +99,21 @@ class State:
         self.repeat_context_window: dict[str, deque[float]] = {}
         # Toggled by the `s` keybind; render() swaps panels accordingly.
         self.show_skipped_panel: bool = False
-        # wall-clock of last SSE event received
+        # wall-clock of the last byte off the SSE wire — includes keepalives.
+        # Tells us TCP is healthy. Used only for the connection LED, NOT for
+        # staleness detection (a chatty keepalive can mask a frozen producer).
         self.last_event_at: float = 0.0
+        # wall-clock of the last REAL event frame (i.e. `id:` line landed and
+        # we dispatched it). Drives the staleness watchdog: when a job is
+        # active but no real events have arrived within STREAM_STALL_SECONDS,
+        # the dashboard re-bootstraps from /api/queue/snapshot rather than
+        # silently freezing while the SSE channel chugs along on keepalives.
+        # SPE-1976.
+        self.last_real_event_at: float = 0.0
+        # Highest event id we've successfully dispatched. Sent back as
+        # Last-Event-ID on every SSE reconnect so the server replays only
+        # what we missed. Updated synchronously from the SSE reader thread.
+        self.last_event_id: int = 0
         # Whether the SSE reader is connected
         self.sse_connected: bool = False
         self.sse_error: str = ""
@@ -471,14 +485,26 @@ def handle_event(event_type: str, payload: dict[str, Any]) -> None:
 
 # ── SSE reader ───────────────────────────────────────────────────────
 def stream_events(url: str, stop_event: threading.Event) -> None:
-    """Run the SSE reader in its own thread, auto-reconnecting on drop."""
+    """Run the SSE reader in its own thread, auto-reconnecting on drop.
+
+    On every (re)connect we forward `STATE.last_event_id` as `Last-Event-ID`
+    so the server replays only the events we missed. The first connect of a
+    process sends id=0, which the server treats as "everything in the buffer
+    after id=1" — combined with the `/api/queue/snapshot` bootstrap, that
+    closes the silent-restart hole. SPE-1976.
+    """
     backoff = 1.0
     while not stop_event.is_set():
         try:
+            with STATE.lock:
+                resume_from = STATE.last_event_id
+
             request = urllib_request.Request(
                 f"{url}/api/events",
                 headers={"Accept": "text/event-stream", "Cache-Control": "no-cache"},
             )
+            if resume_from > 0:
+                request.add_header("Last-Event-ID", str(resume_from))
             token = os.environ.get("CLAWNDOM_TOKEN")
             if token:
                 request.add_header("Authorization", f"Bearer {token}")
@@ -488,7 +514,7 @@ def stream_events(url: str, stop_event: threading.Event) -> None:
                     STATE.sse_connected = True
                     STATE.sse_error = ""
                 backoff = 1.0
-                parse_sse_stream(stream, stop_event)
+                parse_sse_stream(stream, stop_event, url)
 
         except (urllib_error.URLError, OSError) as exc:
             with STATE.lock:
@@ -505,7 +531,15 @@ def stream_events(url: str, stop_event: threading.Event) -> None:
         backoff = min(backoff * 2, 15.0)
 
 
-def _dispatch_sse_frame(event: str, data: list[str]) -> None:
+def _dispatch_sse_frame(
+    event: str, data: list[str], frame_id: int, url: str
+) -> None:
+    if event == "gap":
+        # The server told us our requested Last-Event-ID is older than its
+        # ring buffer, so the replay slice is incomplete. Re-bootstrap from
+        # the snapshot endpoint to recover authoritative state. SPE-1976.
+        bootstrap_from_snapshot(url)
+        return
     if not data:
         return
     payload_text = "\n".join(data)
@@ -514,12 +548,22 @@ def _dispatch_sse_frame(event: str, data: list[str]) -> None:
     except json.JSONDecodeError:
         payload = {}
     handle_event(event, payload)
+    with STATE.lock:
+        STATE.last_real_event_at = time.time()
+        if frame_id > STATE.last_event_id:
+            STATE.last_event_id = frame_id
 
 
-def parse_sse_stream(stream: Any, stop_event: threading.Event) -> None:
-    """Parse SSE framing: `event: foo\\ndata: {...}\\n\\n`."""
+def parse_sse_stream(stream: Any, stop_event: threading.Event, url: str) -> None:
+    """Parse SSE framing: `id: 42\\nevent: foo\\ndata: {...}\\n\\n`.
+
+    `id:` lines are tracked so that on reconnect we can send Last-Event-ID
+    and pick up exactly where we left off — that's what closes the
+    silent-drop window in SPE-1976.
+    """
     current_event = "message"
     current_data: list[str] = []
+    current_id = 0
 
     for raw in stream:
         if stop_event.is_set():
@@ -527,18 +571,25 @@ def parse_sse_stream(stream: Any, stop_event: threading.Event) -> None:
         line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
 
         if line == "":
-            _dispatch_sse_frame(current_event, current_data)
+            _dispatch_sse_frame(current_event, current_data, current_id, url)
             current_event = "message"
             current_data = []
+            current_id = 0
             continue
 
         if line.startswith(":"):
-            # Comment frame (keepalive). Still counts as a heartbeat.
+            # Comment frame (keepalive). Updates `last_event_at` (TCP is
+            # alive) but NOT `last_real_event_at` — see staleness_watchdog.
             with STATE.lock:
                 STATE.last_event_at = time.time()
             continue
 
-        if line.startswith("event:"):
+        if line.startswith("id:"):
+            try:
+                current_id = int(line[len("id:") :].strip())
+            except ValueError:
+                current_id = 0
+        elif line.startswith("event:"):
             current_event = line[len("event:") :].strip()
         elif line.startswith("data:"):
             current_data.append(line[len("data:") :].lstrip())
@@ -607,54 +658,116 @@ def bootstrap_skipped_webhooks(url: str) -> None:
                     STATE.duplicate_skipped_last_time = ts
 
 
-def bootstrap_active_jobs(url: str) -> None:
-    """Seed STATE.active from /api/jobs/active so jobs that started before
-    the dashboard connected are visible. Merges into existing state — SSE
-    events that already landed for a job take precedence."""
+def _seed_active_from_snapshot(jobs: list[dict[str, Any]], now: float) -> None:
+    for job in jobs:
+        job_id = job.get("jobId")
+        trace_id = job.get("traceId", "")
+        if not job_id or job_id in STATE.active:
+            continue
+        context = job.get("context") or {}
+        STATE.trace_context.setdefault(
+            trace_id,
+            {
+                "id": context.get("id", "?"),
+                "title": context.get("title", "?"),
+                "status": context.get("status", "?"),
+                "provider": job.get("provider", "?"),
+            },
+        )
+        STATE.job_trace[job_id] = trace_id
+        STATE.active[job_id] = {
+            "started_at": job.get("startedAt", 0),
+            "agent_id": job.get("agentId", "?"),
+            "template": job.get("template"),
+            "runner": job.get("runner", "?"),
+            "model": job.get("model"),
+            "provider": job.get("provider", "?"),
+            "phase": "starting",
+            "tool": "",
+            "latest": "",
+            "tool_history": deque(maxlen=TOOL_HISTORY_MAX),
+            "text_history": deque(maxlen=TEXT_HISTORY_MAX),
+            "last_event_at": now,
+            "turns": 0,
+            "cost": 0.0,
+        }
+
+
+def _seed_recent_from_snapshot(items: list[dict[str, Any]]) -> None:
+    # The server returns RecentCompletion[] newest-first. We appendleft into
+    # STATE.recent (also newest-first), so we have to iterate the snapshot in
+    # reverse to preserve order. Field names map server→dashboard:
+    # `outcome` → `kind`, `completedAt` → `time`, `agentId` → `agent_id`.
+    # Restarts don't restore `turns` / `cost` — those are live-only metrics
+    # from runner.result and are gone with the previous process. The
+    # renderer treats missing values as 0/$0.000.
+    for entry in reversed(items):
+        outcome = entry.get("outcome", "completed")
+        if outcome not in {"completed", "failed", "rejected"}:
+            continue
+        STATE.recent.appendleft(
+            {
+                "kind": outcome,
+                "time": entry.get("completedAt", 0),
+                "job_id": entry.get("jobId", ""),
+                "context": entry.get("context") or {},
+                "duration_ms": entry.get("durationMs", 0),
+                "turns": 0,
+                "cost": 0.0,
+                "agent_id": entry.get("agentId") or "?",
+                "error": (entry.get("error") or "")[:60],
+                "provider": entry.get("provider", "?"),
+                "reason": entry.get("reason", "?"),
+            }
+        )
+
+
+def bootstrap_from_snapshot(url: str) -> None:
+    """Hydrate STATE from /api/queue/snapshot. Merges into existing state —
+    SSE events that already landed take precedence over snapshot rows for
+    the same jobId. Captures `latestEventId` so the next SSE connect resumes
+    from the exact tip of the snapshot — no replay overlap, no missed
+    events. SPE-1976.
+    """
     try:
-        with urllib_request.urlopen(f"{url}/api/jobs/active", timeout=3) as response:
+        with urllib_request.urlopen(f"{url}/api/queue/snapshot", timeout=3) as response:
             body = json.loads(response.read().decode("utf-8"))
     except Exception:
         return
 
-    jobs = body.get("jobs", [])
-    if not isinstance(jobs, list):
+    if not isinstance(body, dict):
         return
+
+    active_jobs = body.get("active") or []
+    recent = body.get("recentlyCompleted") or []
+    latest_event_id = body.get("latestEventId", 0)
 
     now = time.time()
     with STATE.lock:
-        for job in jobs:
-            job_id = job.get("jobId")
-            trace_id = job.get("traceId", "")
-            if not job_id or job_id in STATE.active:
-                continue
-            context = job.get("context") or {}
-            STATE.trace_context.setdefault(
-                trace_id,
-                {
-                    "id": context.get("id", "?"),
-                    "title": context.get("title", "?"),
-                    "status": context.get("status", "?"),
-                    "provider": job.get("provider", "?"),
-                },
-            )
-            STATE.job_trace[job_id] = trace_id
-            STATE.active[job_id] = {
-                "started_at": job.get("startedAt", 0),
-                "agent_id": job.get("agentId", "?"),
-                "template": job.get("template"),
-                "runner": job.get("runner", "?"),
-                "model": job.get("model"),
-                "provider": job.get("provider", "?"),
-                "phase": "starting",
-                "tool": "",
-                "latest": "",
-                "tool_history": deque(maxlen=TOOL_HISTORY_MAX),
-                "text_history": deque(maxlen=TEXT_HISTORY_MAX),
-                "last_event_at": now,
-                "turns": 0,
-                "cost": 0.0,
-            }
+        if isinstance(active_jobs, list):
+            _seed_active_from_snapshot(active_jobs, now)
+        if isinstance(recent, list):
+            _seed_recent_from_snapshot(recent)
+        if isinstance(latest_event_id, int) and latest_event_id > STATE.last_event_id:
+            STATE.last_event_id = latest_event_id
+
+
+def staleness_watchdog(url: str) -> None:
+    """Trip a re-bootstrap when SSE has gone silent on a job that should be
+    chatty. Conditioned on `STATE.active` non-empty so we don't thrash the
+    snapshot endpoint when the system is genuinely idle. The window is
+    longer than the server's 15s keepalive, so normal quiet stretches
+    (e.g. between tool calls during a long agent turn) don't trigger it.
+    SPE-1976.
+    """
+    with STATE.lock:
+        if not STATE.active:
+            return
+        if STATE.last_real_event_at == 0:
+            return  # haven't seen any real event yet — nothing to compare
+        elapsed = time.time() - STATE.last_real_event_at
+    if elapsed >= STREAM_STALL_SECONDS:
+        bootstrap_from_snapshot(url)
 
 
 # ── Render ───────────────────────────────────────────────────────────
@@ -1040,7 +1153,7 @@ def main() -> None:
     if args.once:
         # One-shot: fetch health synchronously, render whatever state we have.
         refresh_health(url)
-        bootstrap_active_jobs(url)
+        bootstrap_from_snapshot(url)
         bootstrap_skipped_webhooks(url)
         sys.stdout.write(render(url))
         sys.stdout.flush()
@@ -1058,11 +1171,11 @@ def main() -> None:
     sse_thread.start()
 
     refresh_health(url)
-    # SSE is live-only — seed whatever the server currently sees as active
-    # so jobs that started before we connected don't render as "idle". SSE
-    # events that arrive after this point still win on jobs they touch
-    # because `bootstrap_active_jobs` only fills gaps.
-    bootstrap_active_jobs(url)
+    # Seed active + recent + latestEventId from the snapshot endpoint before
+    # the SSE reader even connects, so a dashboard restart never blanks the
+    # operator's view. The captured event id is what the SSE thread sends
+    # as Last-Event-ID on its first connect.
+    bootstrap_from_snapshot(url)
     bootstrap_skipped_webhooks(url)
     last_health = time.time()
 
@@ -1073,6 +1186,7 @@ def main() -> None:
             if time.time() - last_health > HEALTH_REFRESH_SECONDS:
                 refresh_health(url)
                 last_health = time.time()
+            staleness_watchdog(url)
             if keys_enabled:
                 key = _poll_key()
                 if key is not None:

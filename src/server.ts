@@ -5,6 +5,7 @@ import type { ProviderConfig, Settings } from './config';
 import type { Logger } from 'pino';
 import { getActiveJobsRegistry } from './services/active-jobs.service';
 import { getSkippedWebhooksRegistry } from './services/skipped-webhooks.service';
+import { getRecentCompletionsRegistry } from './services/recent-completions.service';
 import { loadAgents } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
@@ -184,6 +185,9 @@ async function startWorkers(
   // can fire before the first dashboard connects and we want
   // GET /api/webhooks/skipped/recent to reflect them.
   getSkippedWebhooksRegistry();
+  // Same rationale for recent completions: we want every terminal event to
+  // hit the registry, including ones that finish before any client connects.
+  getRecentCompletionsRegistry();
 
   const alertRegistry = buildAlertRegistry();
   for (const provider of providers) {
