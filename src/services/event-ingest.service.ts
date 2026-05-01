@@ -56,6 +56,9 @@ export async function ingestEvent(request: IngestRequest): Promise<IngestResult>
       traceId,
       provider: provider.name,
       reason: 'no-routing-match',
+      contextId: context.id,
+      contextStatus: context.status,
+      contextTitle: context.title,
     });
     return { outcome: 'no-routing-match' };
   }
@@ -80,6 +83,9 @@ export async function ingestEvent(request: IngestRequest): Promise<IngestResult>
         traceId,
         provider: provider.name,
         reason: 'duplicate',
+        contextId: context.id,
+        contextStatus: context.status,
+        contextTitle: context.title,
       });
       return { outcome: 'duplicate' };
     }
