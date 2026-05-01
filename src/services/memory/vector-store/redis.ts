@@ -118,9 +118,9 @@ class RedisVectorStore implements VectorStore {
       const metadataRaw = fields['metadata']?.toString('utf-8');
       if (vectorBuffer === undefined || text === undefined) continue;
 
-      const stored = bufferToFloat32Array(vectorBuffer);
+      const stored = convertBufferToFloat32Array(vectorBuffer);
       if (stored.length !== queryVector.length) continue;
-      const score = cosineSimilarity(stored, queryVector);
+      const score = computeCosineSimilarity(stored, queryVector);
       if (score < minSimilarity) continue;
 
       const idValue = ids[index];
@@ -231,7 +231,7 @@ function buildIndexKey(namespace: string): string {
   return `memory-index:${namespace}`;
 }
 
-function bufferToFloat32Array(buffer: Buffer): Float32Array {
+function convertBufferToFloat32Array(buffer: Buffer): Float32Array {
   // ioredis Buffers come from a shared pool and have arbitrary byteOffsets
   // that aren't guaranteed to be 4-byte aligned. Constructing a Float32Array
   // view directly over the pooled ArrayBuffer throws on misaligned offsets.
@@ -241,7 +241,7 @@ function bufferToFloat32Array(buffer: Buffer): Float32Array {
   return new Float32Array(aligned);
 }
 
-function cosineSimilarity(a: Float32Array, b: readonly number[]): number {
+function computeCosineSimilarity(a: Float32Array, b: readonly number[]): number {
   if (a.length !== b.length) return 0;
   let dot = 0;
   let aMag = 0;

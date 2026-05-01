@@ -33,7 +33,7 @@ class InMemoryVectorStore implements VectorStore {
     const ranked: Array<{ entry: MemoryEntry; score: number }> = [];
     for (const entry of this.entries.values()) {
       if (entry.namespace !== namespace) continue;
-      const score = cosineSimilarity(entry.vector, queryVector);
+      const score = computeCosineSimilarity(entry.vector, queryVector);
       if (score < minSimilarity) continue;
       ranked.push({ entry, score });
     }
@@ -98,7 +98,7 @@ class InMemoryVectorStore implements VectorStore {
   }
 }
 
-function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+function computeCosineSimilarity(a: readonly number[], b: readonly number[]): number {
   if (a.length !== b.length) {
     throw new Error(`Cosine similarity dimension mismatch: ${a.length} vs ${b.length}`);
   }

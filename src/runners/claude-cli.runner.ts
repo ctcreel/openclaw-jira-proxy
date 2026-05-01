@@ -214,7 +214,7 @@ export class ClaudeCliRunner implements AgentRunner {
     try {
       const events = await Promise.race([
         handle.runTurn(turnPayload),
-        rejectAfter(options.timeoutMs),
+        createTimeoutRejection(options.timeoutMs),
       ]);
       emitTurnEventsToBus(events, runId, options.traceId, options.jobId);
       const usage = extractTurnUsage(events);
@@ -252,7 +252,7 @@ export class ClaudeCliRunner implements AgentRunner {
 
 const TIMEOUT_SENTINEL = '__session_turn_timeout__';
 
-function rejectAfter(ms: number): Promise<never> {
+function createTimeoutRejection(ms: number): Promise<never> {
   return new Promise((_resolve, reject) => {
     setTimeout(() => reject(new Error(TIMEOUT_SENTINEL)), ms);
   });

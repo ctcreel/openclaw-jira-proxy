@@ -52,7 +52,7 @@ function authenticate(request: Request): boolean {
  * API keys) — error messages are scrubbed by the service before throwing,
  * but this is the second line of defense.
  */
-function statusFor(error: unknown): number {
+function getStatusFor(error: unknown): number {
   if (error instanceof UnknownNamespaceError) return 400;
   if (error instanceof ProviderNotRegisteredError) return 500;
   if (error instanceof RateLimitExceededError) return 429;
@@ -74,7 +74,7 @@ export async function postMemoryStore(request: Request, response: Response): Pro
     const result = await service.store(parsed.data);
     response.status(200).json(result);
   } catch (error) {
-    const status = statusFor(error);
+    const status = getStatusFor(error);
     const message = error instanceof Error ? error.message : 'Memory store failed';
     if (status >= 500) {
       logger.error({ error: message }, 'Memory store failed');
@@ -98,7 +98,7 @@ export async function postMemorySearch(request: Request, response: Response): Pr
     const result = await service.search(parsed.data);
     response.status(200).json(result);
   } catch (error) {
-    const status = statusFor(error);
+    const status = getStatusFor(error);
     const message = error instanceof Error ? error.message : 'Memory search failed';
     if (status >= 500) {
       logger.error({ error: message }, 'Memory search failed');
@@ -127,7 +127,7 @@ export async function deleteMemoryEntry(request: Request, response: Response): P
     const result = await service.delete({ namespace: parsed.data.namespace, id: idParam });
     response.status(200).json(result);
   } catch (error) {
-    const status = statusFor(error);
+    const status = getStatusFor(error);
     const message = error instanceof Error ? error.message : 'Memory delete failed';
     if (status >= 500) {
       logger.error({ error: message }, 'Memory delete failed');
