@@ -293,7 +293,7 @@ function extractTurnUsage(events: readonly StreamEvent[]): Record<string, number
   const cacheReadTokens = numberOf('cache_read_input_tokens');
   const cacheCreationTokens = numberOf('cache_creation_input_tokens');
   const outputTokens = numberOf('output_tokens');
-  const numTurns = typeof raw['num_turns'] === 'number' ? (raw['num_turns'] as number) : 0;
+  const turnCount = typeof raw['num_turns'] === 'number' ? (raw['num_turns'] as number) : 0;
   const costUsd = typeof raw['total_cost_usd'] === 'number' ? (raw['total_cost_usd'] as number) : 0;
   return {
     inputTokens,
@@ -301,7 +301,7 @@ function extractTurnUsage(events: readonly StreamEvent[]): Record<string, number
     cacheCreationTokens,
     outputTokens,
     contextTokens: inputTokens + cacheReadTokens + cacheCreationTokens,
-    numTurns,
+    numTurns: turnCount,
     costUsd,
   };
 }

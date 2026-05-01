@@ -117,14 +117,14 @@ export async function deleteMemoryEntry(request: Request, response: Response): P
     response.status(400).json({ error: 'Invalid request', details: parsed.error.issues });
     return;
   }
-  const idParam = request.params['id'];
-  if (typeof idParam !== 'string' || idParam.length === 0) {
+  const idParameter = request.params['id'];
+  if (typeof idParameter !== 'string' || idParameter.length === 0) {
     response.status(400).json({ error: 'Missing :id path parameter' });
     return;
   }
   try {
     const service = getMemoryService();
-    const result = await service.delete({ namespace: parsed.data.namespace, id: idParam });
+    const result = await service.delete({ namespace: parsed.data.namespace, id: idParameter });
     response.status(200).json(result);
   } catch (error) {
     const status = getStatusFor(error);
