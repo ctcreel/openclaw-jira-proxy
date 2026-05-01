@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getEmbeddingProvider,
   listEmbeddingProviders,
+  registerEmbeddingProvider,
   registerEmbeddingProviderForTest,
   type EmbeddingProvider,
 } from '../../../../src/services/memory/embedding';
@@ -36,6 +37,25 @@ describe('embedding provider registry', () => {
     expect(getEmbeddingProvider('test-only-fake')).toBe(fake);
     teardown();
     expect(getEmbeddingProvider('test-only-fake')).toBeUndefined();
+  });
+
+  it('runtime registerEmbeddingProvider adds the provider to the registry', () => {
+    const provider: EmbeddingProvider = {
+      name: 'runtime-registry-test',
+      dimensions: 2,
+      async embed() {
+        return [0, 0];
+      },
+      async embedBatch(texts) {
+        return texts.map(() => [0, 0]);
+      },
+    };
+    expect(getEmbeddingProvider('runtime-registry-test')).toBeUndefined();
+    registerEmbeddingProvider(provider);
+    expect(getEmbeddingProvider('runtime-registry-test')).toBe(provider);
+    // listEmbeddingProviders() returns the static KNOWN_PROVIDER_NAMES set
+    // (the validation source of truth), not the runtime registry — by design
+    // so config validation can run before bootstrap registration.
   });
 
   it('test-only registration overrides an existing provider and teardown restores it', () => {

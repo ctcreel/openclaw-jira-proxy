@@ -93,4 +93,15 @@ describe('OpenAIEmbeddingProvider', () => {
 
     await expect(provider.embedBatch(['a', 'b', 'c'])).rejects.toThrow(/1 vectors for 3 inputs/);
   });
+
+  it('embed throws when the batch returns no vectors at all', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    const provider = createOpenAIEmbeddingProvider({ apiKey: 'k', fetchImpl: fetchMock });
+
+    await expect(provider.embed('hello')).rejects.toThrow(
+      /returned no vector for a single input|0 vectors for 1 inputs/,
+    );
+  });
 });
