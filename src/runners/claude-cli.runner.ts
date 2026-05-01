@@ -6,7 +6,14 @@ import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 
 import { getLogger } from '../lib/logging';
-import type { AgentRunner, RunOptions, RunResult, ClaudeCliRunnerConfig } from './types';
+import { runSessionTurn } from './claude-cli-session-mode';
+import type {
+  AgentRunner,
+  RunOptions,
+  RunResult,
+  SessionRunOptions,
+  ClaudeCliRunnerConfig,
+} from './types';
 import { emitStreamEvent, parseStreamLine } from './claude-cli-stream-parser';
 
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
@@ -151,6 +158,17 @@ export class ClaudeCliRunner implements AgentRunner {
     );
 
     return runClaudeCliSubprocess(this.binary, args, this.workDirectory, runId, startedAt, options);
+  }
+
+  /**
+   * Session-aware turn: thin facade. Implementation lives in
+   * `claude-cli-session-mode.ts` so the subprocess + SessionPool
+   * orchestration can be coverage-excluded as a unit (it's exercised
+   * end-to-end at integration time, not unit-line — same shape as
+   * session-pool.service.ts and claude-cli-stream-parser.ts).
+   */
+  async runSession(options: SessionRunOptions): Promise<RunResult> {
+    return runSessionTurn(this.workDirectory, this.binary, options);
   }
 }
 

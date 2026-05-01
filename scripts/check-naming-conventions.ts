@@ -41,6 +41,7 @@ const CORE_VERBS = new Set([
   "resolve", "interpret", "preprocess", "invoke", "install", "schedule",
   "sign", "requeue", "wait", "map", "group", "replace", "collect",
   "enqueue", "dequeue", "hash", "try", "clamp", "list", "compare",
+  "bootstrap", "dispatch", "wrap", "reject", "post", "put", "patch",
   // Boolean prefixes
   "is", "has", "can", "should", "will", "was", "are", "have",
 ]);
