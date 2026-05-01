@@ -82,13 +82,18 @@ function makeFakeRedis(): {
   return { store, get, set, del };
 }
 
-function makeFakeEventBus(): EventBus & { events: unknown[] } {
-  const events: unknown[] = [];
+interface FakeEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+function makeFakeEventBus(): EventBus & { events: FakeEvent[] } {
+  const events: FakeEvent[] = [];
   return {
     events,
-    publish: vi.fn((event: unknown) => events.push(event)),
+    publish: vi.fn((event: FakeEvent) => events.push(event)),
     subscribe: vi.fn(() => () => {}),
-  } as unknown as EventBus & { events: unknown[] };
+  } as unknown as EventBus & { events: FakeEvent[] };
 }
 
 const baseProvider = {
@@ -106,7 +111,7 @@ const baseSessionConfig: SessionConfig = {
 
 const baseStrategy = {
   name: 'slack',
-  extract: () => 'D123',
+  extract: (): string | null => 'D123',
 };
 
 const baseRequest = {
@@ -157,7 +162,7 @@ describe('SessionPool', () => {
       7 * 24 * 60 * 60,
     );
     const spawnedEvent = bus.events.find(
-      (e: any) => (e as { type: string }).type === 'session.spawned',
+      (e) => e.type === 'session.spawned',
     );
     expect(spawnedEvent).toMatchObject({
       type: 'session.spawned',
@@ -218,7 +223,7 @@ describe('SessionPool', () => {
     expect(spawnArgs).toContain('session-prior-1');
 
     const resumedEvent = bus.events.find(
-      (e: any) => (e as { type: string }).type === 'session.resumed',
+      (e) => e.type === 'session.resumed',
     );
     expect(resumedEvent).toMatchObject({
       type: 'session.resumed',
@@ -253,7 +258,7 @@ describe('SessionPool', () => {
     await handle.runTurn('hello');
 
     expect(handle.sessionId).toBe('session-actually-fresh');
-    const staleEvent = bus.events.find((e: any) => (e as { type: string }).type === 'session.stale');
+    const staleEvent = bus.events.find((e) => e.type === 'session.stale');
     expect(staleEvent).toMatchObject({
       type: 'session.stale',
       provider: 'slack-winston',
@@ -364,7 +369,7 @@ describe('SessionPool', () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await vi.advanceTimersByTimeAsync(2_000); // give graceful-close timer time to elapse
 
-    const reaped = bus.events.find((e: any) => (e as { type: string }).type === 'session.reaped');
+    const reaped = bus.events.find((e) => e.type === 'session.reaped');
     expect(reaped).toMatchObject({
       type: 'session.reaped',
       provider: 'slack-winston',
