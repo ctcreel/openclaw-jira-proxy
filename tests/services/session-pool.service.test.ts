@@ -57,8 +57,7 @@ function emitInit(proc: MockProcess, sessionId: string): void {
 
 function emitResult(proc: MockProcess, summary = 'ok'): void {
   proc.stdout.write(
-    JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: summary }) +
-      '\n',
+    JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: summary }) + '\n',
   );
 }
 
@@ -161,9 +160,7 @@ describe('SessionPool', () => {
       'EX',
       7 * 24 * 60 * 60,
     );
-    const spawnedEvent = bus.events.find(
-      (e) => e.type === 'session.spawned',
-    );
+    const spawnedEvent = bus.events.find((e) => e.type === 'session.spawned');
     expect(spawnedEvent).toMatchObject({
       type: 'session.spawned',
       provider: 'slack-winston',
@@ -222,9 +219,7 @@ describe('SessionPool', () => {
     expect(spawnArgs).toContain('--resume');
     expect(spawnArgs).toContain('session-prior-1');
 
-    const resumedEvent = bus.events.find(
-      (e) => e.type === 'session.resumed',
-    );
+    const resumedEvent = bus.events.find((e) => e.type === 'session.resumed');
     expect(resumedEvent).toMatchObject({
       type: 'session.resumed',
       provider: 'slack-winston',

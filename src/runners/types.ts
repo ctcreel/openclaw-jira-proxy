@@ -28,6 +28,20 @@ export interface RunOptions {
    * Runners that don't spawn subprocesses may ignore this field.
    */
   env?: Record<string, string>;
+  /**
+   * Per-run system prompt content extracted from the rendered template via
+   * `{{system-doc:…}}` / `{{system-shared:…}}` tags. When present, runners
+   * that support a separate system slot (e.g. `claude-cli` via
+   * `--system-prompt`) MUST forward this content there rather than inlining
+   * it in the user prompt. Anthropic prompt caching engages on the system
+   * block when it's stable across runs, so isolating cache-eligible content
+   * here is the only way per-event-spawn runs benefit from caching.
+   *
+   * If the runner config also defines a static `systemPrompt`, the two MUST
+   * be concatenated (config first, then per-run) so both are part of the
+   * cached prefix.
+   */
+  systemPrompt?: string;
 }
 
 /**

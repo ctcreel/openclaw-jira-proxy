@@ -37,8 +37,13 @@ function buildCliArgs(options: RunOptions, systemPrompt: string | undefined): st
   if (options.model) {
     args.push('--model', options.model);
   }
-  if (systemPrompt) {
-    args.push('--system-prompt', systemPrompt);
+  // Combine config-level system prompt (e.g. "You are Patch.") with the
+  // per-run system prompt extracted from the template's `{{system-…}}` tags.
+  // Both halves are stable across runs of the same template, so the combined
+  // text becomes a single cacheable prefix on Anthropic's prompt cache.
+  const combinedSystem = [systemPrompt, options.systemPrompt].filter(Boolean).join('\n\n');
+  if (combinedSystem.length > 0) {
+    args.push('--system-prompt', combinedSystem);
   }
   return args;
 }
