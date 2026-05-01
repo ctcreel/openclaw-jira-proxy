@@ -43,30 +43,19 @@ describe('SSE /api/events', () => {
   });
 
   it('streams published events as text/event-stream frames with id lines', async () => {
-    const controller = new AbortController();
-    const received: string[] = [];
-
-    const readPromise = fetch(`${baseUrl}/api/events`, { signal: controller.signal }).then(
-      async (response) => {
+    const sse = openSse(`${baseUrl}/api/events`, {
+      onResponse: (response) => {
         expect(response.headers.get('content-type')).toContain('text/event-stream');
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        while (received.join('').split('\n\n').length <= 2) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          received.push(decoder.decode(chunk.value));
-        }
       },
-    );
+    });
 
     await waitForListener();
     getEventBus().publish(startedEvent);
 
-    await waitUntil(() => received.join('').includes('"job.started"'));
-    controller.abort();
-    await readPromise.catch(() => {});
+    await waitUntil(() => sse.joined().includes('"job.started"'));
+    await sse.finish();
 
-    const joined = received.join('');
+    const joined = sse.joined();
     expect(joined).toContain('id: 1');
     expect(joined).toContain('event: job.started');
     expect(joined).toContain('"jobId":"job-1"');
@@ -78,27 +67,14 @@ describe('SSE /api/events', () => {
     getEventBus().publish(startedEvent);
     getEventBus().publish({ ...startedEvent, jobId: 'job-2' });
 
-    const controller = new AbortController();
-    const received: string[] = [];
-
-    const readPromise = fetch(`${baseUrl}/api/events`, {
-      signal: controller.signal,
+    const sse = openSse(`${baseUrl}/api/events`, {
       headers: { 'Last-Event-ID': '1' },
-    }).then(async (response) => {
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      while (received.join('').split('\n\n').length <= 2) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        received.push(decoder.decode(chunk.value));
-      }
     });
 
-    await waitUntil(() => received.join('').includes('"jobId":"job-2"'), 3000);
-    controller.abort();
-    await readPromise.catch(() => {});
+    await waitUntil(() => sse.joined().includes('"jobId":"job-2"'), 3000);
+    await sse.finish();
 
-    const joined = received.join('');
+    const joined = sse.joined();
     expect(joined).toContain('"jobId":"job-2"');
     expect(joined).toContain('id: 2');
     // Event id=1 should NOT be replayed because Last-Event-ID asked for >1.
@@ -109,26 +85,12 @@ describe('SSE /api/events', () => {
     getEventBus().publish(startedEvent);
     getEventBus().publish({ ...startedEvent, jobId: 'job-2' });
 
-    const controller = new AbortController();
-    const received: string[] = [];
+    const sse = openSse(`${baseUrl}/api/events?since=1`);
 
-    const readPromise = fetch(`${baseUrl}/api/events?since=1`, { signal: controller.signal }).then(
-      async (response) => {
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        while (received.join('').split('\n\n').length <= 2) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          received.push(decoder.decode(chunk.value));
-        }
-      },
-    );
+    await waitUntil(() => sse.joined().includes('"jobId":"job-2"'), 3000);
+    await sse.finish();
 
-    await waitUntil(() => received.join('').includes('"jobId":"job-2"'), 3000);
-    controller.abort();
-    await readPromise.catch(() => {});
-
-    const joined = received.join('');
+    const joined = sse.joined();
     expect(joined).toContain('"jobId":"job-2"');
     expect(joined).not.toContain('"jobId":"job-1"');
   });
@@ -138,27 +100,14 @@ describe('SSE /api/events', () => {
     getEventBus().publish({ ...startedEvent, jobId: 'job-2' });
     getEventBus().publish({ ...startedEvent, jobId: 'job-3' });
 
-    const controller = new AbortController();
-    const received: string[] = [];
-
-    const readPromise = fetch(`${baseUrl}/api/events?since=1`, {
-      signal: controller.signal,
+    const sse = openSse(`${baseUrl}/api/events?since=1`, {
       headers: { 'Last-Event-ID': '2' },
-    }).then(async (response) => {
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      while (received.join('').split('\n\n').length <= 2) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        received.push(decoder.decode(chunk.value));
-      }
     });
 
-    await waitUntil(() => received.join('').includes('"jobId":"job-3"'), 3000);
-    controller.abort();
-    await readPromise.catch(() => {});
+    await waitUntil(() => sse.joined().includes('"jobId":"job-3"'), 3000);
+    await sse.finish();
 
-    const joined = received.join('');
+    const joined = sse.joined();
     // Header said "since=2", so only id=3 should appear, not id=2.
     expect(joined).toContain('"jobId":"job-3"');
     expect(joined).not.toContain('"jobId":"job-2"');
@@ -174,27 +123,14 @@ describe('SSE /api/events', () => {
       bus.publish(startedEvent); // id=3 — pushes id=1 out
       bus.publish(startedEvent); // id=4 — pushes id=2 out, buffer now [3,4]
 
-      const controller = new AbortController();
-      const received: string[] = [];
-
-      const readPromise = fetch(`${baseUrl}/api/events`, {
-        signal: controller.signal,
+      const sse = openSse(`${baseUrl}/api/events`, {
         headers: { 'Last-Event-ID': '1' },
-      }).then(async (response) => {
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        while (received.join('').split('\n\n').length <= 3) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          received.push(decoder.decode(chunk.value));
-        }
       });
 
-      await waitUntil(() => received.join('').includes('event: gap'), 3000);
-      controller.abort();
-      await readPromise.catch(() => {});
+      await waitUntil(() => sse.joined().includes('event: gap'), 3000);
+      await sse.finish();
 
-      const joined = received.join('');
+      const joined = sse.joined();
       expect(joined).toContain('event: gap');
       expect(joined).toContain('"reason":"buffer-overflow"');
     } finally {
@@ -210,36 +146,64 @@ describe('SSE /api/events', () => {
     // replay slice.
     getEventBus().publish(startedEvent);
 
-    const controller = new AbortController();
-    const received: string[] = [];
-
-    const readPromise = fetch(`${baseUrl}/api/events`, { signal: controller.signal }).then(
-      async (response) => {
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        while (received.join('').split('\n\n').length <= 3) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          received.push(decoder.decode(chunk.value));
-        }
-      },
-    );
+    const sse = openSse(`${baseUrl}/api/events`);
 
     await waitForListener();
     // Concurrent live publish — subscribeSince attached the handler synchronously
     // before this publish, so it must be delivered exactly once with id=2.
     getEventBus().publish({ ...startedEvent, jobId: 'job-2' });
 
-    await waitUntil(() => received.join('').includes('"jobId":"job-2"'), 3000);
-    controller.abort();
-    await readPromise.catch(() => {});
+    await waitUntil(() => sse.joined().includes('"jobId":"job-2"'), 3000);
+    await sse.finish();
 
-    const joined = received.join('');
+    const joined = sse.joined();
     const matches = joined.match(/"jobId":"job-2"/g) ?? [];
     expect(matches.length).toBe(1);
     expect(joined).toContain('id: 2');
   });
 });
+
+interface SseHarness {
+  joined(): string;
+  finish(): Promise<void>;
+}
+
+interface OpenSseOptions {
+  headers?: Record<string, string>;
+  onResponse?: (response: Response) => void;
+}
+
+// Connects to an SSE endpoint and accumulates frames until finish() is called.
+// Centralizes the AbortController + reader-loop scaffolding so individual tests
+// only express what's specific to them (URL, headers, assertions).
+function openSse(url: string, options: OpenSseOptions = {}): SseHarness {
+  const controller = new AbortController();
+  const received: string[] = [];
+
+  const readPromise = fetch(url, {
+    signal: controller.signal,
+    ...(options.headers ? { headers: options.headers } : {}),
+  }).then(async (response) => {
+    options.onResponse?.(response);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    // Read until the test calls finish() — the AbortController interrupts
+    // the in-flight read() and the loop breaks.
+    while (!controller.signal.aborted) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      received.push(decoder.decode(chunk.value));
+    }
+  });
+
+  return {
+    joined: () => received.join(''),
+    finish: async (): Promise<void> => {
+      controller.abort();
+      await readPromise.catch(() => {});
+    },
+  };
+}
 
 async function waitForListener(): Promise<void> {
   await waitUntil(() => getEventBus().listenerCount() > 0);
