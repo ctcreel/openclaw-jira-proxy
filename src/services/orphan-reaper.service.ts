@@ -241,7 +241,8 @@ export class OrphanReaper {
   }
 
   private subscribeAlerts(alertRegistry: AlertRegistry): () => void {
-    return getEventBus().subscribe((event) => {
+    return getEventBus().subscribe((stamped) => {
+      const event = stamped.event;
       if (event.type !== 'job.orphaned') return;
       const alert: JobAlert = {
         jobId: event.jobId,

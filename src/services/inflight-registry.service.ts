@@ -62,7 +62,8 @@ export class InflightRegistry {
     if (this.unsubscribe !== null) {
       return;
     }
-    this.unsubscribe = getEventBus().subscribe((event) => {
+    this.unsubscribe = getEventBus().subscribe((stamped) => {
+      const event = stamped.event;
       this.handleEvent(event).catch((err) => {
         logger.error(
           {

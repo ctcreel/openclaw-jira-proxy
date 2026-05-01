@@ -186,7 +186,7 @@ describe('OrphanReaper.reapOnce', () => {
     });
     setBullmqState('completed');
     const events: ClawndomEvent[] = [];
-    getEventBus().subscribe((e) => events.push(e));
+    getEventBus().subscribe((s) => events.push(s.event));
     const reaper = new OrphanReaper(fake.redis, THRESHOLD_MS, INTERVAL_MS);
 
     const result = await reaper.reapOnce(NOW);
@@ -240,7 +240,7 @@ describe('OrphanReaper.reapOnce', () => {
     const fake = createFakeRedis({ [key]: buildHash({ traceId: 'trace-active' }) });
     setBullmqState('active');
     const events: ClawndomEvent[] = [];
-    getEventBus().subscribe((e) => events.push(e));
+    getEventBus().subscribe((s) => events.push(s.event));
     const reaper = new OrphanReaper(fake.redis, THRESHOLD_MS, INTERVAL_MS);
 
     const result = await reaper.reapOnce(NOW);
@@ -297,7 +297,7 @@ describe('OrphanReaper.reapOnce', () => {
     const fake = createFakeRedis({ [key]: buildHash({ traceId: 'trace-no-context' }) });
     setBullmqState('completed');
     const events: ClawndomEvent[] = [];
-    getEventBus().subscribe((e) => events.push(e));
+    getEventBus().subscribe((s) => events.push(s.event));
     const reaper = new OrphanReaper(fake.redis, THRESHOLD_MS, INTERVAL_MS);
 
     await reaper.reapOnce(NOW);
@@ -406,7 +406,7 @@ describe('OrphanReaper alert dispatch', () => {
     // Just assert reapOnce does not throw and the event flows. The absence
     // of a registry is the regression we care about — no listener wiring.
     const events: ClawndomEvent[] = [];
-    getEventBus().subscribe((e) => events.push(e));
+    getEventBus().subscribe((s) => events.push(s.event));
     await reaper.reapOnce(NOW);
 
     expect(events.filter((e) => e.type === 'job.orphaned')).toHaveLength(1);

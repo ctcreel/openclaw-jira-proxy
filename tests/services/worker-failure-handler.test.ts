@@ -191,7 +191,7 @@ describe('buildFailedHandler', () => {
   it('publishes job.failed with final=true on the last attempt', async () => {
     dedupRedisMock.hgetall.mockResolvedValue({});
     const events: ClawndomEvent[] = [];
-    getEventBus().subscribe((e) => events.push(e));
+    getEventBus().subscribe((s) => events.push(s.event));
     const { queue } = createMockQueue();
     const handler = buildFailedHandler(buildProvider(), queue, undefined, 2);
 
@@ -223,7 +223,7 @@ describe('buildFailedHandler', () => {
     const registry = new AlertRegistry([recording]);
     const { queue, calls } = createMockQueue();
     const events: ClawndomEvent[] = [];
-    getEventBus().subscribe((e) => events.push(e));
+    getEventBus().subscribe((s) => events.push(s.event));
     const handler = buildFailedHandler(buildProvider(), queue, registry, 3);
 
     const job = buildJob('bullmq-1', { payload: 'p', attempt: 1, originalJobId: 'trace-1' });
@@ -282,7 +282,7 @@ describe('buildFailedHandler', () => {
   it('uses job.id as the traceId when the envelope has no originalJobId', async () => {
     dedupRedisMock.hgetall.mockResolvedValue({});
     const events: ClawndomEvent[] = [];
-    getEventBus().subscribe((e) => events.push(e));
+    getEventBus().subscribe((s) => events.push(s.event));
     const { queue } = createMockQueue();
     const handler = buildFailedHandler(buildProvider(), queue, undefined, 1);
 
