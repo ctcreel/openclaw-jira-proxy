@@ -21,15 +21,28 @@ export class DiscordAlertProvider implements AlertProvider {
   }
 
   async send(alert: JobAlert): Promise<void> {
-    const content = [
-      `🚨 **Webhook job failed** — \`${alert.provider}\``,
-      `- Job: \`${alert.jobId}\``,
-      `- Agent: \`${alert.agentId}\``,
-      `- Session: \`${alert.sessionKey}\``,
-      `- Attempts: ${alert.attempts}/${alert.maxAttempts}`,
-      `- Error: \`${alert.error}\``,
-      `- Time: ${alert.failedAt.toISOString()}`,
-    ].join('\n');
+    const lines: string[] = [];
+    if (alert.contextId) {
+      const status = alert.contextStatus ? ` (${alert.contextStatus})` : '';
+      lines.push(`📌 **${alert.contextId}**${status}`);
+      if (alert.contextTitle) {
+        lines.push(`> ${alert.contextTitle}`);
+      }
+    }
+    lines.push(
+      alert.kind === 'orphaned'
+        ? `🚨 **Orphaned webhook job** — \`${alert.provider}\``
+        : `🚨 **Webhook job failed** — \`${alert.provider}\``,
+    );
+    lines.push(`- Job: \`${alert.jobId}\``);
+    lines.push(`- Agent: \`${alert.agentId}\``);
+    lines.push(`- Session: \`${alert.sessionKey}\``);
+    if (alert.kind !== 'orphaned') {
+      lines.push(`- Attempts: ${alert.attempts}/${alert.maxAttempts}`);
+    }
+    lines.push(`- Error: \`${alert.error}\``);
+    lines.push(`- Time: ${alert.failedAt.toISOString()}`);
+    const content = lines.join('\n');
 
     try {
       const response = await fetch(this.config.webhookUrl, {

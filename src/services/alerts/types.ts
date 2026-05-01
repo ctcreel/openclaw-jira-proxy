@@ -21,6 +21,14 @@ export interface JobAlert {
   readonly provider: string;
   /** When the final failure occurred. */
   readonly failedAt: Date;
+  /** Inbound context identifier (e.g. Jira issue key) when known. */
+  readonly contextId?: string;
+  /** Inbound context title when known. */
+  readonly contextTitle?: string;
+  /** Inbound context status at the time the job was started. */
+  readonly contextStatus?: string;
+  /** Discriminator: 'final-failure' for retry-exhaustion, 'orphaned' for reaper-detected. */
+  readonly kind?: 'final-failure' | 'orphaned';
 }
 
 export interface AlertProvider {

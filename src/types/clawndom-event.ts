@@ -146,6 +146,23 @@ export interface RunnerErrorEvent {
   stderrTail: string;
 }
 
+export type JobOrphanedReason = 'no-terminal-event' | 'queue-state-mismatch';
+
+export interface JobOrphanedEvent {
+  type: 'job.orphaned';
+  timestamp: number;
+  traceId: string;
+  jobId: string;
+  provider: string;
+  agentId: string;
+  contextId?: string;
+  contextTitle?: string;
+  contextStatus?: string;
+  lastEventAt: number;
+  lastEventType: string;
+  reason: JobOrphanedReason;
+}
+
 export interface SocketConnectedEvent {
   type: 'socket.connected';
   timestamp: number;
@@ -186,6 +203,7 @@ export type ClawndomEvent =
   | JobStartedEvent
   | JobCompletedEvent
   | JobFailedEvent
+  | JobOrphanedEvent
   | RunnerAssistantTextEvent
   | RunnerToolCallEvent
   | RunnerResultEvent

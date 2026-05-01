@@ -62,4 +62,38 @@ describe('DiscordAlertProvider', () => {
 
     await expect(provider.send(makeAlert())).resolves.toBeUndefined();
   });
+
+  it('prepends a context line when contextId is set', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const provider = new DiscordAlertProvider({
+      webhookUrl: 'https://discord.com/api/webhooks/test',
+    });
+
+    await provider.send(
+      makeAlert({
+        contextId: 'SPE-1977',
+        contextTitle: 'Orphan detection',
+        contextStatus: 'In Development',
+      }),
+    );
+
+    const body = JSON.parse((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.content).toContain('**SPE-1977**');
+    expect(body.content).toContain('(In Development)');
+    expect(body.content).toContain('Orphan detection');
+  });
+
+  it('renders an orphan-specific headline and suppresses Attempts when kind=orphaned', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const provider = new DiscordAlertProvider({
+      webhookUrl: 'https://discord.com/api/webhooks/test',
+    });
+
+    await provider.send(makeAlert({ kind: 'orphaned', attempts: 0, maxAttempts: 0 }));
+
+    const body = JSON.parse((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.content).toContain('Orphaned webhook job');
+    expect(body.content).not.toContain('Webhook job failed');
+    expect(body.content).not.toContain('Attempts:');
+  });
 });
