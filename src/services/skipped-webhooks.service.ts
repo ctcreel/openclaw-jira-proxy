@@ -51,7 +51,7 @@ export class SkippedWebhooksRegistry {
     if (this.unsubscribe !== null) {
       return;
     }
-    this.unsubscribe = getEventBus().subscribe((event) => this.handleEvent(event));
+    this.unsubscribe = getEventBus().subscribe((stamped) => this.handleEvent(stamped.event));
   }
 
   stop(): void {
