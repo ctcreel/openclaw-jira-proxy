@@ -147,6 +147,18 @@ const settingsSchema = z.object({
   jobBackoffDelayMs: z.coerce.number().min(0).default(5_000),
   /** Webhook dedup window: same provider+contextId+contextStatus inside this window is dropped. */
   dedupTtlSeconds: z.coerce.number().min(1).default(60),
+  /**
+   * Inflight runs whose `lastEventAt` is older than this threshold are treated
+   * as orphans by the reaper. Floor of 30 minutes; minimum sensible value is
+   * `agentWaitTimeoutMs + 60_000` so a long-running-but-still-alive run is
+   * never flagged. Defaulted dynamically in {@link getSettings}.
+   */
+  orphanThresholdMs: z.coerce
+    .number()
+    .min(60_000)
+    .default(30 * 60_000),
+  /** How often the orphan reaper sweeps the inflight registry. Cron is per-minute when set to 60_000. */
+  orphanReaperIntervalMs: z.coerce.number().min(10_000).default(60_000),
   sessionsFilePath: z.string().default(''),
   providers: z
     .array(providerSchema)
@@ -175,6 +187,24 @@ function parseJsonEnv(envVar: string): unknown[] | undefined {
   } catch {
     throw new Error(`${envVar} is not valid JSON`);
   }
+}
+
+/**
+ * Default `orphanThresholdMs` to whichever is larger: the 30-minute floor or
+ * `agentWaitTimeoutMs + 60s`. Honours the env override when present, so an
+ * operator can short-circuit either default for incident response.
+ */
+function resolveOrphanThresholdMs(): string | number | undefined {
+  const override = process.env['ORPHAN_THRESHOLD_MS'];
+  if (override !== undefined && override !== '') {
+    return override;
+  }
+  const agentWaitRaw = process.env['AGENT_WAIT_TIMEOUT_MS'];
+  const agentWaitMs = agentWaitRaw ? Number(agentWaitRaw) : 1_800_000;
+  if (Number.isNaN(agentWaitMs)) {
+    return undefined;
+  }
+  return Math.max(30 * 60_000, agentWaitMs + 60_000);
 }
 
 function parseProviders(): ProviderConfig[] {
@@ -212,6 +242,8 @@ export function getSettings(): Settings {
     jobMaxAttempts: process.env['JOB_MAX_ATTEMPTS'],
     jobBackoffDelayMs: process.env['JOB_BACKOFF_DELAY_MS'],
     dedupTtlSeconds: process.env['DEDUP_TTL_SECONDS'],
+    orphanThresholdMs: resolveOrphanThresholdMs(),
+    orphanReaperIntervalMs: process.env['ORPHAN_REAPER_INTERVAL_MS'],
     sessionsFilePath:
       process.env['SESSIONS_FILE_PATH'] ||
       `${process.env['HOME']}/.openclaw/agents/${process.env['OPENCLAW_AGENT_ID'] || 'patch'}/sessions/sessions.json`,

@@ -122,4 +122,44 @@ describe('SlackAlertProvider', () => {
       expect.anything(),
     );
   });
+
+  it('prepends a context line when contextId is set', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const provider = new SlackAlertProvider({ webhookUrl: 'https://hooks.slack.com/test' });
+
+    await provider.send(
+      makeAlert({
+        contextId: 'SPE-1977',
+        contextTitle: 'Orphan detection',
+        contextStatus: 'In Development',
+      }),
+    );
+
+    const body = JSON.parse((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.text).toContain('*SPE-1977*');
+    expect(body.text).toContain('(In Development)');
+    expect(body.text).toContain('Orphan detection');
+  });
+
+  it('renders an orphan-specific headline and suppresses the attempts line when kind=orphaned', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const provider = new SlackAlertProvider({ webhookUrl: 'https://hooks.slack.com/test' });
+
+    await provider.send(makeAlert({ kind: 'orphaned', attempts: 0, maxAttempts: 0 }));
+
+    const body = JSON.parse((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.text).toContain('Orphaned webhook job');
+    expect(body.text).not.toContain('Webhook job failed');
+    expect(body.text).not.toContain('Attempts:');
+  });
+
+  it('omits the context line when contextId is not present', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const provider = new SlackAlertProvider({ webhookUrl: 'https://hooks.slack.com/test' });
+
+    await provider.send(makeAlert());
+
+    const body = JSON.parse((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.text).not.toContain('📌');
+  });
 });

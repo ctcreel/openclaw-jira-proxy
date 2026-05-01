@@ -9,6 +9,8 @@ import { getRecentCompletionsRegistry } from './services/recent-completions.serv
 import { loadAgents } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
 import { buildAlertRegistry } from './services/alerts';
+import { getInflightRegistry } from './services/inflight-registry.service';
+import { getOrphanReaper } from './services/orphan-reaper.service';
 import { registerAgentSchedules } from './services/scheduler.service';
 import { createTaskWorker } from './services/task-worker.service';
 import { createWorker } from './services/worker.service';
@@ -189,11 +191,19 @@ async function startWorkers(
   // hit the registry, including ones that finish before any client connects.
   getRecentCompletionsRegistry();
 
+  // Same ordering rule applies to the durable inflight registry — it must
+  // be subscribed before any worker publishes its first event so the
+  // orphan reaper has a record to detect against.
+  getInflightRegistry();
+
   const alertRegistry = buildAlertRegistry();
   for (const provider of providers) {
     createWorker({ provider, agents, alertRegistry });
   }
   logger.info({ providers: providers.map((p) => p.name) }, 'Workers started');
+
+  await getOrphanReaper(alertRegistry).start();
+  logger.info('Orphan reaper started');
 
   // Task workers — one per agent that declares internal or schedule routing rules
   const taskWorkers = agents.map((agent) => createTaskWorker(agent)).filter((w) => w !== null);

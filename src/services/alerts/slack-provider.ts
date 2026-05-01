@@ -50,15 +50,28 @@ export class SlackAlertProvider implements AlertProvider {
   }
 
   private formatMessage(alert: JobAlert): string {
-    return [
-      `🚨 *Webhook job failed* — \`${alert.provider}\``,
-      `• Job: \`${alert.jobId}\``,
-      `• Agent: \`${alert.agentId}\``,
-      `• Session: \`${alert.sessionKey}\``,
-      `• Attempts: ${alert.attempts}/${alert.maxAttempts}`,
-      `• Error: \`${alert.error}\``,
-      `• Time: ${alert.failedAt.toISOString()}`,
-    ].join('\n');
+    const lines: string[] = [];
+    if (alert.contextId) {
+      const status = alert.contextStatus ? ` (${alert.contextStatus})` : '';
+      lines.push(`📌 *${alert.contextId}*${status}`);
+      if (alert.contextTitle) {
+        lines.push(`> ${alert.contextTitle}`);
+      }
+    }
+    const headline =
+      alert.kind === 'orphaned'
+        ? `🚨 *Orphaned webhook job* — \`${alert.provider}\``
+        : `🚨 *Webhook job failed* — \`${alert.provider}\``;
+    lines.push(headline);
+    lines.push(`• Job: \`${alert.jobId}\``);
+    lines.push(`• Agent: \`${alert.agentId}\``);
+    lines.push(`• Session: \`${alert.sessionKey}\``);
+    if (alert.kind !== 'orphaned') {
+      lines.push(`• Attempts: ${alert.attempts}/${alert.maxAttempts}`);
+    }
+    lines.push(`• Error: \`${alert.error}\``);
+    lines.push(`• Time: ${alert.failedAt.toISOString()}`);
+    return lines.join('\n');
   }
 
   private async sendViaWebhook(text: string): Promise<void> {

@@ -3,7 +3,10 @@ import type { Job, Queue } from 'bullmq';
 import type { ProviderConfig } from '../config';
 import { getLogger } from '../lib/logging';
 import type { AlertRegistry, JobAlert } from './alerts';
+import { getDedupRedis } from './dedup.service';
 import { getEventBus } from './event-bus.service';
+import { buildInflightKey, parseInflightHash } from './inflight-registry.service';
+import type { InflightRecord } from './inflight-registry.service';
 import { parseEnvelope } from './worker.service';
 import type { JobEnvelope } from './worker.service';
 
@@ -14,31 +17,49 @@ function computeRequeueDelayMs(attempt: number): number {
   return Math.min(5_000 * Math.pow(2, attempt - 1), 60_000);
 }
 
-function emitFinalFailureAlert(
+async function readInflightRecord(traceId: string): Promise<InflightRecord | null> {
+  try {
+    const raw = await getDedupRedis().hgetall(buildInflightKey(traceId));
+    if (!raw || Object.keys(raw).length === 0) {
+      return null;
+    }
+    return parseInflightHash(raw);
+  } catch (err) {
+    logger.warn(
+      { error: err instanceof Error ? err.message : String(err), traceId },
+      'worker-failure:inflight-lookup-failed',
+    );
+    return null;
+  }
+}
+
+async function emitFinalFailureAlert(
   alertRegistry: AlertRegistry,
   provider: ProviderConfig,
   traceId: string,
   envelope: JobEnvelope,
   errorMessage: string,
   maxAttempts: number,
-): void {
+  inflight: InflightRecord | null,
+): Promise<void> {
+  const agentId = inflight?.agentId ?? 'unknown';
+  const sessionKey = `agent:${agentId}:hook-${provider.name}-${traceId}`;
   const alert: JobAlert = {
     jobId: traceId,
-    sessionKey: `agent:unknown:main`,
-    agentId: 'unknown',
+    sessionKey,
+    agentId,
     error: errorMessage,
     attempts: envelope.attempt,
     maxAttempts,
     provider: provider.name,
     failedAt: new Date(),
+    kind: 'final-failure',
+    ...(inflight?.contextId !== undefined ? { contextId: inflight.contextId } : {}),
+    ...(inflight?.contextTitle !== undefined ? { contextTitle: inflight.contextTitle } : {}),
+    ...(inflight?.contextStatus !== undefined ? { contextStatus: inflight.contextStatus } : {}),
   };
 
-  alertRegistry.sendAll(alert).catch((err) => {
-    logger.error(
-      { error: err instanceof Error ? err.message : String(err) },
-      'Alert dispatch failed',
-    );
-  });
+  await alertRegistry.sendAll(alert);
 }
 
 async function requeueJobToBack(
@@ -80,6 +101,78 @@ async function requeueJobToBack(
   });
 }
 
+async function handleFailure(
+  provider: ProviderConfig,
+  requeueQueue: Queue,
+  alertRegistry: AlertRegistry | undefined,
+  maxAttempts: number,
+  job: Job<string>,
+  error: Error,
+): Promise<void> {
+  const envelope = parseEnvelope(job.data);
+  const isFinalFailure = envelope.attempt >= maxAttempts;
+  const traceId = envelope.originalJobId ?? String(job.id ?? 'unknown');
+  const jobIdString = String(job.id ?? 'unknown');
+
+  // Snapshot the inflight record before publishing `job.failed` — the
+  // InflightRegistry subscriber DELs the key on `final=true`, and we need
+  // the agentId / contextId fields to enrich the alert. Skipping the
+  // lookup on retries keeps the hot path lean.
+  const inflight = isFinalFailure ? await readInflightRecord(traceId) : null;
+
+  getEventBus().publish({
+    type: 'job.failed',
+    timestamp: Date.now(),
+    traceId,
+    jobId: jobIdString,
+    provider: provider.name,
+    error: error.message,
+    attempt: envelope.attempt,
+    final: isFinalFailure,
+  });
+
+  if (isFinalFailure) {
+    logger.error(
+      {
+        jobId: job.id,
+        provider: provider.name,
+        error: error.message,
+        attempt: envelope.attempt,
+        maxAttempts,
+        agentId: inflight?.agentId ?? 'unknown',
+        contextId: inflight?.contextId,
+      },
+      'Job permanently failed — all retries exhausted',
+    );
+    if (alertRegistry) {
+      await emitFinalFailureAlert(
+        alertRegistry,
+        provider,
+        traceId,
+        envelope,
+        error.message,
+        maxAttempts,
+        inflight,
+      );
+    }
+    return;
+  }
+
+  logger.warn(
+    {
+      jobId: job.id,
+      provider: provider.name,
+      error: error.message,
+      attempt: envelope.attempt,
+      maxAttempts,
+      action: 'requeue-to-back',
+    },
+    'Job failed — re-enqueueing to back of queue',
+  );
+
+  await requeueJobToBack(requeueQueue, provider, job, envelope, traceId, jobIdString);
+}
+
 /**
  * Builds the BullMQ `failed` event handler for a provider's worker. The
  * returned handler is a plain callback — it decides whether a failure is
@@ -98,63 +191,10 @@ export function buildFailedHandler(
 ): (job: Job<string> | undefined, error: Error) => void {
   return (job, error) => {
     if (!job) return;
-
-    const envelope = parseEnvelope(job.data);
-    const isFinalFailure = envelope.attempt >= maxAttempts;
-    const traceId = envelope.originalJobId ?? String(job.id ?? 'unknown');
-    const jobIdString = String(job.id ?? 'unknown');
-
-    getEventBus().publish({
-      type: 'job.failed',
-      timestamp: Date.now(),
-      traceId,
-      jobId: jobIdString,
-      provider: provider.name,
-      error: error.message,
-      attempt: envelope.attempt,
-      final: isFinalFailure,
-    });
-
-    if (isFinalFailure) {
-      logger.error(
-        {
-          jobId: job.id,
-          provider: provider.name,
-          error: error.message,
-          attempt: envelope.attempt,
-          maxAttempts,
-        },
-        'Job permanently failed — all retries exhausted',
-      );
-      if (alertRegistry) {
-        emitFinalFailureAlert(
-          alertRegistry,
-          provider,
-          traceId,
-          envelope,
-          error.message,
-          maxAttempts,
-        );
-      }
-      return;
-    }
-
-    logger.warn(
-      {
-        jobId: job.id,
-        provider: provider.name,
-        error: error.message,
-        attempt: envelope.attempt,
-        maxAttempts,
-        action: 'requeue-to-back',
-      },
-      'Job failed — re-enqueueing to back of queue',
-    );
-
-    requeueJobToBack(requeueQueue, provider, job, envelope, traceId, jobIdString).catch((err) => {
+    handleFailure(provider, requeueQueue, alertRegistry, maxAttempts, job, error).catch((err) => {
       logger.error(
         { error: err instanceof Error ? err.message : String(err), jobId: job.id },
-        'Failed to re-enqueue job — job is lost',
+        'worker-failure:handler-fault',
       );
     });
   };

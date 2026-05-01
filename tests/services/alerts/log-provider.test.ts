@@ -26,4 +26,20 @@ describe('LogAlertProvider', () => {
     const provider = new LogAlertProvider();
     await expect(provider.send(makeAlert())).resolves.toBeUndefined();
   });
+
+  it('accepts an orphaned alert with context fields without throwing', async () => {
+    const provider = new LogAlertProvider();
+    await expect(
+      provider.send(
+        makeAlert({
+          kind: 'orphaned',
+          attempts: 0,
+          maxAttempts: 0,
+          contextId: 'SPE-1977',
+          contextTitle: 'Orphan detection',
+          contextStatus: 'In Development',
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
 });
