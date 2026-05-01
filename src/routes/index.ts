@@ -6,6 +6,7 @@ import { getSettings, isWebhookProvider } from '../config';
 import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
 import { listRecentSkippedWebhooks } from '../controllers/skipped-webhooks.controller';
+import { handleQueueSnapshot } from '../controllers/queue-snapshot.controller';
 import {
   createTaskHandler,
   getTaskStatusHandler,
@@ -27,6 +28,7 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/events', handleEventStream);
   app.get('/api/jobs/active', listActiveJobs);
   app.get('/api/webhooks/skipped/recent', listRecentSkippedWebhooks);
+  app.get('/api/queue/snapshot', handleQueueSnapshot);
 
   app.post('/api/tasks', express.json({ limit: '1mb' }), createTaskHandler(agents));
   app.get('/api/tasks/:agent/:taskId', getTaskStatusHandler());

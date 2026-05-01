@@ -92,7 +92,7 @@ function createMockChild(opts: MockChildOpts = {}): EventEmitter & {
 
 function captureEvents(): ClawndomEvent[] {
   const events: ClawndomEvent[] = [];
-  getEventBus().subscribe((e) => events.push(e));
+  getEventBus().subscribe((s) => events.push(s.event));
   return events;
 }
 
