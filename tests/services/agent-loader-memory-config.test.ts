@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { loadAgents } from '../../src/services/agent-loader.service';
-import { copyTree, entry, makeFakeGit, writeAgentRepo } from '../helpers/agent-loader-fixtures';
+import { entry, makeFakeGit, writeAgentRepo } from '../helpers/agent-loader-fixtures';
 
 describe('loadAgents — memory config validation', () => {
   let workspace: string;
