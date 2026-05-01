@@ -194,6 +194,91 @@ export interface SocketAuthFailedEvent {
   reason: string;
 }
 
+export interface MemoryStoredEvent {
+  type: 'memory.stored';
+  timestamp: number;
+  traceId: string;
+  namespace: string;
+  id: string;
+  textLength: number;
+}
+
+export interface MemoryRetrievedEvent {
+  type: 'memory.retrieved';
+  timestamp: number;
+  traceId: string;
+  namespace: string;
+  queryLength: number;
+  hitCount: number;
+  topScore?: number;
+}
+
+export interface MemoryPrunedEvent {
+  type: 'memory.pruned';
+  timestamp: number;
+  traceId: string;
+  namespace: string;
+  deletedCount: number;
+  durationMs: number;
+}
+
+export interface MemoryErrorEvent {
+  type: 'memory.error';
+  timestamp: number;
+  traceId: string;
+  namespace?: string;
+  operation: 'store' | 'search' | 'delete' | 'prune';
+  errorMessage: string;
+}
+
+export interface SessionSpawnedEvent {
+  type: 'session.spawned';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  key: string;
+  session_id: string;
+  mode: 'fresh' | 'resume';
+}
+
+export interface SessionResumedEvent {
+  type: 'session.resumed';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  key: string;
+  session_id: string;
+  mode: 'resume';
+}
+
+export interface SessionReapedEvent {
+  type: 'session.reaped';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  key: string;
+  idle_for_ms: number;
+}
+
+export interface SessionStaleEvent {
+  type: 'session.stale';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  key: string;
+  prior_session_id: string;
+  reason: string;
+}
+
+export interface SessionErrorEvent {
+  type: 'session.error';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  key: string;
+  error_message: string;
+}
+
 export type ClawndomEvent =
   | WebhookReceivedEvent
   | WebhookAcceptedEvent
@@ -212,4 +297,13 @@ export type ClawndomEvent =
   | SocketConnectedEvent
   | SocketDisconnectedEvent
   | SocketReconnectingEvent
-  | SocketAuthFailedEvent;
+  | SocketAuthFailedEvent
+  | MemoryStoredEvent
+  | MemoryRetrievedEvent
+  | MemoryPrunedEvent
+  | MemoryErrorEvent
+  | SessionSpawnedEvent
+  | SessionResumedEvent
+  | SessionReapedEvent
+  | SessionStaleEvent
+  | SessionErrorEvent;

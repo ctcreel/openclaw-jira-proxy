@@ -13,13 +13,19 @@ import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
-import type { ResolvedAgent } from './agent-loader.service';
+import type { AgentRule, ResolvedAgent } from './agent-loader.service';
+import { getMemoryService } from './memory/memory.service';
+import { renderMemoryRecallBlock, renderMemoryStorageBlock } from './memory/prompt-fragments';
+import type { MemoryHit } from './memory/prompt-fragments';
+import { getSessionKeyStrategy } from '../strategies/session-key';
 import type { AlertRegistry } from './alerts';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
 import { buildQueueName } from './queue.service';
 import { buildFailedHandler } from './worker-failure-handler';
 import { getSecretManager } from '../secrets/manager';
+import type { AgentRunner, RunOptions, RunResult } from '../runners/types';
+import type { SessionConfig, SessionKeyStrategy } from '../strategies/session-key';
 
 const logger = getLogger('worker');
 
@@ -173,10 +179,29 @@ export async function processJob(
     );
   }
 
+  const memories = await fetchMemoriesForRule(resolved.rule, parsedPayload, traceId);
+  if (memories !== undefined) {
+    logger.info(
+      {
+        jobId: job.id,
+        provider: provider.name,
+        namespace: resolved.rule.memory?.namespace,
+        hitCount: memories.length,
+      },
+      'Memories retrieved for template',
+    );
+  }
+
   let prompt: string;
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
-    prompt = await renderTemplate(templateContent, parsedPayload, agentDir);
+    const renderedAgentBody = await renderTemplate(templateContent, parsedPayload, agentDir);
+    prompt = wrapWithMemoryFragments(
+      renderedAgentBody,
+      resolved.rule.memory?.namespace,
+      memories,
+      traceId,
+    );
   } else {
     prompt = envelope.payload;
   }
@@ -236,7 +261,19 @@ export async function processJob(
     model: selectedModel,
   });
 
-  const result = await runner.run({
+  // Session-aware warm/resume turns send only the userMessage (not the
+  // full template). But memories CHANGE between turns — what's relevant
+  // to "what's my dog's name" wasn't relevant to the prior conversation.
+  // So the freshly-retrieved memory preamble must be wrapped around the
+  // userMessage on every turn, not just the first turn's full prompt.
+  const sessionUserMessage = wrapPerTurnUserMessageWithMemory(
+    envelope.payload,
+    resolved.rule.memory?.namespace,
+    memories,
+    traceId,
+  );
+
+  const result = await dispatchToRunner(runner, {
     prompt,
     sessionKey,
     agentId,
@@ -245,6 +282,8 @@ export async function processJob(
     traceId,
     jobId: jobIdString,
     ...(envOverlay ? { env: envOverlay } : {}),
+    sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
+    sessionUserMessage,
   });
 
   if (result.status === 'error') {
@@ -279,6 +318,103 @@ export async function processJob(
   );
 }
 
+/**
+ * Per-job session dispatch info, when the matched routing rule has opted in
+ * via a `session` block. `null` means dispatch through the existing per-event
+ * `runner.run()` path.
+ */
+interface SessionDispatch {
+  sessionKey: string;
+  strategy: SessionKeyStrategy;
+  config: SessionConfig;
+  providerConfig: ProviderConfig;
+}
+
+/**
+ * Resolve the session key for this event if the matched rule opted in.
+ * Returns null when the rule has no session config, when the runner doesn't
+ * support session-aware mode, or when the strategy declines (fall back to
+ * the per-event-spawn path).
+ */
+function buildSessionDispatch(
+  provider: ProviderConfig,
+  parsedPayload: unknown,
+  rule: AgentRule,
+): SessionDispatch | null {
+  if (rule.session === undefined) return null;
+  const strategy = getSessionKeyStrategy(rule.session.strategy);
+  if (strategy === undefined) {
+    // Should be impossible if validateSessionConfig ran at startup, but
+    // belt-and-suspenders for the loaded-after-startup case.
+    logger.warn(
+      { provider: provider.name, strategy: rule.session.strategy },
+      'Unknown session strategy — falling back to per-event spawn',
+    );
+    return null;
+  }
+  const sessionKey = strategy.extract(parsedPayload, provider);
+  if (sessionKey === null) {
+    return null;
+  }
+  return {
+    sessionKey,
+    strategy,
+    config: rule.session,
+    providerConfig: provider,
+  };
+}
+
+/**
+ * Dispatch through `runner.runSession()` when a session is configured AND
+ * the runner supports session mode; otherwise fall through to `runner.run()`.
+ *
+ * The session-aware path passes the rendered prompt as `firstTurnPrompt`
+ * (used only on fresh spawns) and as `userMessage` (used on warm/resume
+ * turns). The runner picks the right one via the handle's `acquirePath`.
+ */
+async function dispatchToRunner(
+  runner: AgentRunner,
+  options: RunOptions & {
+    sessionDispatch: SessionDispatch | null;
+    sessionUserMessage: string;
+  },
+): Promise<RunResult> {
+  const { sessionDispatch, sessionUserMessage, ...runOptions } = options;
+  if (sessionDispatch === null || runner.runSession === undefined) {
+    if (sessionDispatch !== null && runner.runSession === undefined) {
+      logger.warn(
+        { runner: runner.name, sessionKey: sessionDispatch.sessionKey },
+        'Runner does not support session mode — dispatching via run()',
+      );
+    }
+    return runner.run(runOptions);
+  }
+  logger.info(
+    {
+      runner: runner.name,
+      provider: sessionDispatch.providerConfig.name,
+      sessionKey: sessionDispatch.sessionKey,
+      strategy: sessionDispatch.strategy.name,
+    },
+    'Dispatching via session-aware runner',
+  );
+  return runner.runSession({
+    providerName: sessionDispatch.providerConfig.name,
+    providerConfig: sessionDispatch.providerConfig,
+    sessionKey: sessionDispatch.sessionKey,
+    strategy: sessionDispatch.strategy,
+    sessionConfig: sessionDispatch.config,
+    firstTurnPrompt: runOptions.prompt,
+    userMessage: sessionUserMessage,
+    agentId: runOptions.agentId,
+    ...(runOptions.model !== undefined ? { model: runOptions.model } : {}),
+    timeoutMs: runOptions.timeoutMs,
+    ...(runOptions.traceId !== undefined ? { traceId: runOptions.traceId } : {}),
+    ...(runOptions.jobId !== undefined ? { jobId: runOptions.jobId } : {}),
+    ...(runOptions.env !== undefined ? { env: runOptions.env } : {}),
+  });
+}
+
 export interface CreateWorkerOptions {
   provider: ProviderConfig;
   agents: readonly ResolvedAgent[];
@@ -308,4 +444,120 @@ export function createWorker(options: CreateWorkerOptions): Worker<string> {
 
   logger.info({ provider: provider.name, queue: queueName, maxAttempts }, 'Worker started');
   return worker;
+}
+
+/**
+ * Wrap the agent's rendered template with memory prompt fragments.
+ *
+ * When the matched rule declares a `memory.namespace`, prepend the
+ * retrieve-preamble (with the pre-fetched hits interpolated) and append
+ * the store-postamble (with namespace + traceId bound). The fragments
+ * live in Clawndom and are uniform across agents — agent templates stay
+ * focused on their domain logic; memory instructions are infrastructure.
+ *
+ * Returns the agent body unchanged when no memory namespace is set.
+ */
+/**
+ * Append memory blocks to the bottom of an agent's rendered template.
+ * Recall block (variable per turn) goes right above where the model
+ * generates output — recency bias means it gets stronger attention
+ * there than at the top. Storage block (stable instructions) follows
+ * the recall block on first turn only.
+ */
+function wrapWithMemoryFragments(
+  agentBody: string,
+  namespace: string | undefined,
+  memories: readonly MemoryHit[] | undefined,
+  traceId: string,
+): string {
+  if (namespace === undefined) {
+    return agentBody;
+  }
+  const recall = renderMemoryRecallBlock({
+    memories: memories ?? [],
+    memoryNamespace: namespace,
+    traceId,
+  });
+  const storage = renderMemoryStorageBlock({
+    memories: memories ?? [],
+    memoryNamespace: namespace,
+    traceId,
+  });
+  return `${agentBody}\n${recall}\n${storage}`;
+}
+
+/**
+ * Append the memory-recall block to the per-turn userMessage. Sent on
+ * EVERY session turn (warm or fresh) because pre-fetched hits change
+ * with the inbound. The storage block stays first-turn-only — the
+ * agent learned how to call memory.store on turn 1 and remembers via
+ * the session JSONL on subsequent turns.
+ *
+ * Bottom-positioned: variable per-turn context near the user message,
+ * not at the top. Recency bias and prompt-cache efficiency both favor
+ * this layout.
+ */
+function wrapPerTurnUserMessageWithMemory(
+  userMessage: string,
+  namespace: string | undefined,
+  memories: readonly MemoryHit[] | undefined,
+  traceId: string,
+): string {
+  if (namespace === undefined) {
+    return userMessage;
+  }
+  const recall = renderMemoryRecallBlock({
+    memories: memories ?? [],
+    memoryNamespace: namespace,
+    traceId,
+  });
+  return `${userMessage}\n${recall}`;
+}
+
+/**
+ * Pre-render memory retrieval. When the matched rule has a
+ * `memory.retrieve` block, resolve `queryField` against the parsed
+ * payload, call MemoryService.search, return the hits for fragment
+ * injection. Returns undefined when the rule has no retrieve config or
+ * the field path doesn't yield a string.
+ */
+async function fetchMemoriesForRule(
+  rule: AgentRule,
+  parsedPayload: unknown,
+  traceId: string,
+): Promise<readonly MemoryHit[] | undefined> {
+  const memoryConfig = rule.memory;
+  if (memoryConfig === undefined || memoryConfig.retrieve === undefined) return undefined;
+
+  const queryRaw = resolveFieldPath(parsedPayload, memoryConfig.retrieve.queryField);
+  if (typeof queryRaw !== 'string' || queryRaw.length === 0) {
+    logger.debug(
+      {
+        namespace: memoryConfig.namespace,
+        queryField: memoryConfig.retrieve.queryField,
+      },
+      'Memory retrieve skipped — query field absent or non-string',
+    );
+    return undefined;
+  }
+
+  try {
+    const result = await getMemoryService().search({
+      namespace: memoryConfig.namespace,
+      query: queryRaw,
+      topK: memoryConfig.retrieve.topK,
+      minSimilarity: memoryConfig.retrieve.minSimilarity,
+      traceId,
+    });
+    return result.hits;
+  } catch (error) {
+    logger.error(
+      {
+        namespace: memoryConfig.namespace,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'Memory retrieve failed — proceeding with empty memories',
+    );
+    return undefined;
+  }
 }
