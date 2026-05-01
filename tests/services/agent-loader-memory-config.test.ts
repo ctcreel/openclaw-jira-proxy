@@ -1,14 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  loadAgents,
-  slugifyRepoUrl,
-  type GitClient,
-} from '../../src/services/agent-loader.service';
-import type { AgentEntry } from '../../src/config';
+import { loadAgents } from '../../src/services/agent-loader.service';
+import { copyTree, entry, makeFakeGit, writeAgentRepo } from '../helpers/agent-loader-fixtures';
 
 describe('loadAgents — memory config validation', () => {
   let workspace: string;
@@ -26,30 +23,9 @@ describe('loadAgents — memory config validation', () => {
     await rm(workspace, { recursive: true, force: true });
   });
 
-  function makeFakeGit(): GitClient {
-    return {
-      async cloneOrPull(repoUrl: string, cloneDir: string) {
-        const source = join(fakeRemotes, slugifyRepoUrl(repoUrl));
-        await mkdir(cloneDir, { recursive: true });
-        await copyTree(source, cloneDir);
-      },
-      async clonePinned() {},
-    };
-  }
-
-  async function writeAgentRepo(slug: string, yamlBody: string): Promise<void> {
-    const repoRoot = join(fakeRemotes, slug);
-    await mkdir(repoRoot, { recursive: true });
-    await writeFile(join(repoRoot, 'clawndom.yaml'), yamlBody, 'utf-8');
-  }
-
-  const entry = (name: string, slug: string): AgentEntry => ({
-    name,
-    repo: `git@github.com:SC0RED/${slug}.git`,
-  });
-
   it('parses a valid memory namespace + per-rule memory binding', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'routing:',
@@ -75,7 +51,7 @@ describe('loadAgents — memory config validation', () => {
         '',
       ].join('\n'),
     );
-    const resolved = await loadAgents([entry('a', 'a')], configDir, makeFakeGit());
+    const resolved = await loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes));
     const config = resolved[0]!.config;
     expect(Object.keys(config.memory?.namespaces ?? {})).toContain('winston-personal');
     const rule = config.routing['slack-winston']!.rules[0]!;
@@ -85,6 +61,7 @@ describe('loadAgents — memory config validation', () => {
 
   it('rejects a rule referencing an undeclared namespace', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'routing:',
@@ -98,13 +75,14 @@ describe('loadAgents — memory config validation', () => {
         '',
       ].join('\n'),
     );
-    await expect(loadAgents([entry('a', 'a')], configDir, makeFakeGit())).rejects.toThrow(
-      /undeclared memory namespace "missing-ns"/,
-    );
+    await expect(
+      loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes)),
+    ).rejects.toThrow(/undeclared memory namespace "missing-ns"/);
   });
 
   it('rejects unknown embeddingProvider', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'memory:',
@@ -115,13 +93,14 @@ describe('loadAgents — memory config validation', () => {
         '',
       ].join('\n'),
     );
-    await expect(loadAgents([entry('a', 'a')], configDir, makeFakeGit())).rejects.toThrow(
-      /unknown embeddingProvider "nope"/,
-    );
+    await expect(
+      loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes)),
+    ).rejects.toThrow(/unknown embeddingProvider "nope"/);
   });
 
   it('rejects unknown vectorStore', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'memory:',
@@ -132,13 +111,14 @@ describe('loadAgents — memory config validation', () => {
         '',
       ].join('\n'),
     );
-    await expect(loadAgents([entry('a', 'a')], configDir, makeFakeGit())).rejects.toThrow(
-      /unknown vectorStore "nope"/,
-    );
+    await expect(
+      loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes)),
+    ).rejects.toThrow(/unknown vectorStore "nope"/);
   });
 
   it('rejects two agents declaring the same namespace name', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'memory:',
@@ -150,6 +130,7 @@ describe('loadAgents — memory config validation', () => {
       ].join('\n'),
     );
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__b',
       [
         'memory:',
@@ -161,12 +142,13 @@ describe('loadAgents — memory config validation', () => {
       ].join('\n'),
     );
     await expect(
-      loadAgents([entry('a', 'a'), entry('b', 'b')], configDir, makeFakeGit()),
+      loadAgents([entry('a', 'a'), entry('b', 'b')], configDir, makeFakeGit(fakeRemotes)),
     ).rejects.toThrow(/declared by both agent "a" and agent "b"/);
   });
 
   it('rejects out-of-range minSimilarity', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'routing:',
@@ -189,11 +171,14 @@ describe('loadAgents — memory config validation', () => {
         '',
       ].join('\n'),
     );
-    await expect(loadAgents([entry('a', 'a')], configDir, makeFakeGit())).rejects.toThrow();
+    await expect(
+      loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes)),
+    ).rejects.toThrow();
   });
 
   it('rejects malformed pruneAfter duration', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'memory:',
@@ -205,13 +190,14 @@ describe('loadAgents — memory config validation', () => {
         '',
       ].join('\n'),
     );
-    await expect(loadAgents([entry('a', 'a')], configDir, makeFakeGit())).rejects.toThrow(
-      /Invalid duration/,
-    );
+    await expect(
+      loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes)),
+    ).rejects.toThrow(/Invalid duration/);
   });
 
   it('agents without memory blocks parse and load unchanged', async () => {
     await writeAgentRepo(
+      fakeRemotes,
       'SC0RED__a',
       [
         'routing:',
@@ -224,23 +210,7 @@ describe('loadAgents — memory config validation', () => {
         '',
       ].join('\n'),
     );
-    const resolved = await loadAgents([entry('a', 'a')], configDir, makeFakeGit());
+    const resolved = await loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes));
     expect(resolved[0]!.config.memory).toBeUndefined();
   });
 });
-
-async function copyTree(src: string, dest: string): Promise<void> {
-  const { readdir, copyFile, stat } = await import('node:fs/promises');
-  const entries = await readdir(src);
-  await mkdir(dest, { recursive: true });
-  for (const entry of entries) {
-    const s = join(src, entry);
-    const d = join(dest, entry);
-    const info = await stat(s);
-    if (info.isDirectory()) {
-      await copyTree(s, d);
-    } else {
-      await copyFile(s, d);
-    }
-  }
-}

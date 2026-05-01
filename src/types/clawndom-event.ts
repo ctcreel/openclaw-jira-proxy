@@ -229,6 +229,7 @@ export interface MemoryErrorEvent {
   namespace?: string;
   operation: 'store' | 'search' | 'delete' | 'prune';
   errorMessage: string;
+}
 
 export interface SessionSpawnedEvent {
   type: 'session.spawned';
@@ -300,8 +301,7 @@ export type ClawndomEvent =
   | MemoryStoredEvent
   | MemoryRetrievedEvent
   | MemoryPrunedEvent
-  | MemoryErrorEvent;
-
+  | MemoryErrorEvent
   | SessionSpawnedEvent
   | SessionResumedEvent
   | SessionReapedEvent

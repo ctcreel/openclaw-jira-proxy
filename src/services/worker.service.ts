@@ -18,7 +18,6 @@ import { getMemoryService } from './memory/memory.service';
 import { renderMemoryRecallBlock, renderMemoryStorageBlock } from './memory/prompt-fragments';
 import type { MemoryHit } from './memory/prompt-fragments';
 import { getSessionKeyStrategy } from '../strategies/session-key';
-import type { AgentRule, ResolvedAgent } from './agent-loader.service';
 import type { AlertRegistry } from './alerts';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
