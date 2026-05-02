@@ -5,11 +5,13 @@ import type { ProviderConfig, ModelRule } from '../../src/config';
 import type { AgentConfig, ResolvedAgent } from '../../src/services/agent-loader.service';
 import type { Condition } from '../../src/strategies/routing';
 
-vi.mock('bullmq', () => ({
-  Worker: vi.fn().mockImplementation(() => ({
-    on: vi.fn(),
-  })),
-}));
+// SPE-2002: route through the shared validating BullMQ mock so any future
+// `new Worker('bad:name', ...)` introduced via this test path crashes at
+// construction time instead of silently passing CI.
+vi.mock('bullmq', async () => {
+  const helper = await import('../helpers/bullmq-mock');
+  return helper.bullmqMockModule;
+});
 
 vi.mock('ioredis', () => ({
   default: vi.fn().mockImplementation(() => ({})),

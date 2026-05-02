@@ -2,12 +2,15 @@ import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 
 import { getSettings } from '../config';
+import { assertBullmqSafeName } from '../lib/bullmq-name';
 
 const queueInstances = new Map<string, Queue>();
 
 export function buildQueueName(providerName: string): string {
   const prefix = process.env['BULLMQ_QUEUE_PREFIX'] ?? 'webhooks';
-  return `${prefix}-${providerName}`;
+  const name = `${prefix}-${providerName}`;
+  assertBullmqSafeName(name);
+  return name;
 }
 
 export function getProviderQueue(providerName: string): Queue {

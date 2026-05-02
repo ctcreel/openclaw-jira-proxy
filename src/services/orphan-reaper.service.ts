@@ -3,6 +3,7 @@ import type { JobType } from 'bullmq';
 import IORedis from 'ioredis';
 
 import { getSettings } from '../config';
+import { assertBullmqSafeName } from '../lib/bullmq-name';
 import { getLogger } from '../lib/logging';
 import type { JobAlert } from './alerts';
 import type { AlertRegistry } from './alerts';
@@ -15,12 +16,21 @@ const logger = getLogger('orphan-reaper');
 
 const INFLIGHT_KEY_GLOB = 'clawndom:inflight:*';
 const SCAN_BATCH_SIZE = 100;
-// SPE-1824 / SPE-1999: BullMQ rejects queue names containing ':' because it
-// uses ':' as its Redis key separator. Use hyphens. Exported so tests can
-// assert against the constants directly (static regression guard).
+// SPE-1824 / SPE-1999 / SPE-2002: BullMQ rejects queue names containing ':'
+// because it uses ':' as its Redis key separator. The module-load assertion
+// below routes this constant through the shared validator
+// (`src/lib/bullmq-name.ts`), so a future regression in this string crashes
+// the test suite at import time — the same way it would crash the service
+// at startup.
 export const REAPER_QUEUE_NAME = 'clawndom-reaper';
 export const REAPER_SCHEDULER_ID = 'clawndom-orphan-reaper';
 const REAPER_JOB_NAME = 'orphan-reap';
+
+assertBullmqSafeName(REAPER_QUEUE_NAME);
+// REAPER_SCHEDULER_ID is a BullMQ job-scheduler ID, not a queue name —
+// scheduler IDs are NOT subject to the ':'-rejection rule (Scarlett's
+// production `schedule:scarlett:daily-handoff` proves it). Intentionally
+// not asserted; see `src/lib/bullmq-name.ts` header comment.
 
 /**
  * BullMQ states that signal the worker is no longer holding the job. A stale
