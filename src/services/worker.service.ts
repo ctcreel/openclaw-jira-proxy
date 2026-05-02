@@ -228,7 +228,13 @@ export async function processJob(
     );
   }
 
-  // Prompt observability: hash at info level, full prompt at debug level
+  // Prompt observability: hash at info level, full prompt at debug level.
+  // systemPromptLength + cacheable let operators verify the SPE-1997 cache
+  // split is producing a prefix worth caching at all. A non-empty system
+  // prompt is necessary but not sufficient for Anthropic's prompt cache —
+  // the platform also enforces a ~1024-token floor and looks for explicit
+  // cache_control markers — but `cacheable: false` here is a hard signal
+  // that the cache cannot engage on this run regardless.
   const promptHash = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
   logger.info(
     {
@@ -238,6 +244,8 @@ export async function processJob(
       sessionKey,
       promptHash,
       promptLength: prompt.length,
+      systemPromptLength: systemPrompt.length,
+      cacheable: systemPrompt.length > 0,
     },
     'Agent run delivered',
   );

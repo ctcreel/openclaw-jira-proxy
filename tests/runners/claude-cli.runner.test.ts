@@ -15,6 +15,24 @@ vi.mock('node:fs', async () => {
   return { ...actual, existsSync: vi.fn(() => false) };
 });
 
+// Logger mock — lets us assert the new "Agent run usage" log line emitted
+// from installStreamParser when a result event is parsed.
+const { loggerInfoSpy, loggerErrorSpy } = vi.hoisted(() => ({
+  loggerInfoSpy: vi.fn(),
+  loggerErrorSpy: vi.fn(),
+}));
+
+vi.mock('../../src/lib/logging', () => ({
+  getLogger: (): Record<string, ReturnType<typeof vi.fn>> => ({
+    info: loggerInfoSpy,
+    debug: vi.fn(),
+    warn: vi.fn(),
+    error: loggerErrorSpy,
+  }),
+  setupLogging: vi.fn(),
+  resetLogging: vi.fn(),
+}));
+
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { ClaudeCliRunner } from '../../src/runners/claude-cli.runner';
@@ -57,6 +75,8 @@ function createMockProcess(exitCode: number, stdout = '', stderr = ''): EventEmi
 describe('ClaudeCliRunner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    loggerInfoSpy.mockClear();
+    loggerErrorSpy.mockClear();
   });
 
   it('should have name "claude-cli"', () => {
@@ -187,6 +207,55 @@ describe('ClaudeCliRunner', () => {
     const result = await runner.run(baseOptions);
     expect(result.startedAt).toBeDefined();
     expect(result.endedAt).toBeDefined();
+  });
+
+  describe('Agent run usage log', () => {
+    it('emits "Agent run usage" with cache stats when a result event arrives', async () => {
+      const resultLine =
+        JSON.stringify({
+          type: 'result',
+          num_turns: 3,
+          total_cost_usd: 0.0123,
+          usage: {
+            input_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 56_713,
+            output_tokens: 88,
+          },
+        }) + '\n';
+
+      vi.mocked(spawn).mockReturnValue(createMockProcess(0, resultLine) as never);
+      const runner = new ClaudeCliRunner(baseConfig);
+      await runner.run({
+        ...baseOptions,
+        traceId: 'trace-xyz',
+        jobId: 'job-1',
+      });
+
+      const usageCall = loggerInfoSpy.mock.calls.find((call) => call[1] === 'Agent run usage');
+      expect(usageCall).toBeDefined();
+      expect(usageCall![0]).toMatchObject({
+        traceId: 'trace-xyz',
+        jobId: 'job-1',
+        inputTokens: 12,
+        cacheReadTokens: 56_713,
+        cacheCreationTokens: 0,
+        outputTokens: 88,
+        contextTokens: 56_725,
+        numTurns: 3,
+        costUsd: 0.0123,
+      });
+      expect(typeof (usageCall![0] as { runId: string }).runId).toBe('string');
+    });
+
+    it('does not emit "Agent run usage" when no result event is parsed', async () => {
+      vi.mocked(spawn).mockReturnValue(createMockProcess(0, '') as never);
+      const runner = new ClaudeCliRunner(baseConfig);
+      await runner.run(baseOptions);
+
+      const usageCall = loggerInfoSpy.mock.calls.find((call) => call[1] === 'Agent run usage');
+      expect(usageCall).toBeUndefined();
+    });
   });
 
   describe('env overlay', () => {
