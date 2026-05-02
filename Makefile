@@ -1,4 +1,4 @@
-.PHONY: install lint-quick lint test security naming check sonar check-all format review dev dev-unsafe preview-template sync-standards help
+.PHONY: install lint-quick lint test test-infra security naming check sonar check-all format review dev dev-unsafe preview-template sync-standards help
 
 # ============================================================================
 # SETUP
@@ -25,6 +25,9 @@ lint: lint-quick ## Full lint (includes Prettier format check)
 test: ## Run tests with 95% coverage threshold
 	pnpm exec vitest run --coverage
 
+test-infra: ## Run infra (shell) tests — bootstrap.sh, deploy.sh helpers
+	bash tests/infra/bootstrap-ssh-provision.test.sh
+
 # ============================================================================
 # SECURITY
 # ============================================================================
@@ -45,7 +48,7 @@ naming: ## Check naming conventions, abbreviations, and skip comments
 # COMBINED CHECKS
 # ============================================================================
 
-check: lint test security naming ## All checks (lint + test + security + naming)
+check: lint test test-infra security naming ## All checks (lint + test + test-infra + security + naming)
 
 # ============================================================================
 # SONARCLOUD
