@@ -68,7 +68,7 @@ A Redis-backed global semaphore caps total concurrent runs across all providers 
 
 Clawndom runs on a dedicated EC2 host in `sc0red-dev` (us-east-1). Infrastructure (VPC wiring, systemd units, Redis, Tailscale) is under `infra/ec2/` — `cloudformation.yaml` provisions the instance, `bootstrap.sh` sets it up, and GitHub Actions (`deploy-ec2.yml`) ships every push to `main` via `scripts/deploy.sh`.
 
-For a new instance: deploy the CloudFormation stack, SSH in, run `infra/ec2/bootstrap.sh`, then follow the printed next steps (Tailscale up, populate `/etc/clawndom/clawndom.env`, `claude login`, `scripts/sync-agents.sh`, `scripts/deploy.sh`).
+For a new instance: deploy the CloudFormation stack, SSH in, run `infra/ec2/bootstrap.sh`, **register the per-instance SSH deploy key it prints as a read-only deploy key on `SC0RED/clawndom`** (Settings → Deploy keys → Add new — without this, `git fetch` from the `clawndom` user fails and the deploy workflow breaks), then follow the printed next steps (Tailscale up, populate `/etc/clawndom/clawndom.env`, `claude login`, `scripts/sync-agents.sh`, `scripts/deploy.sh`).
 
 ## Configuration
 

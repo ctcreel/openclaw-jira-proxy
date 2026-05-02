@@ -16,13 +16,22 @@ set -euo pipefail
 
 NODE_VERSION="22"
 PNPM_VERSION="10.29.3"
-CLAWNDOM_USER="clawndom"
-CLAWNDOM_HOME="/home/${CLAWNDOM_USER}"
-CLAWNDOM_REPO="/opt/clawndom"
+# Overridable from env so the helpers can be exercised in a sandbox by
+# tests/infra/bootstrap-ssh-provision.test.sh.
+CLAWNDOM_USER="${CLAWNDOM_USER:-clawndom}"
+CLAWNDOM_HOME="${CLAWNDOM_HOME:-/home/${CLAWNDOM_USER}}"
+CLAWNDOM_REPO="${CLAWNDOM_REPO:-/opt/clawndom}"
 CLAWNDOM_REPO_URL="https://github.com/SC0RED/clawndom.git"
 CLAWNDOM_ENV_DIR="/etc/clawndom"
 CLAWNDOM_LOG_DIR="/var/log/clawndom"
 TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-clawndom}"
+
+# GitHub deploy-key provisioning (see provision_clawndom_github_auth).
+# The clawndom user fetches /opt/clawndom from GitHub via SSH using a
+# per-instance read-only deploy key — registered manually on the repo
+# after bootstrap, surfaced in summary().
+CLAWNDOM_SSH_HOST_ALIAS="github-clawndom"
+CLAWNDOM_REPO_SSH_REMOTE="git@${CLAWNDOM_SSH_HOST_ALIAS}:SC0RED/clawndom.git"
 
 log() { echo "[bootstrap] $*"; return 0; }
 
@@ -121,6 +130,83 @@ clone_repo() {
   return 0
 }
 
+# Provision the GitHub deploy-auth artifacts for the ${CLAWNDOM_USER} runtime
+# user so `git fetch origin main` works non-interactively from scripts/deploy.sh.
+#
+# Three artifacts, each guarded independently so a partially-provisioned
+# instance (e.g. key generated but ~/.ssh/config wiped by hand) repairs
+# correctly on re-run. Function-level "skip if key exists" would silently
+# skip the missing pieces and leave the box broken.
+#
+# Operator step: the .pub side of the generated key has to be registered as
+# a read-only deploy key on SC0RED/clawndom before scripts/deploy.sh runs.
+# summary() prints the public key + a pointer to the GitHub UI.
+provision_clawndom_github_auth() {
+  log "Provisioning ${CLAWNDOM_USER} GitHub deploy auth"
+  install -d -m 700 -o "${CLAWNDOM_USER}" -g "${CLAWNDOM_USER}" \
+    "${CLAWNDOM_HOME}/.ssh"
+  _provision_clawndom_deploy_key
+  _provision_clawndom_ssh_config
+  _provision_clawndom_known_hosts
+  return 0
+}
+
+_provision_clawndom_deploy_key() {
+  local key_path="${CLAWNDOM_HOME}/.ssh/clawndom_repo_deploy"
+  if [[ -f "${key_path}" ]]; then
+    log "Deploy key already present — skipping ssh-keygen"
+    return 0
+  fi
+  log "Generating ed25519 deploy key for ${CLAWNDOM_USER}"
+  sudo -u "${CLAWNDOM_USER}" ssh-keygen -t ed25519 -N "" \
+    -C "${CLAWNDOM_USER}@$(hostname) clawndom-repo-deploy" \
+    -f "${key_path}"
+  return 0
+}
+
+_provision_clawndom_ssh_config() {
+  local config_path="${CLAWNDOM_HOME}/.ssh/config"
+  local key_path="${CLAWNDOM_HOME}/.ssh/clawndom_repo_deploy"
+  local marker="Host ${CLAWNDOM_SSH_HOST_ALIAS}"
+  if [[ -f "${config_path}" ]] && grep -qE "^${marker}\$" "${config_path}"; then
+    log "SSH config already declares ${CLAWNDOM_SSH_HOST_ALIAS}"
+    return 0
+  fi
+  log "Appending ${CLAWNDOM_SSH_HOST_ALIAS} block to ${config_path}"
+  sudo -u "${CLAWNDOM_USER}" tee -a "${config_path}" >/dev/null <<EOF
+
+${marker}
+  HostName github.com
+  User git
+  IdentityFile ${key_path}
+  IdentitiesOnly yes
+EOF
+  chmod 600 "${config_path}"
+  return 0
+}
+
+_provision_clawndom_known_hosts() {
+  local kh_path="${CLAWNDOM_HOME}/.ssh/known_hosts"
+  if [[ -f "${kh_path}" ]] && grep -q "github.com" "${kh_path}"; then
+    log "known_hosts already pinned for github.com"
+    return 0
+  fi
+  log "Pinning github.com host keys via ssh-keyscan"
+  ssh-keyscan -H github.com 2>/dev/null \
+    | sudo -u "${CLAWNDOM_USER}" tee -a "${kh_path}" >/dev/null
+  return 0
+}
+
+# Switch /opt/clawndom's origin to the SSH alias so subsequent `git fetch`
+# calls (deploy.sh) authenticate with the deploy key. `git remote set-url`
+# is unconditional — safe to re-run on an already-converted instance.
+set_clawndom_remote_to_ssh_alias() {
+  log "Setting ${CLAWNDOM_REPO} origin to ${CLAWNDOM_REPO_SSH_REMOTE}"
+  sudo -u "${CLAWNDOM_USER}" git -C "${CLAWNDOM_REPO}" \
+    remote set-url origin "${CLAWNDOM_REPO_SSH_REMOTE}"
+  return 0
+}
+
 create_dirs() {
   log "Creating /etc + /var/log directories"
   mkdir -p "${CLAWNDOM_ENV_DIR}"
@@ -185,10 +271,22 @@ configure_redis() {
 }
 
 summary() {
+  local pub_key_path="${CLAWNDOM_HOME}/.ssh/clawndom_repo_deploy.pub"
+  local pub_key="(deploy key not yet generated — re-run bootstrap.sh)"
+  if [[ -f "${pub_key_path}" ]]; then
+    pub_key="$(cat "${pub_key_path}")"
+  fi
   cat <<EOF
 
 ────────────────────────────────────────────
 Bootstrap complete.
+
+REQUIRED before first deploy — register this read-only deploy key on
+https://github.com/SC0RED/clawndom/settings/keys/new (uncheck "Allow write
+access"). Without this, scripts/deploy.sh will fail at 'git fetch origin'
+because the ${CLAWNDOM_USER} user has no GitHub creds:
+
+${pub_key}
 
 Next steps (run as root):
   1. tailscale up --hostname=${TAILSCALE_HOSTNAME}
@@ -217,6 +315,8 @@ main() {
   install_op_cli
   create_clawndom_user
   clone_repo
+  provision_clawndom_github_auth
+  set_clawndom_remote_to_ssh_alias
   create_dirs
   install_systemd_units
   configure_redis
@@ -224,4 +324,9 @@ main() {
   return 0
 }
 
-main "$@"
+# Source-friendly: only run main() when invoked directly. Sourcing the
+# script (tests/infra/bootstrap-ssh-provision.test.sh) gets the helper
+# functions without triggering the require_root guard.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
