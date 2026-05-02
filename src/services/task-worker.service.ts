@@ -14,6 +14,7 @@ import { ShellRunner } from '../runners/shell.runner';
 import type { AgentRunner } from '../runners/types';
 import { evaluateCondition } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
+import { getScheduledTasksService } from './scheduled-tasks.service';
 import {
   buildTaskQueueName,
   isScheduledEnvelope,
@@ -35,7 +36,7 @@ interface TaskRunSummary {
 async function processTask(job: Job<string>, agent: ResolvedAgent): Promise<TaskRunSummary> {
   const envelope = parseTaskEnvelope(job.data);
   if (isScheduledEnvelope(envelope)) {
-    return processScheduledTask(envelope, agent);
+    return processScheduledTask(envelope, agent, job);
   }
   return processInternalTask(envelope, agent);
 }
@@ -69,6 +70,7 @@ async function processInternalTask(
 async function processScheduledTask(
   envelope: ScheduledTaskEnvelope,
   agent: ResolvedAgent,
+  job: Job<string>,
 ): Promise<TaskRunSummary> {
   const traceId = `schedule-${agent.name}-${envelope.rule}-${Date.now()}`;
   logger.info({ traceId, agent: agent.name, rule: envelope.rule }, 'Processing scheduled task');
@@ -78,6 +80,35 @@ async function processScheduledTask(
 
   if (!matched) {
     throw new Error(`No schedule rule named "${envelope.rule}" found for agent ${agent.name}`);
+  }
+
+  // Fire-time accounting through the registry — increments runCount,
+  // recomputes nextFireAt for cron tasks, and emits scheduled-task.fired.
+  // If the task has expired (ttl reached or maxRuns hit), the registry
+  // returns shouldFire:false and emits scheduled-task.expired; we skip
+  // the run and let BullMQ mark the job complete. taskId is optional on
+  // the envelope so legacy in-flight jobs (queued before this deploy)
+  // skip the registry entirely and run as before.
+  if (envelope.taskId !== undefined) {
+    const registry = getScheduledTasksService();
+    const fireResult = await registry.recordFire({
+      id: envelope.taskId,
+      jobId: job.id ?? traceId,
+      traceId,
+    });
+    if (!fireResult.shouldFire) {
+      logger.info(
+        {
+          traceId,
+          agent: agent.name,
+          rule: envelope.rule,
+          taskId: envelope.taskId,
+          expiredReason: fireResult.expiredReason,
+        },
+        'Scheduled task skipped (expired or unknown to registry)',
+      );
+      return { runId: traceId, status: 'ok' };
+    }
   }
 
   const payload = {

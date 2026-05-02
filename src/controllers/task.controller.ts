@@ -1,7 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
-import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import {
@@ -19,31 +18,17 @@ const taskRequestSchema = z.object({
   context: z.record(z.string(), z.unknown()).optional(),
 });
 
-const BEARER_PREFIX = 'Bearer ';
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
 const MAX_WAIT_TIMEOUT_MS = 10 * 60_000;
 
-function authenticate(request: Request): boolean {
-  const expected = getSettings().agentToken;
-  if (!expected) {
-    logger.error('CLAWNDOM_AGENT_TOKEN is not configured; rejecting task request');
-    return false;
-  }
-  const header = request.headers.authorization;
-  if (typeof header !== 'string' || !header.startsWith(BEARER_PREFIX)) {
-    return false;
-  }
-  const token = header.slice(BEARER_PREFIX.length);
-  return token === expected;
-}
+// Bearer auth lives in the shared `requireAgentBearer` middleware
+// (`src/middleware/bearer-auth.middleware.ts`). It's mounted at the
+// route level in `routes/index.ts`, so handlers below assume the
+// request is already authenticated. Keeping handlers focused on
+// business logic — Bearer concerns belong to the middleware seam.
 
 export function createTaskHandler(agents: readonly ResolvedAgent[]) {
   return async (request: Request, response: Response): Promise<void> => {
-    if (!authenticate(request)) {
-      response.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-
     const parseResult = taskRequestSchema.safeParse(request.body);
     if (!parseResult.success) {
       response
@@ -65,6 +50,7 @@ export function createTaskHandler(agents: readonly ResolvedAgent[]) {
         response.status(404).json({ error: error.message });
         return;
       }
+      logger.error({ error }, 'createTask failed unexpectedly');
       throw error;
     }
   };
@@ -72,10 +58,6 @@ export function createTaskHandler(agents: readonly ResolvedAgent[]) {
 
 export function getTaskStatusHandler() {
   return async (request: Request, response: Response): Promise<void> => {
-    if (!authenticate(request)) {
-      response.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
     const { agent, taskId } = request.params as { agent: string; taskId: string };
     const result = await getTaskStatus(agent, taskId);
     response.status(200).json(result);
@@ -84,10 +66,6 @@ export function getTaskStatusHandler() {
 
 export function waitTaskHandler() {
   return async (request: Request, response: Response): Promise<void> => {
-    if (!authenticate(request)) {
-      response.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
     const { agent, taskId } = request.params as { agent: string; taskId: string };
     const timeoutMs = clampTimeout(request.query['timeoutMs']);
     const result = await waitForTask(agent, taskId, timeoutMs);

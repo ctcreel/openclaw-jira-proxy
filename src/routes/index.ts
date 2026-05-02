@@ -3,6 +3,7 @@ import type { Express } from 'express';
 
 import { createHealthRoutes } from './health.routes';
 import { createMemoryRoutes } from './memory.routes';
+import { createScheduledTasksRoutes } from './scheduled-tasks.routes';
 import { getSettings, isWebhookProvider } from '../config';
 import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
@@ -13,6 +14,7 @@ import {
   getTaskStatusHandler,
   waitTaskHandler,
 } from '../controllers/task.controller';
+import { requireAgentBearer } from '../middleware/bearer-auth.middleware';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import { WebhookTransport } from '../strategies/transport';
 
@@ -31,11 +33,26 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/webhooks/skipped/recent', listRecentSkippedWebhooks);
   app.get('/api/queue/snapshot', handleQueueSnapshot);
 
-  app.post('/api/tasks', express.json({ limit: '1mb' }), createTaskHandler(agents));
-  app.get('/api/tasks/:agent/:taskId', getTaskStatusHandler());
-  app.get('/api/tasks/:agent/:taskId/wait', waitTaskHandler());
+  app.post(
+    '/api/tasks',
+    express.json({ limit: '1mb' }),
+    requireAgentBearer,
+    createTaskHandler(agents),
+  );
+  app.get('/api/tasks/:agent/:taskId', requireAgentBearer, getTaskStatusHandler());
+  app.get('/api/tasks/:agent/:taskId/wait', requireAgentBearer, waitTaskHandler());
 
   app.use('/api/memory', express.json({ limit: '1mb' }), createMemoryRoutes());
+
+  // /api/scheduled-tasks — registry CRUD. Bearer-gated at the parent
+  // mount; the inner routes are auth-agnostic so they can be unit-tested
+  // without the middleware.
+  app.use(
+    '/api/scheduled-tasks',
+    express.json({ limit: '1mb' }),
+    requireAgentBearer,
+    createScheduledTasksRoutes(),
+  );
 
   for (const provider of getSettings().providers) {
     if (!isWebhookProvider(provider)) continue;
