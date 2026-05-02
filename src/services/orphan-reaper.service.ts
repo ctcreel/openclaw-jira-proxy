@@ -15,8 +15,11 @@ const logger = getLogger('orphan-reaper');
 
 const INFLIGHT_KEY_GLOB = 'clawndom:inflight:*';
 const SCAN_BATCH_SIZE = 100;
-const REAPER_QUEUE_NAME = 'clawndom:reaper';
-const REAPER_SCHEDULER_ID = 'clawndom:orphan-reaper';
+// SPE-1824 / SPE-1999: BullMQ rejects queue names containing ':' because it
+// uses ':' as its Redis key separator. Use hyphens. Exported so tests can
+// assert against the constants directly (static regression guard).
+export const REAPER_QUEUE_NAME = 'clawndom-reaper';
+export const REAPER_SCHEDULER_ID = 'clawndom-orphan-reaper';
 const REAPER_JOB_NAME = 'orphan-reap';
 
 /**
