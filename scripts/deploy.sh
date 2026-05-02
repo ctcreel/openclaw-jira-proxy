@@ -35,6 +35,12 @@ pnpm install --frozen-lockfile
 log "Building"
 pnpm build
 
+# SPE-2000: refuse to restart against an env file that systemd will
+# silently mis-parse. Catches the unquoted-JSON foot-gun before the
+# service tries (and fails) to start.
+log "Validating /etc/clawndom/clawndom.env"
+sudo bash "${REPO_DIR}/infra/ec2/validate-env.sh" /etc/clawndom/clawndom.env
+
 log "Restarting clawndom.service"
 sudo systemctl restart clawndom.service
 
