@@ -95,6 +95,8 @@ For a new instance: deploy the CloudFormation stack, SSH in, run `infra/ec2/boot
 | `LOG_FORMAT` | `json` | Log format (json, human) |
 | `PROVIDERS_CONFIG` | — | JSON array of provider configurations (required, see below) |
 
+> **systemd quoting:** when this file is loaded via `EnvironmentFile=` (the production setup on the EC2), every JSON-valued env var **must be wrapped in single quotes** or systemd's parser silently drops it. See [docs/guides/ENVIRONMENT_VARIABLES.md](docs/guides/ENVIRONMENT_VARIABLES.md#systemd-environmentfile-parsing--quote-your-json-values) for the full convention and the bundled `infra/ec2/validate-env.sh` self-check (SPE-2000).
+
 #### Provider Configuration
 
 All providers are defined in `PROVIDERS_CONFIG` as a JSON string. There are no hardcoded providers — every webhook source is configured the same way.

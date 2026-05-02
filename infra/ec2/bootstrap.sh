@@ -214,8 +214,33 @@ create_dirs() {
   chown root:"${CLAWNDOM_USER}" "${CLAWNDOM_ENV_DIR}"
 
   if [[ ! -f "${CLAWNDOM_ENV_DIR}/clawndom.env" ]]; then
-    log "Creating empty ${CLAWNDOM_ENV_DIR}/clawndom.env — populate OP_SERVICE_ACCOUNT_TOKEN before start"
-    touch "${CLAWNDOM_ENV_DIR}/clawndom.env"
+    log "Creating commented ${CLAWNDOM_ENV_DIR}/clawndom.env template — operator must populate before start"
+    # SPE-2000: every JSON-valued env var must be wrapped in single quotes.
+    # systemd's EnvironmentFile= parser uses POSIX-shell quoting; an
+    # unquoted value containing literal " characters loses them on parse,
+    # and the running process sees malformed JSON or an empty value.
+    # See docs/guides/ENVIRONMENT_VARIABLES.md for the full convention.
+    cat > "${CLAWNDOM_ENV_DIR}/clawndom.env" <<'ENV_TEMPLATE'
+# clawndom.env — populate before starting clawndom.service.
+#
+# IMPORTANT: every JSON-valued env var below MUST be wrapped in single
+# quotes ('...'). systemd's EnvironmentFile= parser strips literal "
+# characters from unquoted values; the running process then sees
+# malformed JSON and the service refuses to start. See SPE-2000 and
+# docs/guides/ENVIRONMENT_VARIABLES.md.
+#
+# Run `sudo bash /opt/clawndom/infra/ec2/validate-env.sh` after editing
+# to confirm systemd can parse this file before you restart the service.
+
+# --- 1Password service-account token (no JSON, no quotes needed) ---
+# OP_SERVICE_ACCOUNT_TOKEN=
+
+# --- JSON-valued vars: ALWAYS wrap the value in single quotes ---
+# PROVIDERS_CONFIG='[{"name":"jira","routePath":"/hooks/jira","hmacSecret":"...","signatureStrategy":"websub","openclawHookUrl":"http://127.0.0.1:18789/hooks/jira"}]'
+# AGENTS_CONFIG='[{"name":"patch","statusName":"Plan"}]'
+# SECRETS_PROVIDERS_CONFIG='[{"name":"op","kind":"onepassword"}]'
+# SECRETS_CONFIG='[{"key":"PATCH_JIRA_TOKEN","provider":"op","reference":"op://Engineering/..."}]'
+ENV_TEMPLATE
     chmod 600 "${CLAWNDOM_ENV_DIR}/clawndom.env"
     chown root:"${CLAWNDOM_USER}" "${CLAWNDOM_ENV_DIR}/clawndom.env"
   fi
@@ -291,7 +316,10 @@ ${pub_key}
 Next steps (run as root):
   1. tailscale up --hostname=${TAILSCALE_HOSTNAME}
   2. Populate /etc/clawndom/clawndom.env with OP_SERVICE_ACCOUNT_TOKEN
-     and any other non-1Password secrets.
+     and any other non-1Password secrets. JSON-valued vars MUST be
+     single-quoted — see docs/guides/ENVIRONMENT_VARIABLES.md.
+     Run \`sudo bash ${CLAWNDOM_REPO}/infra/ec2/validate-env.sh\` after
+     editing to confirm systemd can parse the file (SPE-2000).
   3. sudo -u ${CLAWNDOM_USER} claude login
        (one-time — establishes file-based credentials for the runner)
   4. sudo -u ${CLAWNDOM_USER} bash ${CLAWNDOM_REPO}/scripts/sync-agents.sh
