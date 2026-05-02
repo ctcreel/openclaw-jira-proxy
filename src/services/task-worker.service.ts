@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import { Worker } from 'bullmq';
@@ -106,6 +107,27 @@ async function runRule(
 ): Promise<TaskRunSummary> {
   const { runner, prompt, systemPrompt } = await resolveRunnerAndPrompt(rule, payload, agent);
   const settings = getSettings();
+
+  // Mirror the webhook-worker's "Agent run delivered" log so internal /
+  // scheduled task firings have the same prompt-cache observability as
+  // webhook-driven runs. Same field shape (promptHash, promptLength,
+  // systemPromptLength, cacheable) so an operator's grep query works
+  // uniformly across both dispatch paths.
+  const promptHash = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
+  logger.info(
+    {
+      jobId: runOpts.jobId,
+      traceId: runOpts.traceId,
+      runner: runner.name,
+      agent: agent.name,
+      sessionKey: runOpts.sessionKey,
+      promptHash,
+      promptLength: prompt.length,
+      systemPromptLength: systemPrompt.length,
+      cacheable: systemPrompt.length > 0,
+    },
+    'Agent run delivered',
+  );
 
   const result = await runner.run({
     prompt,

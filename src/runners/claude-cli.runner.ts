@@ -15,6 +15,7 @@ import type {
   ClaudeCliRunnerConfig,
 } from './types';
 import { emitStreamEvent, parseStreamLine } from './claude-cli-stream-parser';
+import { extractUsageFromResultEvent } from './claude-cli-usage';
 
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 const KILL_GRACE_MS = 5_000;
@@ -76,8 +77,25 @@ function installStreamParser(child: CliProcess, runId: string, options: RunOptio
     buffer = lines.pop() ?? '';
     for (const line of lines) {
       const event = parseStreamLine(line);
-      if (event) {
-        emitStreamEvent(runId, options.traceId, options.jobId, event);
+      if (!event) continue;
+      emitStreamEvent(runId, options.traceId, options.jobId, event);
+      // Result events carry the per-run token-usage breakdown. Emitting a
+      // structured "Agent run usage" log line here closes the observability
+      // gap with session-aware mode (which already logs the same shape on
+      // "Session turn completed"). Operators can now grep cacheReadTokens
+      // to confirm the prompt cache is engaging across runs of the same
+      // template within the 1-hour TTL.
+      const usage = extractUsageFromResultEvent(event);
+      if (usage !== null) {
+        logger.info(
+          {
+            runId,
+            traceId: options.traceId,
+            jobId: options.jobId,
+            ...usage,
+          },
+          'Agent run usage',
+        );
       }
     }
   });
