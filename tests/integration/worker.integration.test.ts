@@ -7,11 +7,14 @@ import { registerRunner, resetRunners } from '../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
 import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 
-vi.mock('bullmq', () => ({
-  Worker: vi.fn().mockImplementation(() => ({
-    on: vi.fn(),
-  })),
-}));
+// SPE-2002: route through the shared validating BullMQ mock — see
+// `tests/helpers/bullmq-mock.ts`. Every Queue/Worker/QueueEvents
+// constructor calls `assertBullmqSafeName`, so a future bad name fails
+// at the unit-test layer the same way it fails at runtime.
+vi.mock('bullmq', async () => {
+  const helper = await import('../helpers/bullmq-mock');
+  return helper.bullmqMockModule;
+});
 
 vi.mock('ioredis', () => ({
   default: vi.fn().mockImplementation(() => ({})),

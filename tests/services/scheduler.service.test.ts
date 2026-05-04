@@ -1,36 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const upsertCalls: Array<{
-  schedulerId: string;
-  repeatOpts: { pattern: string; tz?: string };
-  template: { name: string; data: string };
-}> = [];
+import { bullmqMockState, getAllUpsertJobSchedulerCalls } from '../helpers/bullmq-mock';
 
-vi.mock('bullmq', () => {
-  class QueueMock {
-    async upsertJobScheduler(
-      schedulerId: string,
-      repeatOpts: { pattern: string; tz?: string },
-      template: { name: string; data: string; opts?: unknown },
-    ): Promise<void> {
-      upsertCalls.push({
-        schedulerId,
-        repeatOpts,
-        template: { name: template.name, data: template.data },
-      });
-    }
-    async close(): Promise<undefined> {
-      return undefined;
-    }
-  }
-  return {
-    Queue: QueueMock,
-    QueueEvents: class {
-      async close(): Promise<undefined> {
-        return undefined;
-      }
-    },
-  };
+vi.mock('bullmq', async () => {
+  const helper = await import('../helpers/bullmq-mock');
+  return helper.bullmqMockModule;
 });
 
 vi.mock('ioredis', () => ({
@@ -65,9 +39,37 @@ function buildAgent(name: string, scheduleRules: readonly TestRule[]): ResolvedA
   };
 }
 
+interface ScheduleCall {
+  schedulerId: string;
+  repeatOpts: { pattern: string; tz?: string };
+  template: { name: string; data: string };
+}
+
+/**
+ * Project the shared mock's per-instance `upsertJobSchedulerCalls` arrays
+ * into the shape this test suite cares about. Equivalent to the previous
+ * top-level `upsertCalls` array but populated by the shared validating
+ * mock — `new Queue('schedule:foo:bar')` would now throw at construction
+ * before `upsertJobScheduler` could ever be called.
+ *
+ * NOTE: scheduler IDs themselves (the first arg of `upsertJobScheduler`)
+ * legitimately contain ':' (e.g. `schedule:scarlett:daily-handoff`) and
+ * are NOT validated — only the queue name on which they're registered.
+ */
+function projectScheduleCalls(): ScheduleCall[] {
+  return getAllUpsertJobSchedulerCalls().map((call) => {
+    const tpl = call.template as { name: string; data: string };
+    return {
+      schedulerId: call.id,
+      repeatOpts: call.opts as { pattern: string; tz?: string },
+      template: { name: tpl.name, data: tpl.data },
+    };
+  });
+}
+
 describe('registerAgentSchedules', () => {
   beforeEach(() => {
-    upsertCalls.length = 0;
+    bullmqMockState.reset();
     resetTaskQueues();
   });
 
@@ -77,7 +79,7 @@ describe('registerAgentSchedules', () => {
     ];
     const result = await registerAgentSchedules(agents);
     expect(result).toEqual([]);
-    expect(upsertCalls).toHaveLength(0);
+    expect(projectScheduleCalls()).toHaveLength(0);
   });
 
   it('registers one BullMQ scheduler per declared rule', async () => {
@@ -104,14 +106,15 @@ describe('registerAgentSchedules', () => {
       schedulerId: 'schedule:scarlett:daily-handoff',
     });
 
-    expect(upsertCalls).toHaveLength(1);
-    expect(upsertCalls[0]!.schedulerId).toBe('schedule:scarlett:daily-handoff');
-    expect(upsertCalls[0]!.repeatOpts).toEqual({
+    const calls = projectScheduleCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.schedulerId).toBe('schedule:scarlett:daily-handoff');
+    expect(calls[0]!.repeatOpts).toEqual({
       pattern: '45 7 * * 1-5',
       tz: 'America/New_York',
     });
-    expect(upsertCalls[0]!.template.name).toBe('daily-handoff');
-    const data = JSON.parse(upsertCalls[0]!.template.data);
+    expect(calls[0]!.template.name).toBe('daily-handoff');
+    const data = JSON.parse(calls[0]!.template.data);
     expect(data).toMatchObject({
       kind: 'scheduled',
       rule: 'daily-handoff',
@@ -133,8 +136,9 @@ describe('registerAgentSchedules', () => {
 
     await registerAgentSchedules(agents);
 
-    expect(upsertCalls[0]!.repeatOpts).toEqual({ pattern: '0 * * * *' });
-    expect('tz' in upsertCalls[0]!.repeatOpts).toBe(false);
+    const calls = projectScheduleCalls();
+    expect(calls[0]!.repeatOpts).toEqual({ pattern: '0 * * * *' });
+    expect('tz' in calls[0]!.repeatOpts).toBe(false);
   });
 
   it('passes static rule.context through to the scheduled job data', async () => {
@@ -153,7 +157,8 @@ describe('registerAgentSchedules', () => {
 
     await registerAgentSchedules(agents);
 
-    const data = JSON.parse(upsertCalls[0]!.template.data);
+    const calls = projectScheduleCalls();
+    const data = JSON.parse(calls[0]!.template.data);
     expect(data.context).toEqual({ recipient: 'heather@talkatlanta.info' });
   });
 
@@ -215,7 +220,8 @@ describe('registerAgentSchedules', () => {
 
     const result = await registerAgentSchedules(agents);
     expect(result).toHaveLength(1);
-    expect(upsertCalls[0]!.schedulerId).toBe('schedule:winston:gmail-watch-refresh');
+    const calls = projectScheduleCalls();
+    expect(calls[0]!.schedulerId).toBe('schedule:winston:gmail-watch-refresh');
   });
 
   it('still requires messageTemplate when a non-shell runner override is specified', async () => {

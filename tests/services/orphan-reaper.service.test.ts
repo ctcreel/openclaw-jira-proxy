@@ -2,26 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type IORedis from 'ioredis';
 import type { JobType } from 'bullmq';
 
-const upsertCalls: Array<{ id: string; opts: unknown; template: unknown }> = [];
+import { bullmqMockState, findQueueByName } from '../helpers/bullmq-mock';
 
-vi.mock('bullmq', () => {
-  class QueueMock {
-    async upsertJobScheduler(id: string, opts: unknown, template: unknown): Promise<void> {
-      upsertCalls.push({ id, opts, template });
-    }
-    async close(): Promise<undefined> {
-      return undefined;
-    }
-  }
-  class WorkerMock {
-    on(): this {
-      return this;
-    }
-    async close(): Promise<undefined> {
-      return undefined;
-    }
-  }
-  return { Queue: QueueMock, Worker: WorkerMock };
+vi.mock('bullmq', async () => {
+  const helper = await import('../helpers/bullmq-mock');
+  return helper.bullmqMockModule;
 });
 
 vi.mock('ioredis', () => ({
@@ -143,7 +128,7 @@ function setBullmqState(state: JobType | null): void {
 describe('OrphanReaper.reapOnce', () => {
   beforeEach(() => {
     resetEventBus();
-    upsertCalls.length = 0;
+    bullmqMockState.reset();
     providerQueueMock.getJob.mockReset();
   });
 
@@ -345,7 +330,7 @@ describe('OrphanReaper.reapOnce', () => {
 describe('OrphanReaper alert dispatch', () => {
   beforeEach(() => {
     resetEventBus();
-    upsertCalls.length = 0;
+    bullmqMockState.reset();
     providerQueueMock.getJob.mockReset();
   });
 
@@ -420,9 +405,11 @@ describe('OrphanReaper alert dispatch', () => {
     const reaper = new OrphanReaper(createFakeRedis().redis, THRESHOLD_MS, INTERVAL_MS);
     await reaper.start();
 
-    expect(upsertCalls).toHaveLength(1);
-    expect(upsertCalls[0]!.id).toBe(REAPER_SCHEDULER_ID);
-    expect(upsertCalls[0]!.opts).toEqual({ every: INTERVAL_MS });
+    const reaperQueue = findQueueByName(REAPER_QUEUE_NAME);
+    expect(reaperQueue).toBeDefined();
+    expect(reaperQueue!.upsertJobSchedulerCalls).toHaveLength(1);
+    expect(reaperQueue!.upsertJobSchedulerCalls[0]!.id).toBe(REAPER_SCHEDULER_ID);
+    expect(reaperQueue!.upsertJobSchedulerCalls[0]!.opts).toEqual({ every: INTERVAL_MS });
 
     await reaper.stop();
   });
@@ -432,7 +419,9 @@ describe('OrphanReaper alert dispatch', () => {
     await reaper.start();
     await reaper.start();
 
-    expect(upsertCalls).toHaveLength(1);
+    const reaperQueue = findQueueByName(REAPER_QUEUE_NAME);
+    expect(reaperQueue).toBeDefined();
+    expect(reaperQueue!.upsertJobSchedulerCalls).toHaveLength(1);
 
     await reaper.stop();
   });
@@ -442,6 +431,7 @@ describe('getOrphanReaper singleton', () => {
   beforeEach(async () => {
     await resetOrphanReaper();
     resetEventBus();
+    bullmqMockState.reset();
   });
 
   afterEach(async () => {
@@ -469,33 +459,15 @@ describe('getOrphanReaper singleton', () => {
   });
 });
 
-describe('OrphanReaper queue identifiers', () => {
-  // SPE-1824 / SPE-1999: BullMQ uses ':' as its Redis key separator and
-  // refuses to construct a Queue/Worker if the name contains ':'. The thick
-  // BullMQ mock in this file skips that validation, which is why the prior
-  // suite stayed green while production crash-looped on startup. Static
-  // assertions on the exported constants close the loop without needing the
-  // real BullMQ wired up here. Regression source: orphan-reaper.service.ts
-  // shipped with `'clawndom:reaper'` / `'clawndom:orphan-reaper'`.
-
-  it('REAPER_QUEUE_NAME never contains a colon', () => {
-    expect(REAPER_QUEUE_NAME).not.toContain(':');
-  });
-
-  it('REAPER_SCHEDULER_ID never contains a colon', () => {
-    expect(REAPER_SCHEDULER_ID).not.toContain(':');
-  });
-
-  // Stronger guard than the colon-only checks above — catches any future
-  // special-character regression in BullMQ-name constants for free, not
-  // just the specific colon case that triggered SPE-1999.
-  const VALID_BULLMQ_NAME = /^[a-z][a-z0-9-]*$/;
-
-  it('REAPER_QUEUE_NAME matches the BullMQ-safe name pattern', () => {
-    expect(REAPER_QUEUE_NAME).toMatch(VALID_BULLMQ_NAME);
-  });
-
-  it('REAPER_SCHEDULER_ID matches the BullMQ-safe name pattern', () => {
-    expect(REAPER_SCHEDULER_ID).toMatch(VALID_BULLMQ_NAME);
-  });
-});
+// SPE-2002: the previous "OrphanReaper queue identifiers" describe block at
+// lines 472-501 (regex/colon static-asserts on REAPER_QUEUE_NAME and
+// REAPER_SCHEDULER_ID) was removed. Regression coverage now lives at:
+//   - `tests/lib/bullmq-name.test.ts` — pins the accept/reject set on the
+//     shared `assertBullmqSafeName` helper itself.
+//   - `src/services/orphan-reaper.service.ts` — module-load assertion on
+//     REAPER_QUEUE_NAME crashes on import if the constant ever drifts.
+//   - The shared BullMQ mock — `new Queue('clawndom:reaper', ...)` throws
+//     at the unit-test layer the same way real BullMQ throws at runtime,
+//     which is what the original guard tried to simulate.
+// REAPER_SCHEDULER_ID is intentionally not validated (scheduler IDs are
+// not subject to BullMQ's ':' rejection — see helper file's header).
