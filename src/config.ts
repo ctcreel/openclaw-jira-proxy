@@ -159,6 +159,19 @@ const settingsSchema = z.object({
     .default(30 * 60_000),
   /** How often the orphan reaper sweeps the inflight registry. Cron is per-minute when set to 60_000. */
   orphanReaperIntervalMs: z.coerce.number().min(10_000).default(60_000),
+  /**
+   * Maximum number of warm `claude-cli` subprocesses the SessionPool keeps
+   * alive at once. Excess acquires evict the least-recently-used entry
+   * (graceful close); the next event for the evicted key spawns a fresh
+   * subprocess via `claude --resume <id>` so conversation continuity is
+   * preserved by Redis.
+   *
+   * Tuned to the smallest host the pool runs on. On a 4 GB t3.medium with
+   * the default Node service + Redis + Tailscale baseline, eight warm
+   * sessions × (~250 MB Claude CLI + ~3-4 Python MCP children) is the
+   * usable ceiling before MemoryMax pressure kicks in.
+   */
+  sessionPoolMaxActive: z.coerce.number().min(1).default(8),
   sessionsFilePath: z.string().default(''),
   providers: z
     .array(providerSchema)
@@ -244,6 +257,7 @@ export function getSettings(): Settings {
     dedupTtlSeconds: process.env['DEDUP_TTL_SECONDS'],
     orphanThresholdMs: resolveOrphanThresholdMs(),
     orphanReaperIntervalMs: process.env['ORPHAN_REAPER_INTERVAL_MS'],
+    sessionPoolMaxActive: process.env['SESSION_POOL_MAX_ACTIVE'],
     sessionsFilePath:
       process.env['SESSIONS_FILE_PATH'] ||
       `${process.env['HOME']}/.openclaw/agents/${process.env['OPENCLAW_AGENT_ID'] || 'patch'}/sessions/sessions.json`,

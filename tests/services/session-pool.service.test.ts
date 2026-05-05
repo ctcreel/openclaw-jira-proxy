@@ -446,4 +446,79 @@ describe('SessionPool', () => {
 
     await expect(turnPromise).rejects.toThrow(/exited mid-turn/);
   });
+
+  it('evicts the least-recently-used session when acquire would exceed maxSessions', async () => {
+    const procA = makeMockProcess();
+    const procB = makeMockProcess();
+    const procC = makeMockProcess();
+    vi.mocked(spawn)
+      .mockReturnValueOnce(procA as unknown as ReturnType<typeof spawn>)
+      .mockReturnValueOnce(procB as unknown as ReturnType<typeof spawn>)
+      .mockReturnValueOnce(procC as unknown as ReturnType<typeof spawn>);
+    const redis = makeFakeRedis();
+    const bus = makeFakeEventBus();
+    const pool = new SessionPool({
+      redis,
+      events: bus,
+      maxSessions: 2,
+    } as unknown as ConstructorParameters<typeof SessionPool>[0]);
+
+    const requestA = { ...baseRequest, key: 'D-A' };
+    const requestB = { ...baseRequest, key: 'D-B' };
+    const requestC = { ...baseRequest, key: 'D-C' };
+
+    await pool.acquire(requestA, baseStrategy);
+    await pool.acquire(requestB, baseStrategy);
+    expect(pool.size()).toBe(2);
+
+    // Touch A so B becomes the LRU entry.
+    await pool.acquire(requestA, baseStrategy);
+
+    // Spawning C should evict B (least recently used), not A.
+    await pool.acquire(requestC, baseStrategy);
+    expect(pool.size()).toBe(2);
+
+    const evicted = bus.events.find((e) => e.type === 'session.evicted');
+    expect(evicted).toMatchObject({
+      type: 'session.evicted',
+      provider: 'slack-winston',
+      key: 'D-B',
+      reason: 'lru_capacity',
+      active_after: 1,
+    });
+
+    // Re-acquiring A should still be a warm hit (not evicted, not respawned).
+    const reA = await pool.acquire(requestA, baseStrategy);
+    expect(reA.acquirePath).toBe('warm');
+    // Three spawns total — A, B, C — and no respawn for A.
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(3);
+
+    await pool.shutdown();
+  });
+
+  it('does not evict when reusing an existing key, even at capacity', async () => {
+    const procA = makeMockProcess();
+    const procB = makeMockProcess();
+    vi.mocked(spawn)
+      .mockReturnValueOnce(procA as unknown as ReturnType<typeof spawn>)
+      .mockReturnValueOnce(procB as unknown as ReturnType<typeof spawn>);
+    const redis = makeFakeRedis();
+    const bus = makeFakeEventBus();
+    const pool = new SessionPool({
+      redis,
+      events: bus,
+      maxSessions: 2,
+    } as unknown as ConstructorParameters<typeof SessionPool>[0]);
+
+    await pool.acquire({ ...baseRequest, key: 'D-A' }, baseStrategy);
+    await pool.acquire({ ...baseRequest, key: 'D-B' }, baseStrategy);
+    expect(pool.size()).toBe(2);
+
+    // Re-acquiring an in-pool key must not trigger eviction.
+    await pool.acquire({ ...baseRequest, key: 'D-A' }, baseStrategy);
+    expect(pool.size()).toBe(2);
+    expect(bus.events.find((e) => e.type === 'session.evicted')).toBeUndefined();
+
+    await pool.shutdown();
+  });
 });

@@ -5,6 +5,7 @@ import type { Readable, Writable } from 'node:stream';
 import type IORedis from 'ioredis';
 
 import type { ProviderConfig } from '../config';
+import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import type { EventBus } from './event-bus.service';
 import { getEventBus } from './event-bus.service';
@@ -29,6 +30,7 @@ import type { StreamEvent } from '../runners/claude-cli-stream-parser';
 const logger = getLogger('session-pool');
 
 const REAP_GRACE_MS = 5_000;
+const DEFAULT_MAX_SESSIONS = 8;
 
 type CliProcess = ChildProcessByStdio<Writable, Readable, Readable>;
 
@@ -98,14 +100,21 @@ export interface SessionTurnHandle {
 }
 
 export class SessionPool {
+  /**
+   * Insertion order doubles as LRU order: warm-hit acquires re-set the
+   * entry to bump it to the back, and {@link evictLeastRecentlyUsed}
+   * always pops the front.
+   */
   private readonly active: Map<string, ActiveSession> = new Map();
   private readonly redis: IORedis;
   private readonly events: EventBus;
+  private readonly maxSessions: number;
   private shuttingDown = false;
 
-  constructor(options: { redis?: IORedis; events?: EventBus } = {}) {
+  constructor(options: { redis?: IORedis; events?: EventBus; maxSessions?: number } = {}) {
     this.redis = options.redis ?? getDedupRedis();
     this.events = options.events ?? getEventBus();
+    this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
   }
 
   /**
@@ -123,6 +132,10 @@ export class SessionPool {
     const compositeKey = buildCompositeKey(request.providerName, request.key);
     const existing = this.active.get(compositeKey);
     if (existing !== undefined && existing.child.exitCode === null) {
+      // Touch for LRU: re-insert so this key moves to the back of the
+      // Map's iteration order. Eviction always pops the front.
+      this.active.delete(compositeKey);
+      this.active.set(compositeKey, existing);
       return this.toHandle(existing, 'warm');
     }
 
@@ -130,6 +143,13 @@ export class SessionPool {
     // entry and (re)spawn.
     if (existing !== undefined) {
       this.active.delete(compositeKey);
+    }
+
+    // Make room before spawning. Eviction is fire-and-forget: the Redis
+    // session_id survives, so the next event for the evicted key will
+    // resume cleanly via `claude --resume <id>`.
+    while (this.active.size >= this.maxSessions) {
+      this.evictLeastRecentlyUsed();
     }
 
     // Look up any persisted session_id for this key — present means we
@@ -143,6 +163,38 @@ export class SessionPool {
     const session = this.spawnSession(request, redisKey, priorSessionId, strategy);
     this.active.set(compositeKey, session);
     return this.toHandle(session, acquirePath);
+  }
+
+  private evictLeastRecentlyUsed(): void {
+    const oldest = this.active.keys().next();
+    if (oldest.done === true) return;
+    const oldestKey = oldest.value;
+    const session = this.active.get(oldestKey);
+    if (session === undefined) return;
+    this.active.delete(oldestKey);
+    if (session.idleTimer !== null) {
+      clearTimeout(session.idleTimer);
+      session.idleTimer = null;
+    }
+    logger.info(
+      {
+        provider: session.providerName,
+        key: session.key,
+        activeAfter: this.active.size,
+        maxSessions: this.maxSessions,
+      },
+      'Evicting LRU session — pool at capacity',
+    );
+    this.events.publish({
+      type: 'session.evicted',
+      timestamp: Date.now(),
+      traceId: session.providerName,
+      provider: session.providerName,
+      key: session.key,
+      reason: 'lru_capacity',
+      active_after: this.active.size,
+    });
+    void this.gracefullyClose(session);
   }
 
   async shutdown(): Promise<void> {
@@ -569,7 +621,7 @@ let singleton: SessionPool | null = null;
 
 export function getSessionPool(): SessionPool {
   if (singleton === null) {
-    singleton = new SessionPool();
+    singleton = new SessionPool({ maxSessions: getSettings().sessionPoolMaxActive });
   }
   return singleton;
 }
