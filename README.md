@@ -165,6 +165,8 @@ The endpoints currently funnelled (each must be in the script before code that d
 
 ### GitHub
 
+> **Before configuring the GitHub webhook**, add `/hooks/github` to the route list in `infra/ec2/configure-tailscale-funnel.sh` and re-run the script on the host. The default funnel inventory only registers Jira and Slack; without this step, GitHub will deliver to a 404.
+
 1. Repo Settings → Webhooks → Add webhook
 2. Payload URL: `https://<machine>.ts.net/hooks/github`
 3. Content type: `application/json`

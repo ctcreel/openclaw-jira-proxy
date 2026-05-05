@@ -19,6 +19,10 @@
 
 set -euo pipefail
 
+# Production clawndom binds 8793 via PORT in /etc/clawndom/clawndom.env
+# (the src/config.ts default of 8792 is overridden in the deployed env).
+# Dashboard.py uses the same 8793 default. Override here if a non-production
+# host runs on the code default port.
 CLAWNDOM_LOCAL_BASE="${CLAWNDOM_LOCAL_BASE:-http://127.0.0.1:8793}"
 
 # Ordered list of public path → local target mappings. Every endpoint a
