@@ -279,6 +279,16 @@ export interface SessionErrorEvent {
   error_message: string;
 }
 
+export interface SessionEvictedEvent {
+  type: 'session.evicted';
+  timestamp: number;
+  traceId: string;
+  provider: string;
+  key: string;
+  reason: 'lru_capacity';
+  active_after: number;
+}
+
 export type ClawndomEvent =
   | WebhookReceivedEvent
   | WebhookAcceptedEvent
@@ -306,4 +316,5 @@ export type ClawndomEvent =
   | SessionResumedEvent
   | SessionReapedEvent
   | SessionStaleEvent
-  | SessionErrorEvent;
+  | SessionErrorEvent
+  | SessionEvictedEvent;

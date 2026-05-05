@@ -41,6 +41,18 @@ pnpm build
 log "Validating /etc/clawndom/clawndom.env"
 sudo bash "${REPO_DIR}/infra/ec2/validate-env.sh" /etc/clawndom/clawndom.env
 
+# Sync systemd unit when the in-repo copy diverges. bootstrap.sh installs
+# the unit on first provision, but deploys are how all subsequent unit
+# changes (MemoryMax, OOMPolicy, Restart=, etc.) reach existing hosts.
+# Without this, infra/ec2/systemd/*.service edits are dead code.
+REPO_UNIT="${REPO_DIR}/infra/ec2/systemd/clawndom.service"
+LIVE_UNIT="/etc/systemd/system/clawndom.service"
+if ! sudo cmp -s "${REPO_UNIT}" "${LIVE_UNIT}"; then
+  log "Updating systemd unit (live copy differs from repo)"
+  sudo install -m 0644 -o root -g root "${REPO_UNIT}" "${LIVE_UNIT}"
+  sudo systemctl daemon-reload
+fi
+
 log "Restarting clawndom.service"
 sudo systemctl restart clawndom.service
 

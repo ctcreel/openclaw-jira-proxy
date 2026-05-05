@@ -11,10 +11,20 @@ Group=clawndom
 WorkingDirectory=/opt/clawndom
 EnvironmentFile=/etc/clawndom/clawndom.env
 ExecStart=/usr/bin/node /opt/clawndom/dist/server.js
-Restart=on-failure
+Restart=always
 RestartSec=5
 StandardOutput=append:/var/log/clawndom/clawndom.log
 StandardError=append:/var/log/clawndom/clawndom.log
+
+# Memory ceiling — cap the cgroup so a runaway warm-session subprocess
+# (claude-cli + its MCP children) gets OOM-killed inside the unit instead
+# of wedging the whole EC2 host. Sized for a t3.medium (4 GB total),
+# leaving ~1 GB for the OS + redis + tailscaled + ssm-agent baseline.
+# OOMPolicy=continue keeps the unit running after the kernel kills an
+# offending child; Restart=always brings the unit back if the main
+# process itself is the victim.
+MemoryMax=3G
+OOMPolicy=continue
 
 # Hardening — narrow the blast radius if the process is compromised
 NoNewPrivileges=true
