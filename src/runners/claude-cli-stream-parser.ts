@@ -166,9 +166,16 @@ export function parseQuotaLimitMessage(
   const match = limitRegex.exec(text);
   if (!match) return null;
 
-  const hourRaw = Number(match[1]);
+  // The regex pattern guarantees group 3 (am|pm) when match succeeds, but
+  // TypeScript can't infer that from the regex literal — explicit guard +
+  // fail-fast instead of a `!` non-null assertion (project rule). Same
+  // for the hour group, defensively.
+  const hourRawGroup = match[1];
+  const meridiemGroup = match[3];
+  if (hourRawGroup === undefined || meridiemGroup === undefined) return null;
+  const hourRaw = Number(hourRawGroup);
   const minuteRaw = match[2] === undefined ? 0 : Number(match[2]);
-  const meridiem = match[3]!.toLowerCase();
+  const meridiem = meridiemGroup.toLowerCase();
   if (!Number.isFinite(hourRaw) || !Number.isFinite(minuteRaw)) return null;
   if (hourRaw < 1 || hourRaw > 12 || minuteRaw < 0 || minuteRaw > 59) return null;
 
