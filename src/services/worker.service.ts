@@ -440,6 +440,27 @@ async function handleQuotaExceeded(
     attempt: requeue.attempt,
     originalJobId: envelope.originalJobId ?? jobIdString,
   });
+
+  // Mark the original job as completed at the lifecycle level. BullMQ
+  // already treats it as completed (we return from processJob normally,
+  // no throw, no retry counter consumed); this event tells the in-process
+  // registries to clear their bookkeeping for the now-paused jobId.
+  // Without it, ActiveJobsRegistry leaves the job in its `jobs` map
+  // forever, the dashboard renders 10 phantom-active rows after a quota
+  // event, and the InflightRegistry keeps an inflight key in Redis until
+  // its 24h TTL. `durationMs` is from the parent processJob's startedAt
+  // through now; `runId` is unknown at this layer (the runner emitted it
+  // and exited) — placeholder is fine since this is a paused-not-finished
+  // outcome.
+  getEventBus().publish({
+    type: 'job.completed',
+    timestamp: now,
+    traceId,
+    jobId: jobIdString,
+    provider: provider.name,
+    durationMs: 0,
+    runId: 'quota-paused',
+  });
 }
 
 /**

@@ -449,6 +449,45 @@ describe('processJob quota_exceeded handling', () => {
     });
   });
 
+  it('emits job.completed for the original jobId so registries clean up', async () => {
+    runSpy.mockResolvedValueOnce({
+      status: 'quota_exceeded',
+      runId: 'cli-quota-3',
+      quotaResetAt: Date.now() + 600_000,
+      renderedPrompt: 'rendered',
+    });
+
+    const { getEventBus, resetEventBus } = await import('../../src/services/event-bus.service');
+    resetEventBus();
+    const captured: { type: string; jobId?: string }[] = [];
+    getEventBus().subscribe((stamped) => {
+      const event = stamped.event;
+      const jobId = 'jobId' in event ? event.jobId : undefined;
+      const entry: { type: string; jobId?: string } = { type: event.type };
+      if (jobId !== undefined) entry.jobId = jobId;
+      captured.push(entry);
+    });
+
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+    const envelope: JobEnvelope = { payload: '{}', attempt: 1 };
+
+    await processJob(createFakeJob(JSON.stringify(envelope), 'orig-3'), testProvider, agents);
+
+    // job.requeued must fire BEFORE job.completed: the requeue advertises
+    // the new BullMQ id; the completed event closes the lifecycle on the
+    // original. Out-of-order would make subscribers see "completed → look
+    // up new job → not yet queued" and miss context propagation.
+    const requeuedIndex = captured.findIndex((e) => e.type === 'job.requeued');
+    const completedIndex = captured.findIndex(
+      (e) => e.type === 'job.completed' && e.jobId === 'orig-3',
+    );
+    expect(requeuedIndex).toBeGreaterThanOrEqual(0);
+    expect(completedIndex).toBeGreaterThan(requeuedIndex);
+    expect(captured[completedIndex]?.jobId).toBe('orig-3');
+  });
+
   it('schedules at least the floor delay even when reset is in the past', async () => {
     runSpy.mockResolvedValueOnce({
       status: 'quota_exceeded',
