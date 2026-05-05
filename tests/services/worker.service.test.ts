@@ -442,6 +442,9 @@ describe('processJob quota_exceeded handling', () => {
     expect(requeued).toMatchObject({
       payload: envelope.payload,
       attempt: 1,
+      // First-generation envelope had no originalJobId — the current
+      // BullMQ job id is stamped in so trace lineage survives the resume.
+      originalJobId: 'orig-1',
       context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
     });
   });

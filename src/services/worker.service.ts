@@ -401,12 +401,18 @@ async function handleQuotaExceeded(
   const resetAt = quotaResetAt ?? now + QUOTA_RESUME_FLOOR_MS;
   const delayMs = Math.max(QUOTA_RESUME_FLOOR_MS, resetAt - now);
 
+  // Preserve trace lineage: if the incoming envelope was first-generation
+  // (no originalJobId set), the current BullMQ job id IS the trace id —
+  // stamp it onto the delayed envelope so the next pickup keeps the same
+  // traceId via `envelope.originalJobId ?? jobIdString` in processJob.
+  // Without this, the resumed job switches to a fresh trace lineage and
+  // the SSE/registry stream loses continuity with the pre-pause history.
   const requeue: JobEnvelope = {
     payload: envelope.payload,
     // Reset attempt counter — quota wasn't this job's fault and shouldn't
     // count against its retry budget.
     attempt: 1,
-    ...(envelope.originalJobId === undefined ? {} : { originalJobId: envelope.originalJobId }),
+    originalJobId: envelope.originalJobId ?? jobIdString,
     ...(envelope.context === undefined ? {} : { context: envelope.context }),
   };
 

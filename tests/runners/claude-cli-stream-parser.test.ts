@@ -58,6 +58,20 @@ describe('parseQuotaLimitMessage', () => {
     ).toBeNull();
   });
 
+  it('returns null when the limit message is embedded in surrounding text', () => {
+    // Anchor regression: if the agent ever quotes the limit phrase in a
+    // longer message, we must NOT misclassify the run as quota_exceeded.
+    // Production claude-cli emits this as a standalone block, so anchoring
+    // is safe.
+    const now = new Date(Date.UTC(2026, 4, 5, 17, 30, 0));
+    expect(
+      parseQuotaLimitMessage(
+        "As we discussed earlier, you've hit your limit · resets 6:40pm (UTC), so I'll stop here.",
+        now,
+      ),
+    ).toBeNull();
+  });
+
   it('returns null when the time format is malformed', () => {
     const now = new Date();
     expect(parseQuotaLimitMessage("You've hit your limit · resets soon", now)).toBeNull();

@@ -155,11 +155,14 @@ export function parseQuotaLimitMessage(
   text: string,
   now: Date = new Date(),
 ): { resetAt: number } | null {
-  // Anchor on the unique "hit your limit" phrase to avoid false positives
-  // from agent text that quotes the message. The em-dash variant uses U+00B7
-  // ("·") in the production output; tolerate both forms.
+  // Anchor to the full trimmed assistant block so the agent quoting the
+  // message in normal text ("As discussed, you've hit your limit · resets
+  // 6pm (UTC)…") doesn't get misclassified. claude-cli emits the limit
+  // text as a standalone assistant_text payload — there's no other content
+  // around it. The em-dash variant uses U+00B7 ("·") in the production
+  // output; tolerate both forms.
   const limitRegex =
-    /you'?ve hit your limit\s*[·\-—]\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(utc\)/i;
+    /^\s*you'?ve hit your limit\s*[·\-—]\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(utc\)\s*$/i;
   const match = limitRegex.exec(text);
   if (!match) return null;
 
