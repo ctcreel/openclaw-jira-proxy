@@ -391,6 +391,83 @@ describe('resolveModel', () => {
   });
 });
 
+describe('processJob quota_exceeded handling', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    resetSettings();
+    resetRunners();
+    registerRunner(new SpyRunner());
+    const { resetQueues } = await import('../../src/services/queue.service');
+    resetQueues();
+    const { resetEventBus } = await import('../../src/services/event-bus.service');
+    resetEventBus();
+  });
+
+  it('re-enqueues with delay matching the upstream reset and does NOT throw on quota_exceeded', async () => {
+    runSpy.mockResolvedValueOnce({
+      status: 'quota_exceeded',
+      runId: 'cli-quota-1',
+      quotaResetAt: Date.now() + 600_000,
+      renderedPrompt: 'rendered',
+    });
+
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+
+    // Recovery-aware envelope mirroring what real ingest produces; the
+    // re-enqueue must preserve `context` so the same ticket resumes after
+    // the reset window.
+    const envelope: JobEnvelope = {
+      payload: '{"issue":{"key":"SPE-2009"}}',
+      attempt: 1,
+      context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
+    };
+
+    await expect(
+      processJob(createFakeJob(JSON.stringify(envelope), 'orig-1'), testProvider, agents),
+    ).resolves.toBeUndefined();
+
+    const { bullmqMockState } = await import('../helpers/bullmq-mock');
+    // Find the test-provider's queue and inspect its addCalls. The mock's
+    // queue name format is `webhooks-<provider>` per buildQueueName.
+    const queue = bullmqMockState.queueInstances.find((q) => q.name === 'webhooks-test-provider');
+    expect(queue).toBeDefined();
+    expect(queue!.addCalls).toHaveLength(1);
+    const call = queue!.addCalls[0]!;
+    expect(call.name).toBe('webhook-event');
+    expect(call.opts?.['delay']).toBeGreaterThan(0);
+    expect(call.opts?.['delay']).toBeLessThanOrEqual(600_000);
+    const requeued = JSON.parse(call.data as string) as Record<string, unknown>;
+    expect(requeued).toMatchObject({
+      payload: envelope.payload,
+      attempt: 1,
+      context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
+    });
+  });
+
+  it('schedules at least the floor delay even when reset is in the past', async () => {
+    runSpy.mockResolvedValueOnce({
+      status: 'quota_exceeded',
+      runId: 'cli-quota-2',
+      quotaResetAt: Date.now() - 60_000, // already past
+      renderedPrompt: 'rendered',
+    });
+
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+    const envelope: JobEnvelope = { payload: '{}', attempt: 1 };
+
+    await processJob(createFakeJob(JSON.stringify(envelope), 'orig-2'), testProvider, agents);
+
+    const { bullmqMockState } = await import('../helpers/bullmq-mock');
+    const queue = bullmqMockState.queueInstances.find((q) => q.name === 'webhooks-test-provider');
+    const delay = queue!.addCalls[0]!.opts?.['delay'] as number;
+    expect(delay).toBeGreaterThanOrEqual(5_000);
+  });
+});
+
 describe('processJob trace-context recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();

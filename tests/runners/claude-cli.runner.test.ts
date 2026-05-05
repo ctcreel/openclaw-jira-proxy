@@ -154,6 +154,74 @@ describe('ClaudeCliRunner', () => {
     );
   });
 
+  it('returns quota_exceeded with parsed resetAt when the CLI emits the limit message', async () => {
+    // Production-shape stream: a single assistant text block carrying the
+    // "You've hit your limit" message, followed by exit 1. This is the
+    // exact failure mode that produced 9 cascading retries before the
+    // quota-aware path landed. We use a manually-driven stream + close
+    // sequence so the parser's data handler is guaranteed to run before
+    // the close handler — `createMockProcess` races those via nextTick.
+    const limitEvent = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: "You've hit your limit · resets 6:40pm (UTC)" }],
+      },
+    });
+    const proc = new EventEmitter();
+    const stdoutStream = new Readable({ read(): void {} });
+    const stderrStream = new Readable({ read(): void {} });
+    Object.assign(proc, {
+      stdout: stdoutStream,
+      stderr: stderrStream,
+      killed: false,
+      kill: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValue(proc as never);
+
+    const runner = new ClaudeCliRunner(baseConfig);
+    const runPromise = runner.run(baseOptions);
+    // Push data synchronously after the runner attaches its listeners,
+    // then emit close on a later tick so the parser fires first.
+    stdoutStream.push(`${limitEvent}\n`);
+    stdoutStream.push(null);
+    stderrStream.push(null);
+    await new Promise((r) => setImmediate(r));
+    proc.emit('close', 1);
+    const result = await runPromise;
+
+    expect(result.status).toBe('quota_exceeded');
+    expect(result.quotaResetAt).toBeTypeOf('number');
+    expect(result.quotaResetAt!).toBeGreaterThan(Date.now() - 60_000);
+    // The error path is intentionally NOT taken even though exit was 1 —
+    // this is what stops retries from being burned on the same wall.
+    expect(result.error).toBeUndefined();
+  });
+
+  it('still returns generic error for non-quota stderr-y failures', async () => {
+    const proc = new EventEmitter();
+    const stdoutStream = new Readable({ read(): void {} });
+    const stderrStream = new Readable({ read(): void {} });
+    Object.assign(proc, {
+      stdout: stdoutStream,
+      stderr: stderrStream,
+      killed: false,
+      kill: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValue(proc as never);
+
+    const runner = new ClaudeCliRunner(baseConfig);
+    const runPromise = runner.run(baseOptions);
+    stdoutStream.push(null);
+    stderrStream.push('segfault');
+    stderrStream.push(null);
+    await new Promise((r) => setImmediate(r));
+    proc.emit('close', 1);
+    const result = await runPromise;
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('segfault');
+  });
+
   it('should return ok on exit code 0', async () => {
     vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
     const runner = new ClaudeCliRunner(baseConfig);
