@@ -154,19 +154,17 @@ describe('ClaudeCliRunner', () => {
     );
   });
 
-  it('returns quota_exceeded with parsed resetAt when the CLI emits the limit message', async () => {
-    // Production-shape stream: a single assistant text block carrying the
-    // "You've hit your limit" message, followed by exit 1. This is the
-    // exact failure mode that produced 9 cascading retries before the
-    // quota-aware path landed. We use a manually-driven stream + close
-    // sequence so the parser's data handler is guaranteed to run before
-    // the close handler — `createMockProcess` races those via nextTick.
-    const limitEvent = JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [{ type: 'text', text: "You've hit your limit · resets 6:40pm (UTC)" }],
-      },
-    });
+  // The "Agent run usage" path's `createMockProcess` races stdout flushing
+  // against `process.nextTick(close)`, which works for the existing
+  // resolves-on-close tests but fails when the close handler depends on
+  // stdout-derived state (e.g. the quota signal). Shared driver below
+  // gives the parser a deterministic chance to consume stdout before
+  // close fires.
+  function runWithDeterministicStreams(args: {
+    readonly stdoutLines: readonly string[];
+    readonly stderr?: string;
+    readonly exitCode: number;
+  }): Promise<{ result: Awaited<ReturnType<ClaudeCliRunner['run']>> }> {
     const proc = new EventEmitter();
     const stdoutStream = new Readable({ read(): void {} });
     const stderrStream = new Readable({ read(): void {} });
@@ -180,14 +178,33 @@ describe('ClaudeCliRunner', () => {
 
     const runner = new ClaudeCliRunner(baseConfig);
     const runPromise = runner.run(baseOptions);
-    // Push data synchronously after the runner attaches its listeners,
-    // then emit close on a later tick so the parser fires first.
-    stdoutStream.push(`${limitEvent}\n`);
+    for (const line of args.stdoutLines) stdoutStream.push(line);
     stdoutStream.push(null);
+    if (args.stderr !== undefined) stderrStream.push(args.stderr);
     stderrStream.push(null);
-    await new Promise((r) => setImmediate(r));
-    proc.emit('close', 1);
-    const result = await runPromise;
+    return new Promise((resolve, reject) => {
+      setImmediate(() => {
+        proc.emit('close', args.exitCode);
+        runPromise.then((result) => resolve({ result })).catch(reject);
+      });
+    });
+  }
+
+  it('returns quota_exceeded with parsed resetAt when the CLI emits the limit message', async () => {
+    // Production-shape stream: a single assistant text block carrying the
+    // "You've hit your limit" message, followed by exit 1. This is the
+    // exact failure mode that produced 9 cascading retries before the
+    // quota-aware path landed.
+    const limitEvent = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: "You've hit your limit · resets 6:40pm (UTC)" }],
+      },
+    });
+    const { result } = await runWithDeterministicStreams({
+      stdoutLines: [`${limitEvent}\n`],
+      exitCode: 1,
+    });
 
     expect(result.status).toBe('quota_exceeded');
     expect(result.quotaResetAt).toBeTypeOf('number');
@@ -198,26 +215,11 @@ describe('ClaudeCliRunner', () => {
   });
 
   it('still returns generic error for non-quota stderr-y failures', async () => {
-    const proc = new EventEmitter();
-    const stdoutStream = new Readable({ read(): void {} });
-    const stderrStream = new Readable({ read(): void {} });
-    Object.assign(proc, {
-      stdout: stdoutStream,
-      stderr: stderrStream,
-      killed: false,
-      kill: vi.fn(),
+    const { result } = await runWithDeterministicStreams({
+      stdoutLines: [],
+      stderr: 'segfault',
+      exitCode: 1,
     });
-    vi.mocked(spawn).mockReturnValue(proc as never);
-
-    const runner = new ClaudeCliRunner(baseConfig);
-    const runPromise = runner.run(baseOptions);
-    stdoutStream.push(null);
-    stderrStream.push('segfault');
-    stderrStream.push(null);
-    await new Promise((r) => setImmediate(r));
-    proc.emit('close', 1);
-    const result = await runPromise;
-
     expect(result.status).toBe('error');
     expect(result.error).toContain('segfault');
   });
