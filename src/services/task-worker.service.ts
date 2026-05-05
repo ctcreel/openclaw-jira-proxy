@@ -184,7 +184,7 @@ async function runRule(
   // scheduled tasks if recurring-fire quota collisions become a problem.
   if (result.status === 'quota_exceeded') {
     const resetAtIso =
-      result.quotaResetAt !== undefined ? new Date(result.quotaResetAt).toISOString() : 'unknown';
+      result.quotaResetAt === undefined ? 'unknown' : new Date(result.quotaResetAt).toISOString();
     throw new Error(`Task run hit upstream quota limit (resets at ${resetAtIso})`);
   }
 

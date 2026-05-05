@@ -406,8 +406,8 @@ async function handleQuotaExceeded(
     // Reset attempt counter — quota wasn't this job's fault and shouldn't
     // count against its retry budget.
     attempt: 1,
-    ...(envelope.originalJobId !== undefined ? { originalJobId: envelope.originalJobId } : {}),
-    ...(envelope.context !== undefined ? { context: envelope.context } : {}),
+    ...(envelope.originalJobId === undefined ? {} : { originalJobId: envelope.originalJobId }),
+    ...(envelope.context === undefined ? {} : { context: envelope.context }),
   };
 
   const queue = getProviderQueue(provider.name);

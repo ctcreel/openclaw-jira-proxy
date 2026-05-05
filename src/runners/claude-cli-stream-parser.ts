@@ -158,13 +158,13 @@ export function parseQuotaLimitMessage(
   // Anchor on the unique "hit your limit" phrase to avoid false positives
   // from agent text that quotes the message. The em-dash variant uses U+00B7
   // ("·") in the production output; tolerate both forms.
-  const match = text.match(
-    /you'?ve hit your limit\s*[·\-—]\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(utc\)/i,
-  );
+  const limitRegex =
+    /you'?ve hit your limit\s*[·\-—]\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(utc\)/i;
+  const match = limitRegex.exec(text);
   if (!match) return null;
 
   const hourRaw = Number(match[1]);
-  const minuteRaw = match[2] !== undefined ? Number(match[2]) : 0;
+  const minuteRaw = match[2] === undefined ? 0 : Number(match[2]);
   const meridiem = match[3]!.toLowerCase();
   if (!Number.isFinite(hourRaw) || !Number.isFinite(minuteRaw)) return null;
   if (hourRaw < 1 || hourRaw > 12 || minuteRaw < 0 || minuteRaw > 59) return null;
