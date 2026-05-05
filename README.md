@@ -132,22 +132,26 @@ Each provider declares:
 
 ### Tailscale Funnel
 
-Funnel allowlists each public path individually — there's no wildcard. Every provider's webhook route *and* every `/api/*` endpoint the dashboard consumes has to be registered explicitly, or the public URL returns a Funnel-level 502/404. Rules persist in Tailscale's own state, not in this repo, so re-provisioning a host means re-running these.
+Funnel allowlists each public path individually — there's no wildcard. Every provider's webhook route *and* every `/api/*` endpoint the dashboard consumes has to be registered explicitly, or the public URL returns a Funnel-level 404. Rules persist in Tailscale's own state, not in this repo.
 
-Pass the full upstream URL (including the path) so Funnel forwards to the matching clawndom route rather than the proxy root:
+Source of truth: [`infra/ec2/configure-tailscale-funnel.sh`](infra/ec2/configure-tailscale-funnel.sh). Re-run it on the box whenever the route list changes:
 
 ```bash
-# Webhook ingress — one per provider in PROVIDERS_CONFIG
-tailscale funnel --bg --set-path /hooks/jira http://127.0.0.1:8793/hooks/jira
-tailscale funnel --bg --set-path /hooks/slack http://127.0.0.1:8793/hooks/slack
-
-# Dashboard + observability endpoints
-tailscale funnel --bg --set-path /api/health http://127.0.0.1:8793/api/health
-tailscale funnel --bg --set-path /api/events http://127.0.0.1:8793/api/events
-tailscale funnel --bg --set-path /api/jobs/active http://127.0.0.1:8793/api/jobs/active
+sudo bash /opt/clawndom/infra/ec2/configure-tailscale-funnel.sh
 ```
 
-Verify with `tailscale funnel status`.
+The script resets and reapplies the full configuration, so removed routes also disappear. Verify with `tailscale funnel status`.
+
+The endpoints currently funnelled (each must be in the script before code that depends on them ships):
+
+| Path | Why it's public |
+|---|---|
+| `/hooks/jira`, `/hooks/slack` | Webhook ingestion |
+| `/api/health` | Uptime monitors + dashboard status LED |
+| `/api/events` | Live SSE stream consumed by the dashboard |
+| `/api/jobs/active` | Active-job snapshot (legacy bootstrap) |
+| `/api/queue/snapshot` | Dashboard bootstrap — active + queued + recent + SSE replay anchor |
+| `/api/webhooks/skipped/recent` | Dashboard bootstrap — recently-rejected webhooks panel |
 
 ## Webhook Setup by Provider
 
@@ -160,6 +164,8 @@ Verify with `tailscale funnel status`.
 5. Jira sends `X-Hub-Signature: sha256=<hex>` (WebSub format)
 
 ### GitHub
+
+> **Before configuring the GitHub webhook**, add `/hooks/github` to the route list in `infra/ec2/configure-tailscale-funnel.sh` and re-run the script on the host. The default funnel inventory only registers Jira and Slack; without this step, GitHub will deliver to a 404.
 
 1. Repo Settings → Webhooks → Add webhook
 2. Payload URL: `https://<machine>.ts.net/hooks/github`

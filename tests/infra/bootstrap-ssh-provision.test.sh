@@ -17,6 +17,18 @@
 
 set -euo pipefail
 
+# This test exercises bootstrap.sh's Linux-host provisioning helpers via real
+# install/stat invocations. macOS ships BSD variants of both (stat -c is
+# GNU-only; install -g $USER assumes a same-named primary group, which Linux
+# creates by default and macOS does not). Rather than carry per-platform
+# branches in the test for a code path that only runs on the EC2 deploy
+# target, skip cleanly off-Linux. CI runs on Ubuntu and remains the source
+# of truth for this regression.
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "── skipping bootstrap-ssh-provision.test.sh on $(uname -s) — Linux-only"
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 BOOTSTRAP_SCRIPT="${REPO_ROOT}/infra/ec2/bootstrap.sh"

@@ -19,6 +19,7 @@ import { renderMemoryRecallBlock, renderMemoryStorageBlock } from './memory/prom
 import type { MemoryHit } from './memory/prompt-fragments';
 import { getSessionKeyStrategy } from '../strategies/session-key';
 import type { AlertRegistry } from './alerts';
+import { getActiveJobsRegistry } from './active-jobs.service';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
 import { buildQueueName } from './queue.service';
@@ -29,10 +30,22 @@ import type { SessionConfig, SessionKeyStrategy } from '../strategies/session-ke
 
 const logger = getLogger('worker');
 
+const EnvelopeContextSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string(),
+});
+
 const JobEnvelopeSchema = z.object({
   payload: z.string(),
   attempt: z.number(),
   originalJobId: z.string().optional(),
+  // Set by event-ingest at first enqueue; preserved by worker-failure-handler
+  // on re-enqueue. Lets the worker repopulate trace_context for in-flight
+  // jobs that survive a clawndom restart — without it, /api/jobs/active
+  // returns context: null because the in-process pendingContext map died
+  // with the previous process.
+  context: EnvelopeContextSchema.optional(),
 });
 
 export type JobEnvelope = z.infer<typeof JobEnvelopeSchema>;
@@ -259,6 +272,27 @@ export async function processJob(
     },
     'Agent run prompt',
   );
+
+  // Recovery emit: when the envelope carries context AND no in-process
+  // `webhook.accepted` has fired for this traceId, this worker is processing
+  // a job whose ingest happened in a prior process lifetime (clawndom restart
+  // mid-flight). Re-publish `webhook.accepted` from the envelope so the
+  // bus-derived registries (ActiveJobs, Inflight, RecentCompletions) can
+  // populate their pendingContext maps, and so SSE consumers connecting
+  // after this point can read context off the wire. Conditional on the
+  // hasPendingContext check to avoid duplicating the in-process ingest's
+  // emission in the happy path.
+  if (envelope.context !== undefined && !getActiveJobsRegistry().hasPendingContext(traceId)) {
+    events.publish({
+      type: 'webhook.accepted',
+      timestamp: Date.now(),
+      traceId,
+      provider: provider.name,
+      contextId: envelope.context.id,
+      contextTitle: envelope.context.title,
+      contextStatus: envelope.context.status,
+    });
+  }
 
   const jobStartedAt = Date.now();
   events.publish({

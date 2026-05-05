@@ -74,6 +74,9 @@ async function requeueJobToBack(
     payload: envelope.payload,
     attempt: envelope.attempt + 1,
     originalJobId: envelope.originalJobId ?? job.id ?? undefined,
+    // Preserve context across retries so the recovery emit in
+    // worker.processJob still fires after a restart-during-retry.
+    ...(envelope.context === undefined ? {} : { context: envelope.context }),
   };
   const delayMs = computeRequeueDelayMs(envelope.attempt);
 

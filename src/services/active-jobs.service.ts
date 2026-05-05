@@ -52,6 +52,17 @@ export class ActiveJobsRegistry {
     return [...this.jobs.values()];
   }
 
+  /**
+   * True when an in-process `webhook.accepted` has populated context for
+   * this traceId. The worker uses this to decide whether to re-emit
+   * `webhook.accepted` from the recovery path: if pending-context already
+   * exists, the in-process ingest already published it and a re-emit
+   * would just duplicate the SSE frame.
+   */
+  hasPendingContext(traceId: string): boolean {
+    return this.pendingContext.has(traceId);
+  }
+
   private handleEvent(event: ClawndomEvent): void {
     switch (event.type) {
       case 'webhook.accepted':
