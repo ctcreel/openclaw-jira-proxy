@@ -279,6 +279,34 @@ describe('buildFailedHandler', () => {
     expect(sent[0]!.contextId).toBe('SPE-1977');
   });
 
+  it('preserves envelope.context onto the requeued envelope', async () => {
+    const { queue, calls } = createMockQueue();
+    const handler = buildFailedHandler(buildProvider(), queue, undefined, 3);
+
+    const envelopeWithContext = {
+      payload: 'p',
+      attempt: 1,
+      originalJobId: 'trace-1',
+      context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
+    };
+    const job = {
+      id: 'bullmq-1',
+      data: JSON.stringify(envelopeWithContext),
+    } as unknown as Job<string>;
+
+    handler(job, new Error('transient'));
+    await flushMicrotasks();
+
+    expect(calls).toHaveLength(1);
+    const requeuedEnvelope = JSON.parse(calls[0]!.data) as Record<string, unknown>;
+    expect(requeuedEnvelope.context).toEqual({
+      id: 'SPE-2009',
+      title: 'Empty fourth page',
+      status: 'Plan',
+    });
+    expect(requeuedEnvelope.attempt).toBe(2);
+  });
+
   it('uses job.id as the traceId when the envelope has no originalJobId', async () => {
     dedupRedisMock.hgetall.mockResolvedValue({});
     const events: ClawndomEvent[] = [];

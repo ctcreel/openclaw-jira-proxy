@@ -147,7 +147,18 @@ describe('ingestEvent', () => {
     });
 
     expect(result).toEqual({ outcome: 'enqueued', jobTraceId: 'job-99' });
-    expect(queueAddMock).toHaveBeenCalledWith('webhook-event', rawBodyString);
+    // Envelope shape, not the raw body — context must persist onto the
+    // BullMQ payload so a worker pickup after a clawndom restart can still
+    // recover trace_context. Asserting on parsed envelope rather than
+    // exact string keeps the test resilient to JSON whitespace drift.
+    expect(queueAddMock).toHaveBeenCalledOnce();
+    const enqueuedData = queueAddMock.mock.calls[0]![1];
+    const enqueuedEnvelope = JSON.parse(enqueuedData) as Record<string, unknown>;
+    expect(enqueuedEnvelope).toMatchObject({
+      payload: rawBodyString,
+      attempt: 1,
+      context: { id: 'SPE-3', title: expect.any(String), status: 'Ready' },
+    });
 
     const accepted = events.find((e) => e.type === 'webhook.accepted');
     expect(accepted).toMatchObject({

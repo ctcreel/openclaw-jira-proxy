@@ -215,6 +215,32 @@ describe('ActiveJobsRegistry', () => {
     registry.stop();
     expect(() => registry.stop()).not.toThrow();
   });
+
+  it('hasPendingContext reflects pendingContext map state across the lifecycle', () => {
+    const registry = new ActiveJobsRegistry();
+    registry.start();
+    const bus = getEventBus();
+
+    expect(registry.hasPendingContext('trace-1')).toBe(false);
+    bus.publish(buildWebhookAccepted({ traceId: 'trace-1' }));
+    expect(registry.hasPendingContext('trace-1')).toBe(true);
+
+    // Survives non-final failure (context kept for retries).
+    bus.publish(buildJobStarted({ traceId: 'trace-1' }));
+    bus.publish(buildJobFailed({ traceId: 'trace-1', final: false }));
+    expect(registry.hasPendingContext('trace-1')).toBe(true);
+
+    // Cleared on final failure.
+    bus.publish(buildJobFailed({ traceId: 'trace-1', final: true }));
+    expect(registry.hasPendingContext('trace-1')).toBe(false);
+
+    // Cleared on completion.
+    bus.publish(buildWebhookAccepted({ traceId: 'trace-2' }));
+    bus.publish(buildJobStarted({ traceId: 'trace-2', jobId: 'job-2' }));
+    expect(registry.hasPendingContext('trace-2')).toBe(true);
+    bus.publish(buildJobCompleted({ traceId: 'trace-2', jobId: 'job-2' }));
+    expect(registry.hasPendingContext('trace-2')).toBe(false);
+  });
 });
 
 describe('getActiveJobsRegistry singleton', () => {

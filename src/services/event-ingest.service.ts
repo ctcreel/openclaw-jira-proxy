@@ -91,8 +91,22 @@ export async function ingestEvent(request: IngestRequest): Promise<IngestResult>
     }
   }
 
+  // Persist context onto the BullMQ payload so it survives a clawndom
+  // restart between enqueue and worker pickup. Without this, the in-process
+  // pendingContext map dies with the prior process and the worker's
+  // job.started fires with no context — /api/jobs/active then returns
+  // context: null and the dashboard renders "?" for ticket id and status.
   const queue = getProviderQueue(provider.name);
-  const job = await queue.add('webhook-event', rawBodyString);
+  const envelope = JSON.stringify({
+    payload: rawBodyString,
+    attempt: 1,
+    context: {
+      id: context.id,
+      title: context.title,
+      status: context.status,
+    },
+  });
+  const job = await queue.add('webhook-event', envelope);
 
   // After enqueue, the BullMQ job id becomes the canonical trace id —
   // the worker uses `envelope.originalJobId ?? jobIdString`, which on

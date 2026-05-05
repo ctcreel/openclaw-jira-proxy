@@ -18,14 +18,16 @@ if ! echo "$COMMAND" | grep -qE '\bgit\s+commit\b'; then
     exit 0
 fi
 
-# Require bot identity (GIT_AUTHOR_EMAIL must be set in the command chain)
-BOT_EMAIL="2881343+signalfield-claude[bot]@users.noreply.github.com"
+# Require bot identity (GIT_AUTHOR_EMAIL must be set in the command chain).
+# SignalField was retired; sc0red-patch[bot] (GitHub App id 277859894) is
+# the canonical identity for AI-authored commits across SC0RED repos.
+BOT_EMAIL="277859894+sc0red-patch[bot]@users.noreply.github.com"
 if ! echo "$COMMAND" | grep -qF "$BOT_EMAIL"; then
-    echo "Commits must use the SignalField Claude bot identity." >&2
+    echo "Commits must use the sc0red-patch bot identity." >&2
     echo "Export these before committing:" >&2
-    echo '  export GIT_AUTHOR_NAME="signalfield-claude[bot]"' >&2
+    echo '  export GIT_AUTHOR_NAME="sc0red-patch[bot]"' >&2
     echo "  export GIT_AUTHOR_EMAIL=\"$BOT_EMAIL\"" >&2
-    echo '  export GIT_COMMITTER_NAME="signalfield-claude[bot]"' >&2
+    echo '  export GIT_COMMITTER_NAME="sc0red-patch[bot]"' >&2
     echo "  export GIT_COMMITTER_EMAIL=\"$BOT_EMAIL\"" >&2
     exit 2
 fi

@@ -316,6 +316,16 @@ describe('parseEnvelope', () => {
     expect(result.payload).toBe('not-json');
     expect(result.attempt).toBe(1);
   });
+
+  it('preserves context when present on the envelope', () => {
+    const envelope: JobEnvelope = {
+      payload: '{"issue":{"key":"SPE-1"}}',
+      attempt: 1,
+      context: { id: 'SPE-1', title: 'Bug title', status: 'Plan' },
+    };
+    const result = parseEnvelope(JSON.stringify(envelope));
+    expect(result.context).toEqual({ id: 'SPE-1', title: 'Bug title', status: 'Plan' });
+  });
 });
 
 describe('resolveModel', () => {
@@ -378,6 +388,118 @@ describe('resolveModel', () => {
       { field: 'type', matches: 'critical', model: 'sonnet' },
     ];
     expect(resolveModel({ type: 'critical' }, rules)).toBe('opus');
+  });
+});
+
+describe('processJob trace-context recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runSpy.mockResolvedValue({
+      status: 'ok',
+      runId: 'mock-run-id',
+      renderedPrompt: 'mock-prompt',
+    });
+    resetSettings();
+    resetRunners();
+    registerRunner(new SpyRunner());
+  });
+
+  it('re-emits webhook.accepted from the worker when envelope carries context and no in-process pendingContext exists', async () => {
+    const { resetActiveJobsRegistry, getActiveJobsRegistry } =
+      await import('../../src/services/active-jobs.service');
+    const { getEventBus, resetEventBus } = await import('../../src/services/event-bus.service');
+    resetEventBus();
+    resetActiveJobsRegistry();
+    getActiveJobsRegistry();
+
+    const captured: { type: string; traceId?: string; contextId?: string }[] = [];
+    getEventBus().subscribe((stamped) => {
+      const event = stamped.event;
+      const traceId = 'traceId' in event ? event.traceId : undefined;
+      const contextId = 'contextId' in event ? event.contextId : undefined;
+      const entry: { type: string; traceId?: string; contextId?: string } = { type: event.type };
+      if (traceId !== undefined) entry.traceId = traceId;
+      if (contextId !== undefined) entry.contextId = contextId;
+      captured.push(entry);
+    });
+
+    const envelope: JobEnvelope = {
+      payload:
+        '{"issue":{"key":"SPE-2009","fields":{"summary":"Empty fourth page","status":{"name":"Plan"},"issuetype":{"name":"Bug"}}}}',
+      attempt: 1,
+      context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
+    };
+
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+
+    await processJob(
+      createFakeJob(JSON.stringify(envelope), 'recovery-job-1'),
+      testProvider,
+      agents,
+    );
+
+    const acceptedIndex = captured.findIndex(
+      (e) => e.type === 'webhook.accepted' && e.traceId === 'recovery-job-1',
+    );
+    const startedIndex = captured.findIndex(
+      (e) => e.type === 'job.started' && e.traceId === 'recovery-job-1',
+    );
+    expect(acceptedIndex).toBeGreaterThanOrEqual(0);
+    expect(startedIndex).toBeGreaterThan(acceptedIndex);
+    expect(captured[acceptedIndex]?.contextId).toBe('SPE-2009');
+
+    resetEventBus();
+    resetActiveJobsRegistry();
+  });
+
+  it('does not re-emit webhook.accepted when in-process pendingContext is already populated', async () => {
+    const { resetActiveJobsRegistry, getActiveJobsRegistry } =
+      await import('../../src/services/active-jobs.service');
+    const { getEventBus, resetEventBus } = await import('../../src/services/event-bus.service');
+    resetEventBus();
+    resetActiveJobsRegistry();
+    getActiveJobsRegistry();
+
+    // Simulate the happy-path ingest: webhook.accepted has fired in this
+    // process, populating ActiveJobsRegistry's pendingContext.
+    getEventBus().publish({
+      type: 'webhook.accepted',
+      timestamp: 1,
+      traceId: 'happy-job-1',
+      provider: 'test-provider',
+      contextId: 'SPE-2009',
+      contextTitle: 'Empty fourth page',
+      contextStatus: 'Plan',
+    });
+
+    const captured: string[] = [];
+    getEventBus().subscribe((stamped) => {
+      if (stamped.event.type === 'webhook.accepted' && 'traceId' in stamped.event) {
+        captured.push(stamped.event.traceId);
+      }
+    });
+
+    const envelope: JobEnvelope = {
+      payload: '{"issue":{"key":"SPE-2009"}}',
+      attempt: 1,
+      context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
+    };
+
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+
+    await processJob(createFakeJob(JSON.stringify(envelope), 'happy-job-1'), testProvider, agents);
+
+    // Only the pre-published webhook.accepted is on the bus from this
+    // subscriber's perspective. The worker's hasPendingContext check
+    // suppressed a duplicate emission.
+    expect(captured.filter((id) => id === 'happy-job-1')).toHaveLength(0);
+
+    resetEventBus();
+    resetActiveJobsRegistry();
   });
 });
 
