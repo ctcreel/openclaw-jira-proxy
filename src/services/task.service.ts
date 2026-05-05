@@ -33,6 +33,16 @@ const InternalTaskEnvelopeSchema = z.object({
 
 const ScheduledTaskEnvelopeSchema = z.object({
   kind: z.literal('scheduled'),
+  /**
+   * Registry task id (16 hex chars). Present when the scheduled job was
+   * enqueued by the Phase-2 scheduled-tasks registry; absent on pre-deploy
+   * BullMQ jobs that are still queued/delayed at the time of upgrade. The
+   * task-worker uses it to look up the registry record for fire-time
+   * accounting (`recordFire` — runCount, ttl, maxRuns); a missing taskId
+   * means "no registry side-effects, just run the rule" — backward-compat
+   * with the legacy scheduler path.
+   */
+  taskId: z.string().min(1).optional(),
   rule: z.string(),
   context: z.record(z.string(), z.unknown()),
 });

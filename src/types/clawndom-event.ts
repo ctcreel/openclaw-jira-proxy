@@ -6,6 +6,8 @@
  * retries) so a consumer can assemble the per-job story without joins.
  */
 
+import type { ScheduledTaskCreatedBy } from './scheduled-task';
+
 export type ClawndomEventType = ClawndomEvent['type'];
 
 export interface WebhookReceivedEvent {
@@ -289,6 +291,68 @@ export interface SessionEvictedEvent {
   active_after: number;
 }
 
+// Scheduled-task lifecycle. The registry (`src/services/scheduled-tasks.service.ts`)
+// owns these emissions; the dashboard's "what's coming up" panel — and any
+// future REST/SSE consumer — assembles its view from this stream alone.
+//
+// Payload shape rule: every variant carries `taskId`, `agentId`, and `runner`
+// so a subscriber can render a row from the event without needing a follow-up
+// `GET /api/scheduled-tasks/:id`. Phase 3's dashboard work depends on it.
+//
+// `reason` is a closed enum per variant, not a free-text string — observers
+// can branch on it without parsing English. New origins land as new enum
+// values (additive); never overload an existing one.
+
+export type ScheduledTaskCreatedReason = 'config-load' | 'api-create' | 'agent-create';
+export type ScheduledTaskCancelledReason = 'api-delete' | 'config-reconcile' | 'agent-cancel';
+export type ScheduledTaskExpiredReason = 'ttl' | 'maxRuns';
+
+export interface ScheduledTaskCreatedEvent {
+  type: 'scheduled-task.created';
+  timestamp: number;
+  traceId: string;
+  taskId: string;
+  agentId: string;
+  runner: string;
+  createdBy: ScheduledTaskCreatedBy;
+  reason: ScheduledTaskCreatedReason;
+  /** trace id the creator passed in (if any) — distinct from the event's own traceId. */
+  ownerTraceId?: string;
+  /** Wall-clock millis of next planned firing, when the registry can compute it. */
+  nextFireAt?: number;
+}
+
+export interface ScheduledTaskFiredEvent {
+  type: 'scheduled-task.fired';
+  timestamp: number;
+  traceId: string;
+  taskId: string;
+  agentId: string;
+  runner: string;
+  /** BullMQ job id of the firing — links the lifecycle event to the eventual `runner.complete`. */
+  jobId: string;
+}
+
+export interface ScheduledTaskCancelledEvent {
+  type: 'scheduled-task.cancelled';
+  timestamp: number;
+  traceId: string;
+  taskId: string;
+  agentId: string;
+  runner: string;
+  reason: ScheduledTaskCancelledReason;
+}
+
+export interface ScheduledTaskExpiredEvent {
+  type: 'scheduled-task.expired';
+  timestamp: number;
+  traceId: string;
+  taskId: string;
+  agentId: string;
+  runner: string;
+  reason: ScheduledTaskExpiredReason;
+}
+
 export type ClawndomEvent =
   | WebhookReceivedEvent
   | WebhookAcceptedEvent
@@ -317,4 +381,8 @@ export type ClawndomEvent =
   | SessionReapedEvent
   | SessionStaleEvent
   | SessionErrorEvent
-  | SessionEvictedEvent;
+  | SessionEvictedEvent
+  | ScheduledTaskCreatedEvent
+  | ScheduledTaskFiredEvent
+  | ScheduledTaskCancelledEvent
+  | ScheduledTaskExpiredEvent;

@@ -31,6 +31,7 @@ import {
   getTaskStatusHandler,
   waitTaskHandler,
 } from '../../src/controllers/task.controller';
+import { requireAgentBearer } from '../../src/middleware/bearer-auth.middleware';
 import { resetSettings } from '../../src/config';
 import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 
@@ -39,10 +40,19 @@ const agents: ResolvedAgent[] = [
 ];
 
 function buildApp(): ReturnType<typeof express> {
+  // Mounts the Bearer middleware in front of the task routes so the test
+  // suite exercises the same auth surface as the production mount in
+  // `routes/index.ts`. Behaviour-equivalent to the previous inline
+  // `authenticate()` — same 401 cases, same Bearer header expectation.
   const app = express();
-  app.post('/api/tasks', express.json({ limit: '1mb' }), createTaskHandler(agents));
-  app.get('/api/tasks/:agent/:taskId', getTaskStatusHandler());
-  app.get('/api/tasks/:agent/:taskId/wait', waitTaskHandler());
+  app.post(
+    '/api/tasks',
+    express.json({ limit: '1mb' }),
+    requireAgentBearer,
+    createTaskHandler(agents),
+  );
+  app.get('/api/tasks/:agent/:taskId', requireAgentBearer, getTaskStatusHandler());
+  app.get('/api/tasks/:agent/:taskId/wait', requireAgentBearer, waitTaskHandler());
   return app;
 }
 

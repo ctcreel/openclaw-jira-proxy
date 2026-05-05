@@ -1,10 +1,15 @@
 import { getLogger } from '../lib/logging';
+import type { RunnerConfig } from '../runners/types';
+import { deriveConfigTaskId } from '../types/scheduled-task';
+import type { ScheduledTaskWhen } from '../types/scheduled-task';
 import type { ResolvedAgent } from './agent-loader.service';
+import { getScheduledTasksService } from './scheduled-tasks.service';
 import { getTaskQueue } from './task.service';
 
 const logger = getLogger('scheduler');
 
 const SCHEDULE_PROVIDER = 'schedule';
+const LEGACY_SCHEDULER_PREFIX = 'schedule:';
 
 export interface RegisteredSchedule {
   readonly agent: string;
@@ -12,29 +17,46 @@ export interface RegisteredSchedule {
   readonly cron: string;
   readonly timezone?: string;
   readonly schedulerId: string;
+  /**
+   * Registry task id (16 hex chars). Stable across restarts because it's
+   * a content hash over `{agentId, name, when, runner, runnerConfig}`.
+   * Surfaced in the return so callers (currently `startServer`) can log
+   * the registry id alongside the BullMQ scheduler id during boot.
+   */
+  readonly taskId: string;
 }
 
 /**
  * For each agent that declares `routing.schedule.rules`, register a
- * BullMQ JobScheduler so the rule's cron pattern fires repeatable jobs
- * onto the agent's existing task queue. The task-worker discriminates
- * scheduled fires from internal /api/tasks dispatches via the envelope's
- * `kind: 'scheduled'` field.
+ * scheduled-task in the registry. The registry adapter writes a BullMQ
+ * JobScheduler under the hood (`scheduled-task-<id>`) and keeps a
+ * Redis-backed record so the config-reconcile sweep at the end of this
+ * function can delete orphans (rules removed from the agent yaml since
+ * the last boot).
  *
- * Idempotent across restarts: BullMQ's `upsertJobScheduler` keys on the
- * scheduler id (we use `schedule:<agent>:<rule>`), so repeated calls
- * with the same options are a no-op. A changed cron pattern updates the
- * existing scheduler in place rather than registering a duplicate.
+ * Idempotent across restarts: identical rule → identical content-hash id
+ * → registry upsert is a no-op (no `scheduled-task.created` event fires
+ * on re-registration). Removed rules → reconcile sees them missing from
+ * `loadedIds` and emits `scheduled-task.cancelled` with reason
+ * `config-reconcile` while cleaning up the BullMQ scheduler.
  *
- * Schedule rules are validated for required fields here, not at
- * agent-load time, because the same rule shape backs other providers
- * (routing.internal, routing.jira) where `cron` is irrelevant. Loud
- * config errors on schedule rules surface here.
+ * One-time migration: pre-Phase-2 deploys keyed BullMQ schedulers by
+ * `schedule:<agent>:<rule>`. We strip those on every boot so a rolling
+ * deploy never double-fires (legacy + new). The call is a no-op once
+ * the migration has run, so it's safe to leave in indefinitely.
+ *
+ * Schedule-rule shape errors (missing name/cron/messageTemplate) still
+ * throw here rather than at agent-load time — `routing.schedule` rules
+ * share their schema with other providers' rules, where those fields
+ * are optional. Loud config errors on schedule rules surface here.
  */
 export async function registerAgentSchedules(
   agents: readonly ResolvedAgent[],
 ): Promise<readonly RegisteredSchedule[]> {
+  const service = getScheduledTasksService();
   const registered: RegisteredSchedule[] = [];
+  const loadedIds = new Set<string>();
+
   for (const agent of agents) {
     const rules = agent.config.routing[SCHEDULE_PROVIDER]?.rules ?? [];
     for (const rule of rules) {
@@ -58,30 +80,39 @@ export async function registerAgentSchedules(
         );
       }
 
-      const queue = getTaskQueue(agent.name);
-      const schedulerId = `schedule:${agent.name}:${ruleName}`;
-      const data = JSON.stringify({
-        kind: 'scheduled',
-        rule: ruleName,
-        context: rule.context ?? {},
-      });
+      // Legacy id cleanup. Pre-Phase-2 the scheduler keyed BullMQ jobs
+      // by `schedule:<agent>:<rule>`. The new key is `scheduled-task-<id>`,
+      // so a rolling deploy without this step would have both schedulers
+      // firing the same rule. Removing the legacy id is idempotent —
+      // `removeJobScheduler` returns false when the id doesn't exist.
+      await removeLegacyScheduler(agent.name, ruleName);
 
-      // BullMQ's repeat options accept `pattern` (cron) and `tz`
-      // (IANA name). DST shifts are handled by the underlying
-      // cron-parser when `tz` is set.
-      const repeatOpts = rule.timezone
-        ? { pattern: rule.cron, tz: rule.timezone }
-        : { pattern: rule.cron };
+      const when = buildWhen(rule.cron, rule.timezone);
+      const runnerConfig = resolveRunnerConfig(rule.runner, agent);
+      const runnerName = runnerConfig.type;
 
-      await queue.upsertJobScheduler(schedulerId, repeatOpts, {
+      const taskId = deriveConfigTaskId({
+        agentId: agent.name,
         name: ruleName,
-        data,
-        opts: {
-          removeOnComplete: { count: 100 },
-          removeOnFail: { count: 100 },
-        },
+        when,
+        runner: runnerName,
+        runnerConfig,
       });
 
+      await service.upsert({
+        id: taskId,
+        agentId: agent.name,
+        name: ruleName,
+        when,
+        runner: runnerName,
+        runnerConfig,
+        payload: rule.context ?? {},
+        createdBy: 'config',
+        reason: 'config-load',
+      });
+      loadedIds.add(taskId);
+
+      const schedulerId = `scheduled-task-${taskId}`;
       logger.info(
         {
           agent: agent.name,
@@ -89,6 +120,7 @@ export async function registerAgentSchedules(
           cron: rule.cron,
           timezone: rule.timezone,
           schedulerId,
+          taskId,
         },
         'schedule.registered',
       );
@@ -98,8 +130,60 @@ export async function registerAgentSchedules(
         cron: rule.cron,
         timezone: rule.timezone,
         schedulerId,
+        taskId,
       });
     }
   }
+
+  // Reconcile: any `createdBy=config` registry record not seen in this
+  // pass corresponds to a rule that was removed from the agent yaml
+  // since the last boot. The registry deletes the record + emits
+  // `scheduled-task.cancelled` with reason `config-reconcile` and the
+  // BullMQ adapter cleans up the underlying scheduler.
+  const orphans = await service.reconcileConfig(loadedIds);
+  if (orphans.length > 0) {
+    logger.info({ count: orphans.length, ids: orphans }, 'schedule.reconciled');
+  }
+
   return registered;
+}
+
+function buildWhen(cron: string, timezone: string | undefined): ScheduledTaskWhen {
+  return timezone ? { cron, timezone } : { cron };
+}
+
+/**
+ * Resolve the runner config for a schedule rule. Rules without an
+ * explicit `runner` field inherit the legacy default (`claude-cli`
+ * pointed at the agent workspace) — same fallback the task-worker
+ * applies at fire time, hoisted forward so the registry sees a concrete
+ * runner config. Without this, the content-hash id would be derived
+ * from a `null` runnerConfig and shift the moment a default-runner rule
+ * gained an explicit `runner` block.
+ */
+function resolveRunnerConfig(
+  ruleRunner: RunnerConfig | undefined,
+  agent: ResolvedAgent,
+): RunnerConfig {
+  if (ruleRunner) return ruleRunner;
+  return { type: 'claude-cli', workDirectory: agent.dir };
+}
+
+async function removeLegacyScheduler(agentName: string, ruleName: string): Promise<void> {
+  try {
+    const queue = getTaskQueue(agentName);
+    await queue.removeJobScheduler(`${LEGACY_SCHEDULER_PREFIX}${agentName}:${ruleName}`);
+  } catch (error) {
+    // Legacy scheduler usually doesn't exist on a fresh deploy — silent
+    // at debug level so the migration's no-op case stays out of info logs.
+    logger.debug(
+      { agent: agentName, rule: ruleName, error: serializeError(error) },
+      'Legacy scheduler removal skipped',
+    );
+  }
+}
+
+function serializeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
