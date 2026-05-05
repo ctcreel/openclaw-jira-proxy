@@ -295,6 +295,32 @@ configure_redis() {
   return 0
 }
 
+# Provision the NOPASSWD entries scripts/deploy.sh needs. Without this,
+# every deploy fails at the first `sudo` call. SPE-2022: keep this in
+# lockstep with deploy.sh — every new sudo call deploy.sh adds must land
+# here, or fresh-host deploys break.
+install_clawndom_sudoers() {
+  log "Installing /etc/sudoers.d/clawndom"
+  local target="/etc/sudoers.d/clawndom"
+  local staging
+  staging="$(mktemp)"
+  cat > "${staging}" <<SUDO
+# clawndom — passwordless sudo for the commands scripts/deploy.sh runs.
+# Source of truth: infra/ec2/bootstrap.sh:install_clawndom_sudoers.
+${CLAWNDOM_USER} ALL=(root) NOPASSWD: /bin/systemctl restart clawndom.service, /bin/systemctl status clawndom.service, /bin/systemctl start clawndom.service, /bin/systemctl stop clawndom.service, /bin/systemctl daemon-reload, /usr/bin/bash ${CLAWNDOM_REPO}/infra/ec2/validate-env.sh /etc/clawndom/clawndom.env, /usr/bin/install -m 0644 -o root -g root ${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom.service /etc/systemd/system/clawndom.service, /usr/bin/cmp -s ${CLAWNDOM_REPO}/infra/ec2/systemd/clawndom.service /etc/systemd/system/clawndom.service
+SUDO
+  # visudo -cf rejects malformed files before we install — installing a
+  # broken sudoers file would lock the user out of sudo entirely.
+  if ! visudo -cf "${staging}" >/dev/null; then
+    rm -f "${staging}"
+    log "ERROR: generated sudoers file failed visudo -cf"
+    return 1
+  fi
+  install -m 0440 -o root -g root "${staging}" "${target}"
+  rm -f "${staging}"
+  return 0
+}
+
 summary() {
   local pub_key_path="${CLAWNDOM_HOME}/.ssh/clawndom_repo_deploy.pub"
   local pub_key="(deploy key not yet generated — re-run bootstrap.sh)"
@@ -347,6 +373,7 @@ main() {
   set_clawndom_remote_to_ssh_alias
   create_dirs
   install_systemd_units
+  install_clawndom_sudoers
   configure_redis
   summary
   return 0

@@ -91,9 +91,48 @@ extract_value() {
   awk -v key="${key}" 'BEGIN { FS = "=" } $1 == key { sub(/^[^=]+=/, ""); print; exit }' <<< "${captured}"
 }
 
+## Static quoting check — catches the unquoted-JSON case BEFORE we trust
+## systemd to surface it. Modern systemd (255+) does NOT strip `"` chars
+## from unquoted env values, so an unquoted JSON value parses as valid
+## JSON downstream and the systemd-run round-trip below would let it
+## through. Reject it here based on file shape: each JSON-valued key
+## must have its value wrapped in single quotes in the file.
+check_static_quoting() {
+  local failures=0
+  local key line value first last
+  for key in "${REQUIRED_JSON_KEYS[@]}"; do
+    # Match the LAST occurrence of the key — env files override earlier
+    # assignments. Strip everything up to the first '=' to get the raw
+    # value as it appears in the file.
+    line="$(grep -E "^${key}=" "${ENV_FILE}" | tail -n 1 || true)"
+    if [[ -z "${line}" ]]; then
+      # Missing key — the systemd-run pass below produces the friendlier
+      # "missing from the parsed env" message with the operator-fix line.
+      continue
+    fi
+    value="${line#*=}"
+    first="${value:0:1}"
+    last="${value: -1}"
+    if [[ "${first}" != "'" ]] || [[ "${last}" != "'" ]] || [[ "${#value}" -lt 2 ]]; then
+      err "${key} value is not wrapped in single quotes"
+      err "  fix: ${key}='[...]' — the JSON array must be inside single quotes"
+      err "  (modern systemd no longer strips inner \" chars from unquoted values, but"
+      err "   the runtime contract still requires single-quoted JSON to keep deploys portable)"
+      failures=$(( failures + 1 ))
+    fi
+  done
+  if (( failures > 0 )); then
+    err "${failures} static quoting failure(s) — refusing to proceed"
+    exit 1
+  fi
+}
+
 main() {
   require_tools
   require_file
+
+  log "Validating ${ENV_FILE} static quoting"
+  check_static_quoting
 
   log "Validating ${ENV_FILE} via systemd-run"
 
