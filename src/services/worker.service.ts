@@ -22,7 +22,14 @@ import type { AlertRegistry } from './alerts';
 import { getActiveJobsRegistry } from './active-jobs.service';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
-import { buildQueueName } from './queue.service';
+import { buildQueueName, getProviderQueue } from './queue.service';
+
+// Minimum delay we'll schedule for a quota-recovery re-enqueue. Anthropic's
+// reset times are minute-precision and the operator may already be running
+// `claude login` to swap accounts — a tiny floor avoids a thundering-herd
+// retry the instant the wall-clock hits the reset, while still letting
+// next-window pickup happen within a minute.
+const QUOTA_RESUME_FLOOR_MS = 5_000;
 import { buildFailedHandler } from './worker-failure-handler';
 import { getSecretManager } from '../secrets/manager';
 import type { AgentRunner, RunOptions, RunResult } from '../runners/types';
@@ -333,6 +340,11 @@ export async function processJob(
     sessionUserMessage,
   });
 
+  if (result.status === 'quota_exceeded') {
+    await handleQuotaExceeded(provider, envelope, traceId, jobIdString, result.quotaResetAt);
+    return;
+  }
+
   if (result.status === 'error') {
     throw new Error(`Agent run failed: ${result.error ?? 'unknown error'}`);
   }
@@ -363,6 +375,71 @@ export async function processJob(
     { jobId: job.id, provider: provider.name, sessionKey, runId: result.runId },
     'Agent run completed — job complete',
   );
+}
+
+/**
+ * Pause-and-hold response to a runner reporting `quota_exceeded`. Re-enqueues
+ * the same envelope to the same provider queue with a delay matching the
+ * upstream reset time, then returns normally so BullMQ marks the original
+ * job as completed (no retry-counter consumption). The original payload +
+ * persisted context survive untouched, so the same ticket resumes on its
+ * own once the delay elapses — no Jira-board ping-pong, no lost work.
+ *
+ * `quotaResetAt` is the wall-clock millis the runner extracted from the
+ * upstream message. A small floor (`QUOTA_RESUME_FLOOR_MS`) absorbs clock
+ * drift between the runner host and the operator's environment, and the
+ * minute-precision in the upstream message itself.
+ */
+async function handleQuotaExceeded(
+  provider: ProviderConfig,
+  envelope: JobEnvelope,
+  traceId: string,
+  jobIdString: string,
+  quotaResetAt: number | undefined,
+): Promise<void> {
+  const now = Date.now();
+  const resetAt = quotaResetAt ?? now + QUOTA_RESUME_FLOOR_MS;
+  const delayMs = Math.max(QUOTA_RESUME_FLOOR_MS, resetAt - now);
+
+  // Preserve trace lineage: if the incoming envelope was first-generation
+  // (no originalJobId set), the current BullMQ job id IS the trace id —
+  // stamp it onto the delayed envelope so the next pickup keeps the same
+  // traceId via `envelope.originalJobId ?? jobIdString` in processJob.
+  // Without this, the resumed job switches to a fresh trace lineage and
+  // the SSE/registry stream loses continuity with the pre-pause history.
+  const requeue: JobEnvelope = {
+    payload: envelope.payload,
+    // Reset attempt counter — quota wasn't this job's fault and shouldn't
+    // count against its retry budget.
+    attempt: 1,
+    originalJobId: envelope.originalJobId ?? jobIdString,
+    ...(envelope.context === undefined ? {} : { context: envelope.context }),
+  };
+
+  const queue = getProviderQueue(provider.name);
+  const requeued = await queue.add('webhook-event', JSON.stringify(requeue), { delay: delayMs });
+
+  logger.warn(
+    {
+      provider: provider.name,
+      traceId,
+      jobId: jobIdString,
+      requeuedJobId: String(requeued.id ?? 'unknown'),
+      resetAt: new Date(resetAt).toISOString(),
+      delayMs,
+    },
+    'Quota exceeded — paused current job and re-enqueued for delivery after reset',
+  );
+
+  getEventBus().publish({
+    type: 'job.requeued',
+    timestamp: now,
+    traceId,
+    jobId: String(requeued.id ?? 'unknown'),
+    provider: provider.name,
+    attempt: requeue.attempt,
+    originalJobId: envelope.originalJobId ?? jobIdString,
+  });
 }
 
 /**

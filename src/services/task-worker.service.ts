@@ -177,6 +177,16 @@ async function runRule(
   if (result.status === 'timeout') {
     throw new Error(`Task run timed out (runId: ${result.runId ?? 'unknown'})`);
   }
+  // Scheduled-task workflow doesn't yet have a quota-aware pause-and-hold
+  // path (the webhook worker does — see worker.service.ts:handleQuotaExceeded).
+  // For now surface it as an error so existing BullMQ retry semantics apply;
+  // a follow-up can mirror the webhook side's delayed-resume behaviour for
+  // scheduled tasks if recurring-fire quota collisions become a problem.
+  if (result.status === 'quota_exceeded') {
+    const resetAtIso =
+      result.quotaResetAt === undefined ? 'unknown' : new Date(result.quotaResetAt).toISOString();
+    throw new Error(`Task run hit upstream quota limit (resets at ${resetAtIso})`);
+  }
 
   return {
     runId: result.runId ?? 'unknown',

@@ -14,7 +14,11 @@ import type {
   SessionRunOptions,
   ClaudeCliRunnerConfig,
 } from './types';
-import { emitStreamEvent, parseStreamLine } from './claude-cli-stream-parser';
+import {
+  emitStreamEvent,
+  parseQuotaLimitMessage,
+  parseStreamLine,
+} from './claude-cli-stream-parser';
 import { extractUsageFromResultEvent } from './claude-cli-usage';
 
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
@@ -69,7 +73,30 @@ function scheduleForceKill(
   };
 }
 
-function installStreamParser(child: CliProcess, runId: string, options: RunOptions): void {
+interface QuotaSignal {
+  resetAt: number | null;
+}
+
+function extractQuotaResetFromEvent(event: {
+  message?: { content?: Array<{ type?: string; text?: string }> };
+}): number | null {
+  const content = event.message?.content;
+  if (!content) return null;
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string') {
+      const limit = parseQuotaLimitMessage(block.text);
+      if (limit !== null) return limit.resetAt;
+    }
+  }
+  return null;
+}
+
+function installStreamParser(
+  child: CliProcess,
+  runId: string,
+  options: RunOptions,
+  quotaSignal: QuotaSignal,
+): void {
   let buffer = '';
   child.stdout.on('data', (chunk: Buffer) => {
     buffer += chunk.toString();
@@ -78,6 +105,24 @@ function installStreamParser(child: CliProcess, runId: string, options: RunOptio
     for (const line of lines) {
       const event = parseStreamLine(line);
       if (!event) continue;
+      // Detect the subscription-limit message before emitting downstream
+      // — the parser handles other paths normally; we just sniff for the
+      // quota signal so the close handler can surface the right status.
+      if (quotaSignal.resetAt === null) {
+        const detected = extractQuotaResetFromEvent(event);
+        if (detected !== null) {
+          quotaSignal.resetAt = detected;
+          logger.warn(
+            {
+              runId,
+              traceId: options.traceId,
+              jobId: options.jobId,
+              resetAt: new Date(detected).toISOString(),
+            },
+            'Claude CLI reported subscription quota limit hit',
+          );
+        }
+      }
       emitStreamEvent(runId, options.traceId, options.jobId, event);
       // Result events carry the per-run token-usage breakdown. Emitting a
       // structured "Agent run usage" log line here closes the observability
@@ -105,7 +150,7 @@ function buildCloseHandler(
   runId: string,
   startedAt: string,
   options: RunOptions,
-  state: { stderr: string; didTimeOut: () => boolean },
+  state: { stderr: string; didTimeOut: () => boolean; quotaSignal: QuotaSignal },
   resolve: (r: RunResult) => void,
 ): (code: number | null) => void {
   return (code) => {
@@ -118,6 +163,25 @@ function buildCloseHandler(
         endedAt,
         renderedPrompt: options.prompt,
         error: `Claude CLI timed out after ${options.timeoutMs}ms`,
+      });
+      return;
+    }
+    // Quota signal takes precedence over the generic non-zero exit path.
+    // The CLI exits 1 immediately after emitting the limit message; without
+    // this branch we'd treat it as a transient error and burn five retries
+    // each hitting the same wall.
+    if (state.quotaSignal.resetAt !== null) {
+      logger.warn(
+        { runId, code, resetAt: new Date(state.quotaSignal.resetAt).toISOString() },
+        'Claude CLI exited after quota-limit signal — surfacing as quota_exceeded',
+      );
+      resolve({
+        status: 'quota_exceeded',
+        runId,
+        quotaResetAt: state.quotaSignal.resetAt,
+        startedAt,
+        endedAt,
+        renderedPrompt: options.prompt,
       });
       return;
     }
@@ -206,9 +270,10 @@ function runClaudeCliSubprocess(
     }) as CliProcess;
 
     const state = { stderr: '' };
+    const quotaSignal: QuotaSignal = { resetAt: null };
     const timeout = scheduleForceKill(child, options.timeoutMs);
 
-    installStreamParser(child, runId, options);
+    installStreamParser(child, runId, options, quotaSignal);
 
     child.stderr.on('data', (chunk: Buffer) => {
       state.stderr += chunk.toString();
@@ -220,7 +285,7 @@ function runClaudeCliSubprocess(
         runId,
         startedAt,
         options,
-        { stderr: state.stderr, didTimeOut: timeout.didTimeOut },
+        { stderr: state.stderr, didTimeOut: timeout.didTimeOut, quotaSignal },
         resolve,
       )(code);
     });

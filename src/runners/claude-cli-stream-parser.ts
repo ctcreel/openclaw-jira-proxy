@@ -135,6 +135,64 @@ export function emitStreamEvent(
   }
 }
 
+/**
+ * Detect the Claude Code CLI's subscription-limit message in an assistant
+ * text block and parse the reset time.
+ *
+ * Format observed in production: `You've hit your limit · resets 6:40pm (UTC)`.
+ * The CLI emits this as a normal assistant text event then exits with code 1
+ * — there is no stderr signal. Returning a typed result lets the runner
+ * surface it as `RunResult.status === 'quota_exceeded'` instead of a
+ * generic error, so the worker can pause-and-hold instead of burning
+ * five retries on the same wall.
+ *
+ * Returns the wall-clock millis when the reset is expected, or null when
+ * the text is not a limit message. Reset times are interpreted in UTC; if
+ * the parsed time is in the past relative to `now`, it's interpreted as
+ * tomorrow (handles a limit hit at 11pm UTC that resets at 1am UTC).
+ */
+export function parseQuotaLimitMessage(
+  text: string,
+  now: Date = new Date(),
+): { resetAt: number } | null {
+  // Anchor to the full trimmed assistant block so the agent quoting the
+  // message in normal text ("As discussed, you've hit your limit · resets
+  // 6pm (UTC)…") doesn't get misclassified. claude-cli emits the limit
+  // text as a standalone assistant_text payload — there's no other content
+  // around it. The em-dash variant uses U+00B7 ("·") in the production
+  // output; tolerate both forms.
+  const limitRegex =
+    /^\s*you'?ve hit your limit\s*[·\-—]\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(utc\)\s*$/i;
+  const match = limitRegex.exec(text);
+  if (!match) return null;
+
+  // The regex pattern guarantees group 3 (am|pm) when match succeeds, but
+  // TypeScript can't infer that from the regex literal — explicit guard +
+  // fail-fast instead of a `!` non-null assertion (project rule). Same
+  // for the hour group, defensively.
+  const hourRawGroup = match[1];
+  const meridiemGroup = match[3];
+  if (hourRawGroup === undefined || meridiemGroup === undefined) return null;
+  const hourRaw = Number(hourRawGroup);
+  const minuteRaw = match[2] === undefined ? 0 : Number(match[2]);
+  const meridiem = meridiemGroup.toLowerCase();
+  if (!Number.isFinite(hourRaw) || !Number.isFinite(minuteRaw)) return null;
+  if (hourRaw < 1 || hourRaw > 12 || minuteRaw < 0 || minuteRaw > 59) return null;
+
+  let hour24 = hourRaw % 12;
+  if (meridiem === 'pm') hour24 += 12;
+
+  const reset = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour24, minuteRaw, 0, 0),
+  );
+  // Handle wrap-around: if the parsed reset is at-or-before now (e.g. limit
+  // hit at 11:30pm with reset at 1:00am), advance to the next day.
+  if (reset.getTime() <= now.getTime()) {
+    reset.setUTCDate(reset.getUTCDate() + 1);
+  }
+  return { resetAt: reset.getTime() };
+}
+
 export function parseStreamLine(line: string): StreamEvent | null {
   const trimmed = line.trim();
   if (!trimmed) return null;

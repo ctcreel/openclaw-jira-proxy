@@ -89,12 +89,30 @@ export interface SessionRunOptions {
 }
 
 export interface RunResult {
-  /** Terminal status of the run. */
-  status: 'ok' | 'error' | 'timeout';
+  /**
+   * Terminal status of the run.
+   *
+   * `quota_exceeded` is the cross-runner signal for "the upstream provider
+   * told us to stop spending money/tokens for now." Each runner detects its
+   * own provider's quota signal (claude-cli parses the assistant_text
+   * "You've hit your limit" message; openai/bedrock would catch HTTP 429 +
+   * Retry-After / ThrottlingException). The worker treats this differently
+   * from `error`: instead of consuming a retry attempt, it pauses the queue
+   * until `quotaResetAt` and re-enqueues the same envelope so the same
+   * ticket resumes when the provider is healthy again — no Jira-board
+   * ping-pong, no lost work.
+   */
+  status: 'ok' | 'error' | 'timeout' | 'quota_exceeded';
   /** Runner-assigned run identifier (when available). */
   runId?: string;
   /** Error message when status is 'error'. */
   error?: string;
+  /**
+   * Wall-clock millis when the upstream provider says the quota window
+   * resets. Set only when `status === 'quota_exceeded'`. Worker schedules
+   * the queue resume at or after this time.
+   */
+  quotaResetAt?: number;
   /** ISO-8601 timestamp when the run started. */
   startedAt?: string;
   /** ISO-8601 timestamp when the run ended. */
