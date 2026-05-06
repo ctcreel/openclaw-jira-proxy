@@ -16,12 +16,21 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, statSync, existsSync } from 'node:fs';
-import { promises as fs } from 'node:fs';
+import { existsSync, mkdtempSync, promises as fs, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { FileSecretCache, NoOpSecretCache, type CachedSecretEntry } from '../../src/secrets/cache';
+
+function entry(overrides: Partial<CachedSecretEntry> = {}): CachedSecretEntry {
+  return {
+    sourceProvider: 'onepassword',
+    reference: 'op://Clawndom/jira/hmac',
+    value: 'super-secret',
+    resolvedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
 
 describe('FileSecretCache', () => {
   let dir: string;
@@ -35,16 +44,6 @@ describe('FileSecretCache', () => {
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
-
-  function entry(overrides: Partial<CachedSecretEntry> = {}): CachedSecretEntry {
-    return {
-      sourceProvider: 'onepassword',
-      reference: 'op://Clawndom/jira/hmac',
-      value: 'super-secret',
-      resolvedAt: new Date().toISOString(),
-      ...overrides,
-    };
-  }
 
   it('write-then-read round-trips entries', async () => {
     const cache = new FileSecretCache({ path: cachePath, maxAgeSeconds: 86_400 });

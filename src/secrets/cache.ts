@@ -171,23 +171,23 @@ export class FileSecretCache implements SecretCache {
     };
     const json = JSON.stringify(payload);
 
-    const tmpPath = `${this.path}.tmp`;
+    const temporaryPath = `${this.path}.tmp`;
     // Atomic write via tmp + rename: a partial write before the rename
     // leaves the original file untouched, so a crash mid-write cannot
     // corrupt the cache. Mode 0600 is enforced on the tmp file before
     // rename so there is no observable window where a wider-permission
     // file exists on disk.
-    await fs.writeFile(tmpPath, json, { mode: 0o600 });
+    await fs.writeFile(temporaryPath, json, { mode: 0o600 });
     // Defensive chmod — Node honours `mode` on writeFile, but a strict
     // umask on some platforms can still narrow it; explicitly set 0o600
     // to make the post-condition unambiguous.
     try {
-      await fs.chmod(tmpPath, 0o600);
+      await fs.chmod(temporaryPath, 0o600);
     } catch {
       // chmod failure on the tmp file is not fatal; the rename below will
       // atomically replace the old file regardless.
     }
-    await fs.rename(tmpPath, this.path);
+    await fs.rename(temporaryPath, this.path);
   }
 
   async clear(): Promise<void> {

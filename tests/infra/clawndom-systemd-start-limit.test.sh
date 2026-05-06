@@ -58,8 +58,9 @@ pass() {
 }
 
 fail() {
+  local reason="$1"
   FAIL_COUNT=$((FAIL_COUNT + 1))
-  echo "  ✗ ${CURRENT_TEST}: $1" >&2
+  echo "  ✗ ${CURRENT_TEST}: ${reason}" >&2
 }
 
 # Assert that a key=value directive appears verbatim somewhere in the unit
