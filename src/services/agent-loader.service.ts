@@ -49,6 +49,15 @@ const agentRuleSchema = z.object({
    * on `routing.schedule` rules — each scheduled run is a snapshot.
    */
   session: sessionConfigSchema.optional(),
+  /**
+   * Per-rule cap on the number of conversation turns the runner allows
+   * before terminating the run. Defaults to the runner's built-in 150
+   * when omitted; templates that produce wide cascades (e.g. multi-file
+   * test-tuple-shape changes — SPE-2010 ate 150 turns of mechanical
+   * Edit calls without finishing) opt in to a higher ceiling here.
+   * Only honoured by the claude-cli runner today; other runners ignore.
+   */
+  maxTurns: z.number().int().positive().optional(),
 });
 
 const agentRoutingSchema = z.object({

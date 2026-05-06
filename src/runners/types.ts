@@ -53,6 +53,14 @@ export interface RunOptions {
    * except claude-cli today) MUST ignore this field.
    */
   resumeSessionId?: string;
+  /**
+   * Per-run override for the runner's conversation-turn ceiling. Defaults
+   * to 150 (claude-cli's prior hardcoded value) when omitted. Routing
+   * rules whose work cascades wider than 150 turns (multi-file test-tuple
+   * updates, structural refactors) opt in via the rule's `maxTurns`
+   * field; the worker forwards it here. Other runners ignore.
+   */
+  maxTurns?: number;
 }
 
 /**
