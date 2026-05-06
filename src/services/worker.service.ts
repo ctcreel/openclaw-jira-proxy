@@ -53,6 +53,13 @@ const JobEnvelopeSchema = z.object({
   // returns context: null because the in-process pendingContext map died
   // with the previous process.
   context: EnvelopeContextSchema.optional(),
+  // Set by handleQuotaExceeded when the runner captured a session_id
+  // before the upstream quota wall fired. The resumed pickup uses
+  // `claude --resume <id>` to continue the same conversation rather
+  // than replanning from scratch — saves the $10+ runs we'd otherwise
+  // burn re-doing prior turns. Absent on first-generation envelopes
+  // and on failure-handler retries (no quota wall, fresh-spawn is fine).
+  sessionId: z.string().optional(),
 });
 
 export type JobEnvelope = z.infer<typeof JobEnvelopeSchema>;
@@ -336,12 +343,23 @@ export async function processJob(
     jobId: jobIdString,
     ...(envOverlay ? { env: envOverlay } : {}),
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+    // Quota-pause recovery: when the prior run captured a session_id and
+    // got walled by upstream, the requeued envelope carries that id so
+    // this pickup resumes the same conversation instead of replanning.
+    ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
     sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
     sessionUserMessage,
   });
 
   if (result.status === 'quota_exceeded') {
-    await handleQuotaExceeded(provider, envelope, traceId, jobIdString, result.quotaResetAt);
+    await handleQuotaExceeded(
+      provider,
+      envelope,
+      traceId,
+      jobIdString,
+      result.quotaResetAt,
+      result.sessionId,
+    );
     return;
   }
 
@@ -396,6 +414,7 @@ async function handleQuotaExceeded(
   traceId: string,
   jobIdString: string,
   quotaResetAt: number | undefined,
+  sessionId: string | undefined,
 ): Promise<void> {
   const now = Date.now();
   const resetAt = quotaResetAt ?? now + QUOTA_RESUME_FLOOR_MS;
@@ -407,6 +426,12 @@ async function handleQuotaExceeded(
   // traceId via `envelope.originalJobId ?? jobIdString` in processJob.
   // Without this, the resumed job switches to a fresh trace lineage and
   // the SSE/registry stream loses continuity with the pre-pause history.
+  // Prefer the session_id captured by THIS run over the one inherited from
+  // the prior envelope — they should be the same (claude-cli's --resume
+  // keeps the session_id stable), but if the runner produced a fresh
+  // session_id for any reason, we want to resume from the most recent
+  // conversation tip.
+  const resumeSessionId = sessionId ?? envelope.sessionId;
   const requeue: JobEnvelope = {
     payload: envelope.payload,
     // Reset attempt counter — quota wasn't this job's fault and shouldn't
@@ -414,6 +439,7 @@ async function handleQuotaExceeded(
     attempt: 1,
     originalJobId: envelope.originalJobId ?? jobIdString,
     ...(envelope.context === undefined ? {} : { context: envelope.context }),
+    ...(resumeSessionId === undefined ? {} : { sessionId: resumeSessionId }),
   };
 
   const queue = getProviderQueue(provider.name);

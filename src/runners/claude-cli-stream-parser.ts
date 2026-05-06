@@ -15,6 +15,11 @@ const logger = getLogger('runner:claude-cli:stream');
 export const StreamEventSchema = z
   .object({
     type: z.string().optional(),
+    // claude-cli emits `system` events with `subtype: 'init'` once per
+    // run as the first stream event, carrying the session_id we need to
+    // capture for `--resume` on the next pickup after a quota pause.
+    subtype: z.string().optional(),
+    session_id: z.string().optional(),
     message: z
       .object({
         content: z
@@ -191,6 +196,20 @@ export function parseQuotaLimitMessage(
     reset.setUTCDate(reset.getUTCDate() + 1);
   }
   return { resetAt: reset.getTime() };
+}
+
+/**
+ * Pull the `session_id` out of claude-cli's first stream event of a run.
+ * The CLI emits `{type: 'system', subtype: 'init', session_id: '...'}`
+ * once per run before any assistant content. The session_id is the same
+ * value `--resume <id>` accepts, so capturing it here lets a quota-paused
+ * run be resumed on the next pickup instead of replanning from scratch.
+ *
+ * Returns null for any other event shape.
+ */
+export function extractSessionIdFromInitEvent(event: StreamEvent): string | null {
+  if (event.type !== 'system' || event.subtype !== 'init') return null;
+  return event.session_id ?? null;
 }
 
 export function parseStreamLine(line: string): StreamEvent | null {

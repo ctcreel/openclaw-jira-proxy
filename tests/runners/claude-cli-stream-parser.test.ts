@@ -1,6 +1,43 @@
 import { describe, it, expect } from 'vitest';
 
-import { parseQuotaLimitMessage } from '../../src/runners/claude-cli-stream-parser';
+import {
+  extractSessionIdFromInitEvent,
+  parseQuotaLimitMessage,
+} from '../../src/runners/claude-cli-stream-parser';
+
+describe('extractSessionIdFromInitEvent', () => {
+  it('returns the session_id from a system.init event', () => {
+    const event = {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'sess-abc-123',
+    };
+    expect(extractSessionIdFromInitEvent(event)).toBe('sess-abc-123');
+  });
+
+  it('returns null for system events of other subtypes', () => {
+    expect(
+      extractSessionIdFromInitEvent({
+        type: 'system',
+        subtype: 'compact',
+        session_id: 'sess-abc-123',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null for non-system event types', () => {
+    expect(
+      extractSessionIdFromInitEvent({
+        type: 'assistant',
+        session_id: 'sess-abc-123',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when session_id is missing on a system.init event', () => {
+    expect(extractSessionIdFromInitEvent({ type: 'system', subtype: 'init' })).toBeNull();
+  });
+});
 
 describe('parseQuotaLimitMessage', () => {
   it('parses the production limit-hit message with pm meridiem', () => {
