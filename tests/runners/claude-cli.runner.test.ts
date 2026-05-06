@@ -190,6 +190,25 @@ describe('ClaudeCliRunner', () => {
     });
   }
 
+  it('captures session_id from the system.init event and surfaces it in RunResult', async () => {
+    // Production-shape stream: system.init first (carries session_id),
+    // then assistant content, then close. The runner stores session_id
+    // even on the happy path so the worker can persist it for any
+    // future requeue.
+    const initEvent = JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'sess-cap-1',
+    });
+    const resultEvent = JSON.stringify({ type: 'result', num_turns: 1, total_cost_usd: 0.01 });
+    const { result } = await runWithDeterministicStreams({
+      stdoutLines: [`${initEvent}\n${resultEvent}\n`],
+      exitCode: 0,
+    });
+    expect(result.status).toBe('ok');
+    expect(result.sessionId).toBe('sess-cap-1');
+  });
+
   it('returns quota_exceeded with parsed resetAt when the CLI emits the limit message', async () => {
     // Production-shape stream: a single assistant text block carrying the
     // "You've hit your limit" message, followed by exit 1. This is the
@@ -212,6 +231,25 @@ describe('ClaudeCliRunner', () => {
     // The error path is intentionally NOT taken even though exit was 1 —
     // this is what stops retries from being burned on the same wall.
     expect(result.error).toBeUndefined();
+  });
+
+  it('passes --resume <id> to claude when options.resumeSessionId is set', async () => {
+    // Quota-pause recovery path: the worker pulls envelope.sessionId off
+    // a previously-paused run and forwards it as resumeSessionId. The
+    // runner must invoke claude with --resume so the conversation
+    // continues from the prior assistant tip rather than starting fresh.
+    vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+    const runner = new ClaudeCliRunner(baseConfig);
+    await runner.run({ ...baseOptions, resumeSessionId: 'sess-resumed-1' });
+
+    const args = vi.mocked(spawn).mock.calls[0]![1] as string[];
+    const resumeIndex = args.indexOf('--resume');
+    expect(resumeIndex).toBeGreaterThanOrEqual(0);
+    expect(args[resumeIndex + 1]).toBe('sess-resumed-1');
+    // System prompt is intentionally NOT passed on resume — it's already
+    // cached in the existing session and supplying it again would either
+    // be ignored or counted as a fresh turn.
+    expect(args).not.toContain('--system-prompt');
   });
 
   it('still returns generic error for non-quota stderr-y failures', async () => {

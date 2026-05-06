@@ -16,6 +16,7 @@ import type {
 } from './types';
 import {
   emitStreamEvent,
+  extractSessionIdFromInitEvent,
   parseQuotaLimitMessage,
   parseStreamLine,
 } from './claude-cli-stream-parser';
@@ -41,6 +42,17 @@ function buildCliArgs(options: RunOptions, systemPrompt: string | undefined): st
   ];
   if (options.model) {
     args.push('--model', options.model);
+  }
+  if (options.resumeSessionId !== undefined) {
+    // Quota-pause recovery: continue the prior conversation rather than
+    // spawn fresh. claude-cli accepts --resume alongside -p; the prompt
+    // becomes the next user message in the resumed session, and the
+    // assistant picks up where the prior limit message cut it off.
+    // System prompt is omitted on resume because it's already cached in
+    // the existing session — supplying it again would either be ignored
+    // or treated as a new turn, neither helpful.
+    args.push('--resume', options.resumeSessionId);
+    return args;
   }
   // Combine config-level system prompt (e.g. "You are Patch.") with the
   // per-run system prompt extracted from the template's `{{system-…}}` tags.
@@ -77,6 +89,10 @@ interface QuotaSignal {
   resetAt: number | null;
 }
 
+interface SessionCapture {
+  sessionId: string | null;
+}
+
 function extractQuotaResetFromEvent(event: {
   message?: { content?: Array<{ type?: string; text?: string }> };
 }): number | null {
@@ -96,6 +112,7 @@ function installStreamParser(
   runId: string,
   options: RunOptions,
   quotaSignal: QuotaSignal,
+  sessionCapture: SessionCapture,
 ): void {
   let buffer = '';
   child.stdout.on('data', (chunk: Buffer) => {
@@ -105,6 +122,16 @@ function installStreamParser(
     for (const line of lines) {
       const event = parseStreamLine(line);
       if (!event) continue;
+      // Capture session_id from the first system.init event — claude-cli
+      // emits exactly one per run before any assistant content. Stored
+      // for the quota-pause recovery path to populate envelope.sessionId
+      // on requeue, so the next pickup `--resume`s the same conversation.
+      if (sessionCapture.sessionId === null) {
+        const id = extractSessionIdFromInitEvent(event);
+        if (id !== null) {
+          sessionCapture.sessionId = id;
+        }
+      }
       // Detect the subscription-limit message before emitting downstream
       // — the parser handles other paths normally; we just sniff for the
       // quota signal so the close handler can surface the right status.
@@ -150,11 +177,21 @@ function buildCloseHandler(
   runId: string,
   startedAt: string,
   options: RunOptions,
-  state: { stderr: string; didTimeOut: () => boolean; quotaSignal: QuotaSignal },
+  state: {
+    stderr: string;
+    didTimeOut: () => boolean;
+    quotaSignal: QuotaSignal;
+    sessionCapture: SessionCapture;
+  },
   resolve: (r: RunResult) => void,
 ): (code: number | null) => void {
   return (code) => {
     const endedAt = new Date().toISOString();
+    // sessionId is set on every result variant when the stream produced
+    // a system.init event (which is every claude-cli run that got past
+    // spawn). Quota-pause path needs it on the requeue envelope; other
+    // paths surface it for completeness / future use.
+    const sessionId = state.sessionCapture.sessionId ?? undefined;
     if (state.didTimeOut()) {
       resolve({
         status: 'timeout',
@@ -163,6 +200,7 @@ function buildCloseHandler(
         endedAt,
         renderedPrompt: options.prompt,
         error: `Claude CLI timed out after ${options.timeoutMs}ms`,
+        ...(sessionId !== undefined ? { sessionId } : {}),
       });
       return;
     }
@@ -172,7 +210,12 @@ function buildCloseHandler(
     // each hitting the same wall.
     if (state.quotaSignal.resetAt !== null) {
       logger.warn(
-        { runId, code, resetAt: new Date(state.quotaSignal.resetAt).toISOString() },
+        {
+          runId,
+          code,
+          resetAt: new Date(state.quotaSignal.resetAt).toISOString(),
+          sessionId: sessionId ?? '(none captured)',
+        },
         'Claude CLI exited after quota-limit signal — surfacing as quota_exceeded',
       );
       resolve({
@@ -182,6 +225,7 @@ function buildCloseHandler(
         startedAt,
         endedAt,
         renderedPrompt: options.prompt,
+        ...(sessionId !== undefined ? { sessionId } : {}),
       });
       return;
     }
@@ -195,11 +239,19 @@ function buildCloseHandler(
         startedAt,
         endedAt,
         renderedPrompt: options.prompt,
+        ...(sessionId !== undefined ? { sessionId } : {}),
       });
       return;
     }
     logger.info({ runId }, 'Claude CLI completed');
-    resolve({ status: 'ok', runId, startedAt, endedAt, renderedPrompt: options.prompt });
+    resolve({
+      status: 'ok',
+      runId,
+      startedAt,
+      endedAt,
+      renderedPrompt: options.prompt,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+    });
   };
 }
 
@@ -271,9 +323,10 @@ function runClaudeCliSubprocess(
 
     const state = { stderr: '' };
     const quotaSignal: QuotaSignal = { resetAt: null };
+    const sessionCapture: SessionCapture = { sessionId: null };
     const timeout = scheduleForceKill(child, options.timeoutMs);
 
-    installStreamParser(child, runId, options, quotaSignal);
+    installStreamParser(child, runId, options, quotaSignal, sessionCapture);
 
     child.stderr.on('data', (chunk: Buffer) => {
       state.stderr += chunk.toString();
@@ -285,7 +338,12 @@ function runClaudeCliSubprocess(
         runId,
         startedAt,
         options,
-        { stderr: state.stderr, didTimeOut: timeout.didTimeOut, quotaSignal },
+        {
+          stderr: state.stderr,
+          didTimeOut: timeout.didTimeOut,
+          quotaSignal,
+          sessionCapture,
+        },
         resolve,
       )(code);
     });
