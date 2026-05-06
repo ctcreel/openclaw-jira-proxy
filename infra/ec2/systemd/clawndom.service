@@ -4,6 +4,17 @@ After=network-online.target redis-server.service tailscaled.service
 Wants=network-online.target redis-server.service
 Requires=redis-server.service
 
+# Start-rate cap (SPE-2005). Without this cap, Restart=always + RestartSec=5
+# becomes an unbounded restart storm when startup fails persistently —
+# ~720 restarts/hour, each re-shelling every secret resolver. The 1051
+# restart count from the May-2 incident DDoS'd 1Password into rate-limiting
+# the service account; the rate-limit response then became the new crash
+# cause and locked the loop in. After 5 failed starts in 5 minutes the
+# unit stays "failed" and an operator has to `systemctl reset-failed`
+# before it will run again.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=clawndom
@@ -15,6 +26,21 @@ Restart=always
 RestartSec=5
 StandardOutput=append:/var/log/clawndom/clawndom.log
 StandardError=append:/var/log/clawndom/clawndom.log
+
+# Tmpfs runtime directory for the on-disk secrets cache (SPE-2005).
+# RuntimeDirectory= auto-provisions /run/clawndom on tmpfs at unit start,
+# owned by User=clawndom / Group=clawndom at mode 0700. RuntimeDirectoryPreserve=
+# is intentionally `restart` (not `yes`) so:
+#   - systemctl restart clawndom    → directory + cache survive (cache hit on next boot)
+#   - systemctl stop clawndom       → directory + cache wiped (no stale credentials at rest)
+#   - host reboot                   → directory + cache wiped (tmpfs)
+# That matches the security model: secrets in the cache only live as long
+# as the unit is running. ReadWritePaths= does not need to be widened —
+# RuntimeDirectory= is implicitly read-write for the unit even with
+# ProtectSystem=strict.
+RuntimeDirectory=clawndom
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
 
 # Memory ceiling — cap the cgroup so a runaway warm-session subprocess
 # (claude-cli + its MCP children) gets OOM-killed inside the unit instead

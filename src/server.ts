@@ -24,6 +24,8 @@ import { BedrockRunner } from './runners/bedrock.runner';
 import type { AgentRunner } from './runners/types';
 import { registerSecretProvider } from './secrets/registry';
 import { SecretManager } from './secrets/manager';
+import { FileSecretCache } from './secrets/cache';
+import type { SecretCache } from './secrets/cache';
 import { EnvSecretProvider } from './secrets/env.provider';
 import { OnePasswordProvider } from './secrets/onepassword.provider';
 import { OAuthSecretProvider } from './secrets/oauth.provider';
@@ -31,6 +33,17 @@ import { FileSecretProvider } from './secrets/file.provider';
 import { validateProviderEnvSecrets } from './secrets/validate-env-secrets';
 import { SlackSocketTransport } from './strategies/transport';
 import type { Transport } from './strategies/transport';
+
+function buildSecretCache(settings: Settings): SecretCache | undefined {
+  // SPE-2005: opt-in by default, off only when explicitly disabled. When
+  // off (e.g. tests, local dev with no /run access), the manager runs the
+  // pre-cache codepath unchanged.
+  if (!settings.secretCache.enabled) return undefined;
+  return new FileSecretCache({
+    path: settings.secretCache.path,
+    maxAgeSeconds: settings.secretCache.maxAgeSeconds,
+  });
+}
 
 async function initializeSecrets(settings: Settings): Promise<SecretManager> {
   registerSecretProvider(new EnvSecretProvider());
@@ -48,7 +61,8 @@ async function initializeSecrets(settings: Settings): Promise<SecretManager> {
   }
 
   const bindings = settings.secrets ?? [];
-  const manager = new SecretManager(bindings);
+  const cache = buildSecretCache(settings);
+  const manager = new SecretManager(bindings, { cache });
   if (bindings.length > 0) {
     await manager.initialize();
   }

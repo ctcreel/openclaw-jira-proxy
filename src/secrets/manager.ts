@@ -1,10 +1,22 @@
 import { getLogger } from '../lib/logging';
+import type { CachedSecretEntry, SecretCache } from './cache';
 import { getSecretProvider } from './registry';
 import type { SecretBinding, ResolvedSecret } from './types';
 
 const logger = getLogger('secret-manager');
 
 const MAX_REFRESH_FAILURES = 3;
+
+export interface SecretManagerOptions {
+  /**
+   * Optional persistent cache for resolved secrets. When provided, the
+   * manager reads cached values on `initialize()` and writes resolved
+   * values back to the cache after each successful provider resolution
+   * (boot + refresh). See {@link SecretCache} for the contract and
+   * `src/secrets/cache.ts` for the rationale (SPE-2005).
+   */
+  cache?: SecretCache;
+}
 
 let instance: SecretManager | null = null;
 
@@ -22,19 +34,69 @@ export function getSecretManager(): SecretManager {
 export class SecretManager {
   private readonly secrets = new Map<string, ResolvedSecret>();
   private readonly bindings: readonly SecretBinding[];
+  private readonly bindingByKey: ReadonlyMap<string, SecretBinding>;
   private readonly timers: ReturnType<typeof setTimeout>[] = [];
   private readonly failureCounts = new Map<string, number>();
+  private readonly cache: SecretCache | undefined;
 
-  constructor(bindings: readonly SecretBinding[]) {
+  constructor(bindings: readonly SecretBinding[], options: SecretManagerOptions = {}) {
     this.bindings = bindings;
+    this.bindingByKey = new Map(bindings.map((b) => [b.key, b]));
+    this.cache = options.cache;
     setInstance(this);
   }
 
   /** Resolve all declared secrets. Must be called before workers start. */
   async initialize(): Promise<void> {
-    logger.info({ count: this.bindings.length }, 'Resolving secrets');
+    logger.info(
+      { count: this.bindings.length, cache: this.cache !== undefined },
+      'Resolving secrets',
+    );
 
-    const grouped = groupBindingsByProvider(this.bindings);
+    // Step 1 — apply cache hits first. A binding is a cache hit iff (a) its
+    // key has a cached entry, (b) the entry's reference matches the
+    // binding's current reference (operator may have rotated the locator),
+    // and (c) the entry's sourceProvider matches the binding's provider
+    // (operator may have moved the key to a different backend). The
+    // cache-side TTL/permission/schema checks have already filtered out
+    // stale or untrusted entries.
+    const cached = this.cache ? await this.cache.read() : new Map<string, CachedSecretEntry>();
+    const missingBindings: SecretBinding[] = [];
+    let cacheHits = 0;
+    for (const binding of this.bindings) {
+      const entry = cached.get(binding.key);
+      if (
+        entry !== undefined &&
+        entry.reference === binding.reference &&
+        entry.sourceProvider === binding.provider
+      ) {
+        this.secrets.set(binding.key, {
+          key: binding.key,
+          value: entry.value,
+          resolvedAt: new Date(entry.resolvedAt),
+          expiresAt: binding.ttlSeconds
+            ? new Date(Date.now() + binding.ttlSeconds * 1000)
+            : undefined,
+          source: binding.provider,
+        });
+        cacheHits += 1;
+      } else {
+        missingBindings.push(binding);
+      }
+    }
+    if (cacheHits > 0) {
+      logger.info(
+        { hits: cacheHits, misses: missingBindings.length },
+        'Resolved secrets from cache',
+      );
+    }
+
+    // Step 2 — resolve cache misses via providers. The error from the first
+    // unresolved required secret is captured but not thrown until after the
+    // partial cache write below — successful resolutions on this boot must
+    // survive the next restart even when one required secret fails.
+    const grouped = groupBindingsByProvider(missingBindings);
+    let firstError: Error | null = null;
 
     for (const [providerName, providerBindings] of grouped) {
       const provider = getSecretProvider(providerName);
@@ -57,18 +119,61 @@ export class SecretManager {
             source: providerName,
           });
         } else if (binding.required) {
-          throw new Error(
-            `Required secret "${binding.key}" could not be resolved from provider "${providerName}"`,
-          );
+          if (firstError === null) {
+            firstError = new Error(
+              `Required secret "${binding.key}" could not be resolved from provider "${providerName}"`,
+            );
+          }
         } else {
           logger.warn({ key: binding.key, provider: providerName }, 'Optional secret not resolved');
         }
       }
     }
 
+    // Step 3 — persist successful resolutions to the cache before raising
+    // the first required-miss error. A partial cache lets the next restart
+    // skip the slow provider for keys that did resolve, even if a different
+    // required key keeps the unit failing — that is the entire point of
+    // the cache as a brake on restart-loop amplification.
+    await this.persistCacheBestEffort();
+
+    if (firstError !== null) {
+      throw firstError;
+    }
+
     logger.info({ resolved: this.secrets.size, total: this.bindings.length }, 'Secrets resolved');
 
     this.scheduleRefreshTimers();
+  }
+
+  /**
+   * Write the current in-memory resolutions to the cache. Failures are
+   * logged and swallowed — a broken cache must never break startup.
+   */
+  private async persistCacheBestEffort(): Promise<void> {
+    if (!this.cache) return;
+
+    const entries = new Map<string, CachedSecretEntry>();
+    for (const [key, secret] of this.secrets) {
+      const binding = this.bindingByKey.get(key);
+      if (!binding) continue;
+      entries.set(key, {
+        sourceProvider: secret.source,
+        reference: binding.reference,
+        value: secret.value,
+        resolvedAt: secret.resolvedAt.toISOString(),
+        ttlSeconds: binding.ttlSeconds,
+      });
+    }
+
+    try {
+      await this.cache.write(entries);
+    } catch (err) {
+      logger.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        'Failed to persist secrets cache — startup continues',
+      );
+    }
   }
 
   /** Synchronous read from memory. Throws if not found. */
@@ -174,6 +279,10 @@ export class SecretManager {
 
       this.failureCounts.delete(groupKey);
       logger.info({ group: groupKey, resolved: resolved.size }, 'Secrets refreshed');
+
+      // Refresh writes through to the cache so a refreshed token survives
+      // the next restart without going back to the slow provider.
+      await this.persistCacheBestEffort();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failures = (this.failureCounts.get(groupKey) ?? 0) + 1;
