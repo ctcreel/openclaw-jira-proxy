@@ -25,8 +25,9 @@ lint: lint-quick ## Full lint (includes Prettier format check)
 test: ## Run tests with 95% coverage threshold
 	pnpm exec vitest run --coverage
 
-test-infra: ## Run infra (shell) tests — bootstrap.sh, deploy.sh helpers
+test-infra: ## Run infra (shell) tests — bootstrap.sh, deploy.sh helpers, branch-name policy
 	bash tests/infra/bootstrap-ssh-provision.test.sh
+	bash tests/infra/check-branch-name.test.sh
 
 # ============================================================================
 # SECURITY
