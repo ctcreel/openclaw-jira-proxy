@@ -240,6 +240,19 @@ describe('SecretManager', () => {
       clear: ReturnType<typeof vi.fn>;
     } & SecretCache;
 
+    // Helper for cache entries used across these tests. Keeps the per-test
+    // bodies focused on the field that varies (value, reference, etc.)
+    // rather than re-declaring sourceProvider + resolvedAt every time.
+    function cachedEntry(overrides: Partial<CachedSecretEntry> = {}): CachedSecretEntry {
+      return {
+        sourceProvider: 'mock',
+        reference: 'r1',
+        value: 'v1',
+        resolvedAt: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
     beforeEach(() => {
       mockCache = {
         read: vi.fn().mockResolvedValue(new Map<string, CachedSecretEntry>()),
@@ -249,19 +262,7 @@ describe('SecretManager', () => {
     });
 
     it('cache hit for all keys → provider.resolve is NOT called', async () => {
-      mockCache.read.mockResolvedValue(
-        new Map<string, CachedSecretEntry>([
-          [
-            'k1',
-            {
-              sourceProvider: 'mock',
-              reference: 'r1',
-              value: 'v1',
-              resolvedAt: new Date().toISOString(),
-            },
-          ],
-        ]),
-      );
+      mockCache.read.mockResolvedValue(new Map<string, CachedSecretEntry>([['k1', cachedEntry()]]));
       const bindings: SecretBinding[] = [
         { key: 'k1', provider: 'mock', reference: 'r1', required: true },
       ];
@@ -276,15 +277,7 @@ describe('SecretManager', () => {
     it('cache hit for some, miss for others → provider called with only the missed bindings', async () => {
       mockCache.read.mockResolvedValue(
         new Map<string, CachedSecretEntry>([
-          [
-            'cached',
-            {
-              sourceProvider: 'mock',
-              reference: 'rc',
-              value: 'cached-val',
-              resolvedAt: new Date().toISOString(),
-            },
-          ],
+          ['cached', cachedEntry({ reference: 'rc', value: 'cached-val' })],
         ]),
       );
       mockProvider.resolveFn.mockResolvedValue(new Map([['fresh', 'fresh-val']]));
@@ -308,15 +301,7 @@ describe('SecretManager', () => {
     it('reference change → cache miss for that key, provider re-fetches', async () => {
       mockCache.read.mockResolvedValue(
         new Map<string, CachedSecretEntry>([
-          [
-            'k1',
-            {
-              sourceProvider: 'mock',
-              reference: 'old-ref',
-              value: 'old',
-              resolvedAt: new Date().toISOString(),
-            },
-          ],
+          ['k1', cachedEntry({ reference: 'old-ref', value: 'old' })],
         ]),
       );
       mockProvider.resolveFn.mockResolvedValue(new Map([['k1', 'new']]));
