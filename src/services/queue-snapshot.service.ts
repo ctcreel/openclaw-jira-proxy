@@ -1,8 +1,13 @@
 import { getSettings } from '../config';
-import { type ActiveJob, getActiveJobsRegistry } from './active-jobs.service';
+import {
+  type ActiveJob,
+  type ActiveJobContext,
+  getActiveJobsRegistry,
+} from './active-jobs.service';
 import { getEventBus } from './event-bus.service';
 import { getProviderQueue } from './queue.service';
 import { type RecentCompletion, getRecentCompletionsRegistry } from './recent-completions.service';
+import { parseEnvelope } from './worker.service';
 
 const WAITING_PER_PROVIDER_LIMIT = 99;
 
@@ -10,6 +15,15 @@ export interface WaitingJob {
   jobId: string;
   provider: string;
   queuedAt: number;
+  /**
+   * Trace context extracted from the BullMQ envelope's `context` field
+   * when present (set by event-ingest at first enqueue, preserved by
+   * worker-failure-handler retries and quota-pause re-enqueues). Null
+   * for legacy raw-body envelopes that predate the context-on-envelope
+   * change. Lets the dashboard's bootstrap show real ticket id/title
+   * for waiting rows instead of "?" until the next live event arrives.
+   */
+  context: ActiveJobContext | null;
 }
 
 export interface QueueSnapshot {
@@ -58,9 +72,34 @@ export async function buildQueueSnapshot(): Promise<QueueSnapshot> {
 async function collectWaiting(providerName: string): Promise<WaitingJob[]> {
   const queue = getProviderQueue(providerName);
   const jobs = await queue.getWaiting(0, WAITING_PER_PROVIDER_LIMIT);
-  return jobs.map((job) => ({
-    jobId: String((job as { id?: string | number }).id ?? 'unknown'),
-    provider: providerName,
-    queuedAt: (job as { timestamp?: number }).timestamp ?? 0,
-  }));
+  return jobs.map((job) => {
+    // BullMQ jobs returned from getWaiting always carry a `data` string
+    // (the envelope or legacy raw body that ingest enqueued); trust the
+    // shape and let parseEnvelope handle either form. id/timestamp fall
+    // back to defaults for parity with existing snapshot code in this
+    // file — fail-fast on those is a broader pattern conversation than
+    // this change.
+    const context = extractContextFromJobData((job as { data: string }).data);
+    return {
+      jobId: String((job as { id?: string | number }).id ?? 'unknown'),
+      provider: providerName,
+      queuedAt: (job as { timestamp?: number }).timestamp ?? 0,
+      context,
+    };
+  });
+}
+
+function extractContextFromJobData(data: string): ActiveJobContext | null {
+  // parseEnvelope handles both the legacy raw-body shape (returns
+  // {payload, attempt} with no context) and the new envelope shape
+  // (returns context when present). It catches its own JSON parse
+  // errors and falls back to a first-attempt payload, so it never
+  // throws on bad input — no try/catch needed here.
+  const envelope = parseEnvelope(data);
+  if (envelope.context === undefined) return null;
+  return {
+    id: envelope.context.id,
+    title: envelope.context.title,
+    status: envelope.context.status,
+  };
 }
