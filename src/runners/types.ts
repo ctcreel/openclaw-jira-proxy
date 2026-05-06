@@ -42,6 +42,17 @@ export interface RunOptions {
    * cached prefix.
    */
   systemPrompt?: string;
+  /**
+   * When set, the runner resumes the existing claude-cli session with
+   * this id (`claude --resume <sessionId>`) instead of spawning a fresh
+   * conversation. Used by the quota-aware pause path: when a run's
+   * stream parser captured the session_id and the run subsequently hit
+   * the upstream quota wall, the requeue envelope carries the id so the
+   * resumed pickup continues the same conversation rather than restarting
+   * the plan from scratch. Runners that don't support resume (everything
+   * except claude-cli today) MUST ignore this field.
+   */
+  resumeSessionId?: string;
 }
 
 /**
@@ -113,6 +124,17 @@ export interface RunResult {
    * the queue resume at or after this time.
    */
   quotaResetAt?: number;
+  /**
+   * Session id captured from claude-cli's `system.init` event. Set by the
+   * claude-cli runner whenever the run produced one (status: 'ok',
+   * 'quota_exceeded', and most error/timeout cases will all have it
+   * because system.init fires before the first claude turn). Worker
+   * persists this onto the requeue envelope when handling
+   * `quota_exceeded` so the resumed pickup continues the conversation
+   * via `claude --resume <id>` instead of replanning from scratch.
+   * Runners other than claude-cli leave this undefined.
+   */
+  sessionId?: string;
   /** ISO-8601 timestamp when the run started. */
   startedAt?: string;
   /** ISO-8601 timestamp when the run ended. */

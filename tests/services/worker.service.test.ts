@@ -499,6 +499,55 @@ describe('processJob quota_exceeded handling', () => {
     expect(requeued?.originalJobId).toBe('orig-3');
   });
 
+  it('persists runner-captured sessionId onto the requeued envelope so the next pickup can --resume', async () => {
+    runSpy.mockResolvedValueOnce({
+      status: 'quota_exceeded',
+      runId: 'cli-quota-resume',
+      quotaResetAt: Date.now() + 600_000,
+      sessionId: 'sess-from-runner-1',
+      renderedPrompt: 'rendered',
+    });
+
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+    const envelope: JobEnvelope = { payload: '{}', attempt: 1 };
+
+    await processJob(
+      createFakeJob(JSON.stringify(envelope), 'orig-resume-1'),
+      testProvider,
+      agents,
+    );
+
+    const { bullmqMockState } = await import('../helpers/bullmq-mock');
+    // Use findLast — queueInstances accumulates across tests; the freshly
+    // constructed instance for THIS test is at the tail of the array.
+    const queue = bullmqMockState.queueInstances.findLast(
+      (q) => q.name === 'webhooks-test-provider',
+    );
+    const requeued = JSON.parse(queue!.addCalls[0]!.data as string) as Record<string, unknown>;
+    expect(requeued.sessionId).toBe('sess-from-runner-1');
+  });
+
+  it('forwards envelope.sessionId to the runner as resumeSessionId so claude --resume runs the next pickup', async () => {
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+    // Inbound envelope is the one a quota-paused run wrote earlier — has
+    // sessionId set. processJob must thread it through to runner.run as
+    // resumeSessionId; otherwise the resumed pickup spawns a fresh
+    // conversation and we lose the value of capturing the id at all.
+    const envelope: JobEnvelope = {
+      payload: '{}',
+      attempt: 1,
+      sessionId: 'sess-from-prior-run',
+    };
+
+    await processJob(createFakeJob(JSON.stringify(envelope), 'resumed-1'), testProvider, agents);
+
+    expect(runSpy.mock.calls[0]![0].resumeSessionId).toBe('sess-from-prior-run');
+  });
+
   it('schedules at least the floor delay even when reset is in the past', async () => {
     runSpy.mockResolvedValueOnce({
       status: 'quota_exceeded',
