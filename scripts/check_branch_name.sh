@@ -16,17 +16,40 @@ fi
 # Long-lived branches
 LONG_LIVED_BRANCHES="^(main|development|testing|demo|production)$"
 
-# Feature branches: type/TICKET-ID-description
-FEATURE_BRANCHES="^(feature|bugfix|hotfix|chore|docs|refactor|test)/[A-Z]{2,}-[0-9]+-[a-z0-9][a-z0-9-]{2,49}$"
+# Feature branches: <type>/[<TICKET-ID>-]<description>
+#
+# Type vocabulary mirrors conventional-commits (the same set our pre-commit
+# hook enforces on commit messages), with the legacy aliases retained:
+#   feat / feature  — new functionality
+#   fix / bugfix    — defect fix
+#   hotfix          — production-bound urgent fix
+#   docs            — documentation only
+#   style           — formatting / whitespace
+#   refactor        — code change that doesn't add or fix
+#   perf            — performance improvement
+#   test            — tests only
+#   build           — build-system / dependency
+#   ci              — CI configuration
+#   chore           — anything else (deploy scripts, repo hygiene)
+#   revert          — revert a prior commit
+#
+# The TICKET-ID segment is OPTIONAL. Tickets are still encouraged for any
+# planned work that's tracked in Jira, but small fixes (typo, dependency
+# bump, lint cleanup) can omit it. The description segment is the same
+# 3-50 lowercase-and-hyphens form either way.
+FEATURE_BRANCHES='^(feat|feature|fix|bugfix|hotfix|docs|style|refactor|perf|test|build|ci|chore|revert)/([A-Z]{2,}-[0-9]+-)?[a-z0-9][a-z0-9-]{2,49}$'
 
 if [[ "$BRANCH_NAME" =~ $LONG_LIVED_BRANCHES ]]; then
     exit 0
 fi
 
 if [[ "$BRANCH_NAME" =~ $FEATURE_BRANCHES ]]; then
-    # Check for consecutive hyphens or trailing hyphen in description
+    # Check for consecutive hyphens or trailing hyphen in description.
+    # Strip the type prefix and (optional) ticket-id segment first.
     DESCRIPTION="${BRANCH_NAME#*/}"
-    DESCRIPTION="${DESCRIPTION#*-*-}"
+    if [[ "$DESCRIPTION" =~ ^[A-Z]{2,}-[0-9]+- ]]; then
+        DESCRIPTION="${DESCRIPTION#*-*-}"
+    fi
     if [[ "$DESCRIPTION" =~ -- ]] || [[ "$DESCRIPTION" =~ -$ ]]; then
         echo "ERROR: Branch description cannot contain consecutive hyphens or end with a hyphen"
         echo "Branch: $BRANCH_NAME"
@@ -41,14 +64,10 @@ echo "Branch: $BRANCH_NAME"
 echo ""
 echo "Valid formats:"
 echo "  Long-lived: main, development, testing, demo, production"
-echo "  Feature:    feature/{TICKET-ID}-{description}"
-echo "  Bugfix:     bugfix/{TICKET-ID}-{description}"
-echo "  Hotfix:     hotfix/{TICKET-ID}-{description}"
-echo "  Chore:      chore/{TICKET-ID}-{description}"
-echo "  Docs:       docs/{TICKET-ID}-{description}"
-echo "  Refactor:   refactor/{TICKET-ID}-{description}"
-echo "  Test:       test/{TICKET-ID}-{description}"
+echo "  With ticket:    <type>/<TICKET-ID>-<description>   e.g. fix/SPE-2010-csv-bot-blocked"
+echo "  Without ticket: <type>/<description>               e.g. chore/relax-branch-name-rule"
 echo ""
-echo "Ticket ID: 2+ uppercase letters, dash, 1+ digits (e.g., SF-123)"
-echo "Description: 3-50 chars, lowercase + numbers + hyphens"
+echo "Types: feat|feature|fix|bugfix|hotfix|docs|style|refactor|perf|test|build|ci|chore|revert"
+echo "Ticket ID (optional): 2+ uppercase letters, dash, 1+ digits (e.g., SPE-123)"
+echo "Description: 3-50 chars, lowercase + numbers + hyphens, no consecutive '--', no trailing '-'"
 exit 1
