@@ -233,6 +233,31 @@ describe('ClaudeCliRunner', () => {
     expect(result.error).toBeUndefined();
   });
 
+  it('defaults --max-turns to 150 when options.maxTurns is omitted', async () => {
+    vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+    const runner = new ClaudeCliRunner(baseConfig);
+    await runner.run(baseOptions);
+
+    const args = vi.mocked(spawn).mock.calls[0]![1] as string[];
+    const idx = args.indexOf('--max-turns');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('150');
+  });
+
+  it('passes options.maxTurns through to --max-turns when set', async () => {
+    // Per-rule override path: rules whose work cascades wider than 150
+    // turns (e.g. SPE-2010-class tuple-shape changes across 18 test
+    // files) opt in via the rule's `maxTurns` field; the worker forwards
+    // it as RunOptions.maxTurns; the runner stamps the CLI flag.
+    vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+    const runner = new ClaudeCliRunner(baseConfig);
+    await runner.run({ ...baseOptions, maxTurns: 500 });
+
+    const args = vi.mocked(spawn).mock.calls[0]![1] as string[];
+    const idx = args.indexOf('--max-turns');
+    expect(args[idx + 1]).toBe('500');
+  });
+
   it('passes --resume <id> to claude when options.resumeSessionId is set', async () => {
     // Quota-pause recovery path: the worker pulls envelope.sessionId off
     // a previously-paused run and forwards it as resumeSessionId. The

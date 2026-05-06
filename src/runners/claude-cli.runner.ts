@@ -29,7 +29,16 @@ const logger = getLogger('runner:claude-cli');
 
 type CliProcess = ChildProcessByStdio<null, Readable, Readable>;
 
+const DEFAULT_MAX_TURNS = 150;
+
 function buildCliArgs(options: RunOptions, systemPrompt: string | undefined): string[] {
+  // The `--max-turns` ceiling is per-run because some routing rules drive
+  // wider cascades than others. Plan-style rules finish under the 150
+  // default; ready-for-development rules whose work cascades across
+  // dozens of test files (e.g. SPE-2010's tuple-shape change rippled
+  // through 18 test files = 60+ Edit calls = 60+ turns) opt in to a
+  // higher ceiling via rule.maxTurns. Other runners ignore the field.
+  const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
   const args = [
     '-p',
     options.prompt,
@@ -37,7 +46,7 @@ function buildCliArgs(options: RunOptions, systemPrompt: string | undefined): st
     'stream-json',
     '--verbose',
     '--max-turns',
-    '150',
+    String(maxTurns),
     '--dangerously-skip-permissions',
   ];
   if (options.model) {

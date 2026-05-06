@@ -347,6 +347,10 @@ export async function processJob(
     // got walled by upstream, the requeued envelope carries that id so
     // this pickup resumes the same conversation instead of replanning.
     ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
+    // Per-rule turn ceiling. Default 150 in the runner; rules whose work
+    // cascades wider (multi-file test-tuple updates, structural refactors)
+    // opt into a higher value via the rule's `maxTurns` field.
+    ...(resolved.rule.maxTurns === undefined ? {} : { maxTurns: resolved.rule.maxTurns }),
     sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
     sessionUserMessage,
   });
