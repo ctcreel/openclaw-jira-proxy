@@ -92,7 +92,14 @@ describe('buildQueueSnapshot (SPE-1976)', () => {
       runId: 'run-2',
     });
 
-    // Mock BullMQ getWaiting per provider.
+    // Mock BullMQ getWaiting per provider. The waiting job carries the
+    // envelope shape that event-ingest produces, so the snapshot's
+    // context-extraction path has something real to parse.
+    const waitingEnvelope = JSON.stringify({
+      payload: '{"issue":{"key":"SPE-2009"}}',
+      attempt: 1,
+      context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
+    });
     const getWaiting = vi.fn(async (start: number, end: number) => {
       void start;
       void end;
@@ -101,6 +108,7 @@ describe('buildQueueSnapshot (SPE-1976)', () => {
           id: 'waiting-1',
           timestamp: 1234,
           name: 'webhook-event',
+          data: waitingEnvelope,
         },
       ] as unknown[];
     });
@@ -122,6 +130,18 @@ describe('buildQueueSnapshot (SPE-1976)', () => {
       expect(new Set(snapshot.waiting.map((w) => w.provider))).toEqual(
         new Set(['test-provider', PROVIDER_TWO_NAME]),
       );
+      // Each waiting entry now carries envelope-derived context so a
+      // freshly-restarted dashboard can render real ticket id/title for
+      // already-queued rows instead of "?". Both entries use the same
+      // mock envelope, so both context blocks should match.
+      expect(snapshot.waiting.every((w) => w.context !== null)).toBe(true);
+      for (const w of snapshot.waiting) {
+        expect(w.context).toEqual({
+          id: 'SPE-2009',
+          title: 'Empty fourth page',
+          status: 'Plan',
+        });
+      }
 
       // latestEventId mirrors what the bus has stamped.
       expect(snapshot.latestEventId).toBe(bus.getLatestId());

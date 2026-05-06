@@ -714,6 +714,26 @@ def _seed_active_from_snapshot(jobs: list[dict[str, Any]], now: float) -> None:
         }
 
 
+def _seed_queued_from_snapshot(items: list[dict[str, Any]]) -> None:
+    # The snapshot's `waiting` array now carries `context` (envelope-derived)
+    # so a freshly-restarted dashboard shows real ticket id/title for the
+    # already-queued rows instead of an empty panel until the next live
+    # event lands. SSE events arriving after this take precedence by jobId
+    # — _handle_job_queued / _handle_job_requeued overwrite STATE.queued
+    # with the live values.
+    for entry in items:
+        job_id = entry.get("jobId")
+        if not job_id or job_id in STATE.queued:
+            continue
+        ctx = entry.get("context") or {}
+        STATE.queued[job_id] = {
+            "provider": entry.get("provider", "?"),
+            "title": ctx.get("title", "?") if isinstance(ctx, dict) else "?",
+            "context_id": ctx.get("id", "?") if isinstance(ctx, dict) else "?",
+            "queued_at": entry.get("queuedAt", 0),
+        }
+
+
 def _seed_recent_from_snapshot(items: list[dict[str, Any]]) -> None:
     # The server returns RecentCompletion[] newest-first. We appendleft into
     # STATE.recent (also newest-first), so we have to iterate the snapshot in
@@ -760,6 +780,7 @@ def bootstrap_from_snapshot(url: str) -> None:
         return
 
     active_jobs = body.get("active") or []
+    waiting = body.get("waiting") or []
     recent = body.get("recentlyCompleted") or []
     latest_event_id = body.get("latestEventId", 0)
 
@@ -767,6 +788,8 @@ def bootstrap_from_snapshot(url: str) -> None:
     with STATE.lock:
         if isinstance(active_jobs, list):
             _seed_active_from_snapshot(active_jobs, now)
+        if isinstance(waiting, list):
+            _seed_queued_from_snapshot(waiting)
         if isinstance(recent, list):
             _seed_recent_from_snapshot(recent)
         if isinstance(latest_event_id, int) and latest_event_id > STATE.last_event_id:
