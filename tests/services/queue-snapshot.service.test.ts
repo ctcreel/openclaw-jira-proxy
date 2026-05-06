@@ -100,9 +100,7 @@ describe('buildQueueSnapshot (SPE-1976)', () => {
       attempt: 1,
       context: { id: 'SPE-2009', title: 'Empty fourth page', status: 'Plan' },
     });
-    const getWaiting = vi.fn(async (start: number, end: number) => {
-      void start;
-      void end;
+    const getWaiting = vi.fn(async () => {
       return [
         {
           id: 'waiting-1',
@@ -168,9 +166,7 @@ describe('buildQueueSnapshot (SPE-1976)', () => {
     getRecentCompletionsRegistry();
 
     const legacyRawBody = JSON.stringify({ issue: { key: 'SPE-OLD' } });
-    const getWaiting = vi.fn(async (start: number, end: number) => {
-      void start;
-      void end;
+    const getWaiting = vi.fn(async () => {
       return [
         { id: 'legacy-1', timestamp: 1, name: 'webhook-event', data: legacyRawBody },
       ] as unknown[];

@@ -73,8 +73,13 @@ async function collectWaiting(providerName: string): Promise<WaitingJob[]> {
   const queue = getProviderQueue(providerName);
   const jobs = await queue.getWaiting(0, WAITING_PER_PROVIDER_LIMIT);
   return jobs.map((job) => {
-    const data = (job as { data?: string }).data;
-    const context = extractContextFromJobData(data);
+    // BullMQ jobs returned from getWaiting always carry a `data` string
+    // (the envelope or legacy raw body that ingest enqueued); trust the
+    // shape and let parseEnvelope handle either form. id/timestamp fall
+    // back to defaults for parity with existing snapshot code in this
+    // file — fail-fast on those is a broader pattern conversation than
+    // this change.
+    const context = extractContextFromJobData((job as { data: string }).data);
     return {
       jobId: String((job as { id?: string | number }).id ?? 'unknown'),
       provider: providerName,
@@ -84,8 +89,7 @@ async function collectWaiting(providerName: string): Promise<WaitingJob[]> {
   });
 }
 
-function extractContextFromJobData(data: string | undefined): ActiveJobContext | null {
-  if (data === undefined) return null;
+function extractContextFromJobData(data: string): ActiveJobContext | null {
   // parseEnvelope handles both the legacy raw-body shape (returns
   // {payload, attempt} with no context) and the new envelope shape
   // (returns context when present). It catches its own JSON parse
