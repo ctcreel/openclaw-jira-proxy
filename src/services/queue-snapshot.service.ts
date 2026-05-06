@@ -88,18 +88,14 @@ function extractContextFromJobData(data: string | undefined): ActiveJobContext |
   if (data === undefined) return null;
   // parseEnvelope handles both the legacy raw-body shape (returns
   // {payload, attempt} with no context) and the new envelope shape
-  // (returns context when present). Either way: never throws on bad
-  // input — non-envelope data falls through as a first-attempt payload
-  // with context: undefined.
-  try {
-    const envelope = parseEnvelope(data);
-    if (envelope.context === undefined) return null;
-    return {
-      id: envelope.context.id,
-      title: envelope.context.title,
-      status: envelope.context.status,
-    };
-  } catch {
-    return null;
-  }
+  // (returns context when present). It catches its own JSON parse
+  // errors and falls back to a first-attempt payload, so it never
+  // throws on bad input — no try/catch needed here.
+  const envelope = parseEnvelope(data);
+  if (envelope.context === undefined) return null;
+  return {
+    id: envelope.context.id,
+    title: envelope.context.title,
+    status: envelope.context.status,
+  };
 }

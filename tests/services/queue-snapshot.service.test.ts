@@ -156,6 +156,37 @@ describe('buildQueueSnapshot (SPE-1976)', () => {
     }
   });
 
+  it('returns context: null for legacy raw-body envelopes that predate the context-on-envelope change', async () => {
+    // Pre-quota-aware-pause envelopes were enqueued as the raw webhook
+    // body (a JSON object with `issue`, no `payload`/`context` envelope
+    // shape). parseEnvelope's safeParse falls back to {payload: data,
+    // attempt: 1} for those, so envelope.context is undefined and the
+    // snapshot must return null without throwing. Otherwise the dashboard
+    // bootstrap would skip the row entirely or render `?` from a
+    // wrong-shape context object.
+    getActiveJobsRegistry();
+    getRecentCompletionsRegistry();
+
+    const legacyRawBody = JSON.stringify({ issue: { key: 'SPE-OLD' } });
+    const getWaiting = vi.fn(async (start: number, end: number) => {
+      void start;
+      void end;
+      return [
+        { id: 'legacy-1', timestamp: 1, name: 'webhook-event', data: legacyRawBody },
+      ] as unknown[];
+    });
+    const queueMock = { getWaiting } as unknown as ReturnType<typeof queueModule.getProviderQueue>;
+    const spy = vi.spyOn(queueModule, 'getProviderQueue').mockReturnValue(queueMock);
+
+    try {
+      const snapshot = await buildQueueSnapshot();
+      expect(snapshot.waiting.length).toBeGreaterThan(0);
+      expect(snapshot.waiting.every((w) => w.context === null)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('fans getWaiting across all providers in parallel', async () => {
     // Subscribe registries first so they receive events.
     getActiveJobsRegistry();
