@@ -431,6 +431,14 @@ async function handleQuotaExceeded(
     'Quota exceeded — paused current job and re-enqueued for delivery after reset',
   );
 
+  // job.requeued carries `originalJobId` — the just-paused BullMQ id whose
+  // bookkeeping the in-process registries need to clear. We rely on
+  // ActiveJobsRegistry / RecentCompletionsRegistry handling job.requeued
+  // by deleting that originalJobId from their `jobs` / `liveJobs` maps;
+  // see the matching handlers there. Emitting a fake job.completed for
+  // the paused job would clear the registries too, but at the cost of
+  // polluting the dashboard's RECENT panel with a phantom green-completed
+  // row for work that's only delayed.
   getEventBus().publish({
     type: 'job.requeued',
     timestamp: now,
@@ -439,27 +447,6 @@ async function handleQuotaExceeded(
     provider: provider.name,
     attempt: requeue.attempt,
     originalJobId: envelope.originalJobId ?? jobIdString,
-  });
-
-  // Mark the original job as completed at the lifecycle level. BullMQ
-  // already treats it as completed (we return from processJob normally,
-  // no throw, no retry counter consumed); this event tells the in-process
-  // registries to clear their bookkeeping for the now-paused jobId.
-  // Without it, ActiveJobsRegistry leaves the job in its `jobs` map
-  // forever, the dashboard renders 10 phantom-active rows after a quota
-  // event, and the InflightRegistry keeps an inflight key in Redis until
-  // its 24h TTL. `durationMs` is from the parent processJob's startedAt
-  // through now; `runId` is unknown at this layer (the runner emitted it
-  // and exited) — placeholder is fine since this is a paused-not-finished
-  // outcome.
-  getEventBus().publish({
-    type: 'job.completed',
-    timestamp: now,
-    traceId,
-    jobId: jobIdString,
-    provider: provider.name,
-    durationMs: 0,
-    runId: 'quota-paused',
   });
 }
 

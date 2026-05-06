@@ -449,7 +449,7 @@ describe('processJob quota_exceeded handling', () => {
     });
   });
 
-  it('emits job.completed for the original jobId so registries clean up', async () => {
+  it('does not emit job.completed for the paused jobId — only job.requeued carries the cleanup signal', async () => {
     runSpy.mockResolvedValueOnce({
       status: 'quota_exceeded',
       runId: 'cli-quota-3',
@@ -459,12 +459,19 @@ describe('processJob quota_exceeded handling', () => {
 
     const { getEventBus, resetEventBus } = await import('../../src/services/event-bus.service');
     resetEventBus();
-    const captured: { type: string; jobId?: string }[] = [];
+    interface CapturedEvent {
+      type: string;
+      jobId?: string;
+      originalJobId?: string;
+    }
+    const captured: CapturedEvent[] = [];
     getEventBus().subscribe((stamped) => {
       const event = stamped.event;
-      const jobId = 'jobId' in event ? event.jobId : undefined;
-      const entry: { type: string; jobId?: string } = { type: event.type };
-      if (jobId !== undefined) entry.jobId = jobId;
+      const entry: CapturedEvent = { type: event.type };
+      if ('jobId' in event) entry.jobId = event.jobId;
+      if ('originalJobId' in event && typeof event.originalJobId === 'string') {
+        entry.originalJobId = event.originalJobId;
+      }
       captured.push(entry);
     });
 
@@ -475,17 +482,21 @@ describe('processJob quota_exceeded handling', () => {
 
     await processJob(createFakeJob(JSON.stringify(envelope), 'orig-3'), testProvider, agents);
 
-    // job.requeued must fire BEFORE job.completed: the requeue advertises
-    // the new BullMQ id; the completed event closes the lifecycle on the
-    // original. Out-of-order would make subscribers see "completed → look
-    // up new job → not yet queued" and miss context propagation.
-    const requeuedIndex = captured.findIndex((e) => e.type === 'job.requeued');
-    const completedIndex = captured.findIndex(
+    // The paused jobId must NOT appear in any job.completed event —
+    // emitting one would pollute the dashboard's RECENT panel with a
+    // phantom green-✓ row for work that's only delayed. Cleanup of the
+    // active-jobs map happens via job.requeued's originalJobId field
+    // instead (see ActiveJobsRegistry.handleRequeued).
+    const completedForPaused = captured.find(
       (e) => e.type === 'job.completed' && e.jobId === 'orig-3',
     );
-    expect(requeuedIndex).toBeGreaterThanOrEqual(0);
-    expect(completedIndex).toBeGreaterThan(requeuedIndex);
-    expect(captured[completedIndex]?.jobId).toBe('orig-3');
+    expect(completedForPaused).toBeUndefined();
+
+    // job.requeued must carry the paused id in originalJobId so the
+    // registries know which entry to drop.
+    const requeued = captured.find((e) => e.type === 'job.requeued');
+    expect(requeued).toBeDefined();
+    expect(requeued?.originalJobId).toBe('orig-3');
   });
 
   it('schedules at least the floor delay even when reset is in the past', async () => {
