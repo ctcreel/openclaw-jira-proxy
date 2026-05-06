@@ -92,7 +92,15 @@ export class SecretManager {
     for (const binding of this.bindings) {
       const entry = cached.get(binding.key);
       if (isCacheHit(entry, binding)) {
-        this.secrets.set(binding.key, buildResolvedFromCache(binding, entry));
+        this.secrets.set(
+          binding.key,
+          buildResolved({
+            binding,
+            value: entry.value,
+            source: binding.provider,
+            resolvedAt: new Date(entry.resolvedAt),
+          }),
+        );
         cacheHits += 1;
       } else {
         missingBindings.push(binding);
@@ -146,7 +154,10 @@ export class SecretManager {
     for (const binding of providerBindings) {
       const value = resolved.get(binding.key);
       if (value !== undefined) {
-        this.secrets.set(binding.key, buildResolvedFromProvider(binding, value, providerName));
+        this.secrets.set(
+          binding.key,
+          buildResolved({ binding, value, source: providerName, resolvedAt: new Date() }),
+        );
       } else if (binding.required) {
         next ??= new Error(
           `Required secret "${binding.key}" could not be resolved from provider "${providerName}"`,
@@ -327,27 +338,26 @@ function isCacheHit(
   return entry.reference === binding.reference && entry.sourceProvider === binding.provider;
 }
 
-function buildResolvedFromCache(binding: SecretBinding, entry: CachedSecretEntry): ResolvedSecret {
-  return {
-    key: binding.key,
-    value: entry.value,
-    resolvedAt: new Date(entry.resolvedAt),
-    expiresAt: binding.ttlSeconds ? new Date(Date.now() + binding.ttlSeconds * 1000) : undefined,
-    source: binding.provider,
-  };
-}
-
-function buildResolvedFromProvider(
-  binding: SecretBinding,
-  value: string,
-  providerName: string,
-): ResolvedSecret {
+/**
+ * Single ResolvedSecret constructor for both the cache-hit and
+ * provider-hit paths. Splitting these into two helpers (one per call
+ * site) tripped Sonar's duplication detector — same shape, two
+ * literals away from each other. Caller supplies the differing fields
+ * (value, source, resolvedAt) explicitly.
+ */
+function buildResolved(args: {
+  binding: SecretBinding;
+  value: string;
+  source: string;
+  resolvedAt: Date;
+}): ResolvedSecret {
+  const { binding, value, source, resolvedAt } = args;
   return {
     key: binding.key,
     value,
-    resolvedAt: new Date(),
+    resolvedAt,
     expiresAt: binding.ttlSeconds ? new Date(Date.now() + binding.ttlSeconds * 1000) : undefined,
-    source: providerName,
+    source,
   };
 }
 
