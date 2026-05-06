@@ -4,6 +4,7 @@ import type {
   ClawndomEvent,
   JobCompletedEvent,
   JobFailedEvent,
+  JobRequeuedEvent,
   JobStartedEvent,
   WebhookAcceptedEvent,
   WebhookRejectedEvent,
@@ -84,6 +85,14 @@ export class RecentCompletionsRegistry {
       case 'job.started':
         this.recordLiveJob(event);
         return;
+      case 'job.requeued':
+        // The prior-generation jobId is paused (quota path) or already
+        // failed-non-final (failure-handler retry path). Either way its
+        // liveJobs entry shouldn't survive into a future completion record
+        // for the new requeued jobId. pendingContext is keyed by traceId,
+        // which is preserved across the requeue, so we leave it intact.
+        this.handleRequeued(event);
+        return;
       case 'job.completed':
         this.recordCompleted(event);
         return;
@@ -108,6 +117,10 @@ export class RecentCompletionsRegistry {
       title: event.contextTitle,
       status: event.contextStatus,
     });
+  }
+
+  private handleRequeued(event: JobRequeuedEvent): void {
+    this.liveJobs.delete(event.originalJobId);
   }
 
   private recordLiveJob(event: JobStartedEvent): void {

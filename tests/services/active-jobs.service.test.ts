@@ -216,6 +216,38 @@ describe('ActiveJobsRegistry', () => {
     expect(() => registry.stop()).not.toThrow();
   });
 
+  it('clears the paused jobId on job.requeued (quota-pause path) without disturbing pendingContext', () => {
+    // Quota-pause re-enqueues fire `job.requeued` with `originalJobId`
+    // pointing at the just-paused BullMQ id. Without this branch the
+    // active panel renders 10 phantom-active rows after a quota event
+    // even though the jobs are sitting in BullMQ delayed state.
+    const registry = new ActiveJobsRegistry();
+    registry.start();
+    const bus = getEventBus();
+
+    bus.publish(buildWebhookAccepted({ traceId: 'trace-q' }));
+    bus.publish(buildJobStarted({ traceId: 'trace-q', jobId: 'paused-1' }));
+    expect(registry.listActive()).toHaveLength(1);
+    expect(registry.hasPendingContext('trace-q')).toBe(true);
+
+    // Quota-aware pause emits job.requeued for the new delayed jobId,
+    // with originalJobId = the just-paused id. Registry must drop the
+    // paused entry but leave pendingContext intact (the trace lineage
+    // continues into the resumed pickup at reset time).
+    bus.publish({
+      type: 'job.requeued',
+      timestamp: 5,
+      traceId: 'trace-q',
+      jobId: 'requeued-1',
+      provider: 'jira',
+      attempt: 1,
+      originalJobId: 'paused-1',
+    });
+
+    expect(registry.listActive()).toHaveLength(0);
+    expect(registry.hasPendingContext('trace-q')).toBe(true);
+  });
+
   it('hasPendingContext reflects pendingContext map state across the lifecycle', () => {
     const registry = new ActiveJobsRegistry();
     registry.start();

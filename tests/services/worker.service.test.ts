@@ -449,6 +449,56 @@ describe('processJob quota_exceeded handling', () => {
     });
   });
 
+  it('does not emit job.completed for the paused jobId — only job.requeued carries the cleanup signal', async () => {
+    runSpy.mockResolvedValueOnce({
+      status: 'quota_exceeded',
+      runId: 'cli-quota-3',
+      quotaResetAt: Date.now() + 600_000,
+      renderedPrompt: 'rendered',
+    });
+
+    const { getEventBus, resetEventBus } = await import('../../src/services/event-bus.service');
+    resetEventBus();
+    interface CapturedEvent {
+      type: string;
+      jobId?: string;
+      originalJobId?: string;
+    }
+    const captured: CapturedEvent[] = [];
+    getEventBus().subscribe((stamped) => {
+      const event = stamped.event;
+      const entry: CapturedEvent = { type: event.type };
+      if ('jobId' in event) entry.jobId = event.jobId;
+      if ('originalJobId' in event && typeof event.originalJobId === 'string') {
+        entry.originalJobId = event.originalJobId;
+      }
+      captured.push(entry);
+    });
+
+    const agents = [
+      buildAgent('patch', 'test-provider', { rules: [{ condition: { all_of: [] } }] }),
+    ];
+    const envelope: JobEnvelope = { payload: '{}', attempt: 1 };
+
+    await processJob(createFakeJob(JSON.stringify(envelope), 'orig-3'), testProvider, agents);
+
+    // The paused jobId must NOT appear in any job.completed event —
+    // emitting one would pollute the dashboard's RECENT panel with a
+    // phantom green-✓ row for work that's only delayed. Cleanup of the
+    // active-jobs map happens via job.requeued's originalJobId field
+    // instead (see ActiveJobsRegistry.handleRequeued).
+    const completedForPaused = captured.find(
+      (e) => e.type === 'job.completed' && e.jobId === 'orig-3',
+    );
+    expect(completedForPaused).toBeUndefined();
+
+    // job.requeued must carry the paused id in originalJobId so the
+    // registries know which entry to drop.
+    const requeued = captured.find((e) => e.type === 'job.requeued');
+    expect(requeued).toBeDefined();
+    expect(requeued?.originalJobId).toBe('orig-3');
+  });
+
   it('schedules at least the floor delay even when reset is in the past', async () => {
     runSpy.mockResolvedValueOnce({
       status: 'quota_exceeded',

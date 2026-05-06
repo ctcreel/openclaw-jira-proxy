@@ -364,12 +364,33 @@ def _handle_job_queued(job_id: str, trace_id: str, payload: dict[str, Any]) -> N
     }
 
 
+def _real_value(*candidates: Any) -> str:
+    """Return the first candidate that's a non-empty string and not the
+    placeholder '?'. trace_context entries are populated by
+    webhook.accepted but in degraded paths can land with '?' for fields
+    the strategy couldn't extract. Treating '?' as missing avoids
+    rendering placeholders when a fallback has the real value."""
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate and candidate != "?":
+            return candidate
+    return "?"
+
+
 def _handle_job_requeued(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
     STATE.job_trace[job_id] = trace_id
+    # Pull context from trace_context first — that's where webhook.accepted
+    # writes the canonical (id, title, status). Falling back to a same-id
+    # entry in STATE.queued covers the failure-handler retry path where the
+    # row was already in queued under the prior id; trace_context is what
+    # the quota-pause requeue path needs (the new BullMQ id has no prior
+    # queued entry, but the trace_id is preserved so trace_context still
+    # has the ticket key/title from the original webhook.accepted).
+    ctx = STATE.trace_context.get(trace_id, {})
+    queued_self = STATE.queued.get(job_id, {})
     STATE.queued[job_id] = {
         "provider": payload.get("provider", "?"),
-        "title": STATE.queued.get(job_id, {}).get("title", "?"),
-        "context_id": STATE.queued.get(job_id, {}).get("context_id", "?"),
+        "title": _real_value(ctx.get("title"), queued_self.get("title")),
+        "context_id": _real_value(ctx.get("id"), queued_self.get("context_id")),
         "queued_at": payload.get("timestamp", 0),
         "attempt": payload.get("attempt", 1),
     }
