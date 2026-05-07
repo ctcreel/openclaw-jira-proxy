@@ -281,6 +281,53 @@ describe('InflightRegistry', () => {
     expect(fake.log.del).toEqual([buildInflightKey('trace-1')]);
   });
 
+  it('touches lastEventType to "job.paused" on a quota-pause requeue', async () => {
+    const fake = createFakeRedis();
+    new InflightRegistry(fake.redis).start();
+    await publishAndFlush(buildJobStarted());
+    fake.log.hset = [];
+
+    await publishAndFlush({
+      type: 'job.paused',
+      timestamp: 4000,
+      traceId: 'trace-1',
+      jobId: 'requeued-1',
+      provider: 'jira',
+      attempt: 1,
+      originalJobId: 'job-1',
+      resumeAt: 1_000_000,
+    });
+
+    expect(fake.log.hset).toHaveLength(1);
+    expect(fake.log.hset[0]!.data).toEqual({
+      lastEventAt: '4000',
+      lastEventType: 'job.paused',
+    });
+  });
+
+  it('touches lastEventType to "job.retried" on a failure-handler requeue', async () => {
+    const fake = createFakeRedis();
+    new InflightRegistry(fake.redis).start();
+    await publishAndFlush(buildJobStarted());
+    fake.log.hset = [];
+
+    await publishAndFlush({
+      type: 'job.retried',
+      timestamp: 4000,
+      traceId: 'trace-1',
+      jobId: 'retried-1',
+      provider: 'jira',
+      attempt: 2,
+      originalJobId: 'job-1',
+    });
+
+    expect(fake.log.hset).toHaveLength(1);
+    expect(fake.log.hset[0]!.data).toEqual({
+      lastEventAt: '4000',
+      lastEventType: 'job.retried',
+    });
+  });
+
   it('readRecord round-trips the hash back into a typed record', async () => {
     const fake = createFakeRedis();
     const registry = new InflightRegistry(fake.redis);

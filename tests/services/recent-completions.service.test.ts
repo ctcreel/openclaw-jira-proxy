@@ -208,6 +208,57 @@ describe('RecentCompletionsRegistry (SPE-1976)', () => {
     registry.stop();
     expect(() => registry.stop()).not.toThrow();
   });
+
+  it('drops liveJobs entry on job.paused (quota-pause path)', () => {
+    // The paused jobId mustn't survive into a future completion record
+    // for the new requeued jobId. Without this, a later job.completed
+    // for the requeued id would inherit the prior agentId/provider via
+    // the stale liveJobs map entry.
+    const registry = new RecentCompletionsRegistry();
+    registry.start();
+    const bus = getEventBus();
+
+    bus.publish(buildJobStarted({ jobId: 'paused-1' }));
+    bus.publish({
+      type: 'job.paused',
+      timestamp: 5,
+      traceId: 'trace-1',
+      jobId: 'requeued-1',
+      provider: 'jira',
+      attempt: 1,
+      originalJobId: 'paused-1',
+      resumeAt: 1_000_000,
+    });
+
+    // Completing the new requeued jobId should produce a record without
+    // an inherited agentId, since the prior live entry was dropped.
+    bus.publish(buildJobCompleted({ jobId: 'requeued-1' }));
+    const recent = registry.list();
+    expect(recent).toHaveLength(1);
+    expect(recent[0]!.agentId).toBeNull();
+  });
+
+  it('drops liveJobs entry on job.retried (failure-handler path)', () => {
+    const registry = new RecentCompletionsRegistry();
+    registry.start();
+    const bus = getEventBus();
+
+    bus.publish(buildJobStarted({ jobId: 'failed-1' }));
+    bus.publish({
+      type: 'job.retried',
+      timestamp: 5,
+      traceId: 'trace-1',
+      jobId: 'retried-1',
+      provider: 'jira',
+      attempt: 2,
+      originalJobId: 'failed-1',
+    });
+
+    bus.publish(buildJobCompleted({ jobId: 'retried-1' }));
+    const recent = registry.list();
+    expect(recent).toHaveLength(1);
+    expect(recent[0]!.agentId).toBeNull();
+  });
 });
 
 describe('getRecentCompletionsRegistry singleton', () => {
