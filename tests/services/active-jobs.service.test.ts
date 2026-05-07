@@ -216,11 +216,11 @@ describe('ActiveJobsRegistry', () => {
     expect(() => registry.stop()).not.toThrow();
   });
 
-  it('clears the paused jobId on job.requeued (quota-pause path) without disturbing pendingContext', () => {
-    // Quota-pause re-enqueues fire `job.requeued` with `originalJobId`
+  it('clears the paused jobId on job.paused (quota-pause path) without disturbing pendingContext', () => {
+    // Quota-pause re-enqueues fire `job.paused` with `originalJobId`
     // pointing at the just-paused BullMQ id. Without this branch the
-    // active panel renders 10 phantom-active rows after a quota event
-    // even though the jobs are sitting in BullMQ delayed state.
+    // active panel renders phantom-active rows after a quota event even
+    // though the jobs are sitting in BullMQ delayed state.
     const registry = new ActiveJobsRegistry();
     registry.start();
     const bus = getEventBus();
@@ -230,22 +230,48 @@ describe('ActiveJobsRegistry', () => {
     expect(registry.listActive()).toHaveLength(1);
     expect(registry.hasPendingContext('trace-q')).toBe(true);
 
-    // Quota-aware pause emits job.requeued for the new delayed jobId,
+    // Quota-aware pause emits job.paused for the new delayed jobId,
     // with originalJobId = the just-paused id. Registry must drop the
     // paused entry but leave pendingContext intact (the trace lineage
     // continues into the resumed pickup at reset time).
     bus.publish({
-      type: 'job.requeued',
+      type: 'job.paused',
       timestamp: 5,
       traceId: 'trace-q',
       jobId: 'requeued-1',
       provider: 'jira',
       attempt: 1,
       originalJobId: 'paused-1',
+      resumeAt: 1_000_000,
     });
 
     expect(registry.listActive()).toHaveLength(0);
     expect(registry.hasPendingContext('trace-q')).toBe(true);
+  });
+
+  it('clears the prior jobId on job.retried (failure-handler path)', () => {
+    const registry = new ActiveJobsRegistry();
+    registry.start();
+    const bus = getEventBus();
+
+    bus.publish(buildWebhookAccepted({ traceId: 'trace-r' }));
+    bus.publish(buildJobStarted({ traceId: 'trace-r', jobId: 'failed-1' }));
+    expect(registry.listActive()).toHaveLength(1);
+
+    // Failure-handler retries: job.failed fires first (already drops the
+    // entry), then job.retried fires for the new attempt. The retry
+    // handler is idempotent — the delete is a no-op here.
+    bus.publish({
+      type: 'job.retried',
+      timestamp: 5,
+      traceId: 'trace-r',
+      jobId: 'retried-1',
+      provider: 'jira',
+      attempt: 2,
+      originalJobId: 'failed-1',
+    });
+
+    expect(registry.listActive()).toHaveLength(0);
   });
 
   it('hasPendingContext reflects pendingContext map state across the lifecycle', () => {

@@ -461,22 +461,20 @@ async function handleQuotaExceeded(
     'Quota exceeded — paused current job and re-enqueued for delivery after reset',
   );
 
-  // job.requeued carries `originalJobId` — the just-paused BullMQ id whose
-  // bookkeeping the in-process registries need to clear. We rely on
-  // ActiveJobsRegistry / RecentCompletionsRegistry handling job.requeued
-  // by deleting that originalJobId from their `jobs` / `liveJobs` maps;
-  // see the matching handlers there. Emitting a fake job.completed for
-  // the paused job would clear the registries too, but at the cost of
-  // polluting the dashboard's RECENT panel with a phantom green-completed
-  // row for work that's only delayed.
+  // job.paused carries `originalJobId` — the just-paused BullMQ id whose
+  // bookkeeping the in-process registries need to clear — and `resumeAt`,
+  // the wall-clock millis the runtime is waiting on. Distinct from
+  // job.retried (the failure-handler path) so consumers can surface
+  // "paused until X" without false-alarming the operator.
   getEventBus().publish({
-    type: 'job.requeued',
+    type: 'job.paused',
     timestamp: now,
     traceId,
     jobId: String(requeued.id ?? 'unknown'),
     provider: provider.name,
     attempt: requeue.attempt,
     originalJobId: envelope.originalJobId ?? jobIdString,
+    resumeAt: resetAt,
   });
 }
 

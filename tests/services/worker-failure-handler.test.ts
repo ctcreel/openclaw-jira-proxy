@@ -18,7 +18,7 @@ import type { ProviderConfig } from '../../src/config';
 import type {
   ClawndomEvent,
   JobFailedEvent,
-  JobRequeuedEvent,
+  JobRetriedEvent,
 } from '../../src/types/clawndom-event';
 
 function buildProvider(): ProviderConfig {
@@ -239,9 +239,9 @@ describe('buildFailedHandler', () => {
     // is reserved for the alert path (final failure).
     expect(dedupRedisMock.hgetall).not.toHaveBeenCalled();
 
-    const requeued = events.filter((e): e is JobRequeuedEvent => e.type === 'job.requeued');
-    expect(requeued).toHaveLength(1);
-    expect(requeued[0]!.attempt).toBe(2);
+    const retried = events.filter((e): e is JobRetriedEvent => e.type === 'job.retried');
+    expect(retried).toHaveLength(1);
+    expect(retried[0]!.attempt).toBe(2);
   });
 
   it('snapshots the inflight record before the InflightRegistry can DEL it', async () => {

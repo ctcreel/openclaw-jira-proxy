@@ -94,7 +94,7 @@ async function requeueJobToBack(
     'Job re-enqueued to back of queue',
   );
   getEventBus().publish({
-    type: 'job.requeued',
+    type: 'job.retried',
     timestamp: Date.now(),
     traceId,
     jobId: String(requeued.id ?? 'unknown'),

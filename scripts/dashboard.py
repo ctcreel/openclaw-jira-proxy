@@ -74,6 +74,11 @@ class State:
         self.queued: dict[str, dict[str, Any]] = {}
         # jobId → active job dict (tool_history + text_history deques live inside)
         self.active: dict[str, dict[str, Any]] = {}
+        # jobId → paused job dict — quota-pause re-enqueues sit in BullMQ
+        # delayed state until upstream reset; this dict lets the operator
+        # see "paused until 9:40pm" instead of phantom-active. Cleared when
+        # the resumed pickup fires job.started for the same jobId.
+        self.paused: dict[str, dict[str, Any]] = {}
         # recent outcomes, newest first (completed / failed / non-routing rejects only)
         self.recent: deque[dict[str, Any]] = deque(maxlen=RECENT_MAX)
         # contextId → deque of {kind, time, status, job_id} most-recent-first; lets
@@ -376,21 +381,65 @@ def _real_value(*candidates: Any) -> str:
     return "?"
 
 
-def _handle_job_requeued(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
-    STATE.job_trace[job_id] = trace_id
-    # Pull context from trace_context first — that's where webhook.accepted
-    # writes the canonical (id, title, status). Falling back to a same-id
-    # entry in STATE.queued covers the failure-handler retry path where the
-    # row was already in queued under the prior id; trace_context is what
-    # the quota-pause requeue path needs (the new BullMQ id has no prior
-    # queued entry, but the trace_id is preserved so trace_context still
-    # has the ticket key/title from the original webhook.accepted).
+def _resolve_requeue_context(job_id: str, trace_id: str) -> tuple[str, str]:
+    """Resolve (title, context_id) for a job being requeued or paused.
+
+    Pulls from trace_context first — that's where webhook.accepted writes
+    the canonical (id, title, status). Falls back to a same-id entry in
+    STATE.queued / STATE.paused covering the failure-handler retry path
+    where the row was already keyed under the prior id; trace_context is
+    what the quota-pause path needs (the new BullMQ id has no prior queued
+    entry, but the trace_id is preserved so trace_context still has the
+    ticket key/title from the original webhook.accepted).
+    """
     ctx = STATE.trace_context.get(trace_id, {})
-    queued_self = STATE.queued.get(job_id, {})
+    fallback = STATE.queued.get(job_id, {}) or STATE.paused.get(job_id, {})
+    title = _real_value(ctx.get("title"), fallback.get("title"))
+    context_id = _real_value(ctx.get("id"), fallback.get("context_id"))
+    return title, context_id
+
+
+def _drop_prior_generation(payload: dict[str, Any]) -> None:
+    """Clear the prior-generation jobId from active/queued/paused.
+
+    Both job.paused and job.retried name the prior id in `originalJobId`.
+    Mirrors ActiveJobsRegistry.handleRequeued server-side: the prior
+    incarnation is unambiguously gone, regardless of which map currently
+    holds it.
+    """
+    original = payload.get("originalJobId")
+    if not original:
+        return
+    STATE.active.pop(original, None)
+    STATE.queued.pop(original, None)
+    STATE.paused.pop(original, None)
+
+
+def _handle_job_paused(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
+    """Quota-pause re-enqueue. Job sits in BullMQ delayed state until resumeAt."""
+    STATE.job_trace[job_id] = trace_id
+    _drop_prior_generation(payload)
+    title, context_id = _resolve_requeue_context(job_id, trace_id)
+    STATE.paused[job_id] = {
+        "provider": payload.get("provider", "?"),
+        "title": title,
+        "context_id": context_id,
+        "paused_at": payload.get("timestamp", 0),
+        "resume_at": payload.get("resumeAt", 0),
+        "attempt": payload.get("attempt", 1),
+        "trace_id": trace_id,
+    }
+
+
+def _handle_job_retried(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
+    """Failure-handler retry. Job sits in BullMQ delayed state for backoff."""
+    STATE.job_trace[job_id] = trace_id
+    _drop_prior_generation(payload)
+    title, context_id = _resolve_requeue_context(job_id, trace_id)
     STATE.queued[job_id] = {
         "provider": payload.get("provider", "?"),
-        "title": _real_value(ctx.get("title"), queued_self.get("title")),
-        "context_id": _real_value(ctx.get("id"), queued_self.get("context_id")),
+        "title": title,
+        "context_id": context_id,
         "queued_at": payload.get("timestamp", 0),
         "attempt": payload.get("attempt", 1),
     }
@@ -399,6 +448,7 @@ def _handle_job_requeued(job_id: str, trace_id: str, payload: dict[str, Any]) ->
 def _handle_job_started(job_id: str, trace_id: str, payload: dict[str, Any]) -> None:
     STATE.job_trace[job_id] = trace_id
     STATE.queued.pop(job_id, None)
+    STATE.paused.pop(job_id, None)
     STATE.active[job_id] = _new_active_entry(payload)
 
 
@@ -461,7 +511,7 @@ def _handle_job_failed(job_id: str, trace_id: str, payload: dict[str, Any]) -> N
     STATE.active.pop(job_id, None)
     ctx = STATE.trace_context.get(trace_id, {})
     if not payload.get("final"):
-        # Non-final failures will be followed by a job.requeued event
+        # Non-final failures will be followed by a job.retried event
         return
     failure = {
         "kind": "failed",
@@ -488,8 +538,10 @@ def handle_event(event_type: str, payload: dict[str, Any]) -> None:
             _handle_webhook_rejected(payload)
         elif event_type == "job.queued":
             _handle_job_queued(job_id, trace_id, payload)
-        elif event_type == "job.requeued":
-            _handle_job_requeued(job_id, trace_id, payload)
+        elif event_type == "job.paused":
+            _handle_job_paused(job_id, trace_id, payload)
+        elif event_type == "job.retried":
+            _handle_job_retried(job_id, trace_id, payload)
         elif event_type == "job.started":
             _handle_job_started(job_id, trace_id, payload)
         elif event_type == "runner.assistant_text":
@@ -719,7 +771,7 @@ def _seed_queued_from_snapshot(items: list[dict[str, Any]]) -> None:
     # so a freshly-restarted dashboard shows real ticket id/title for the
     # already-queued rows instead of an empty panel until the next live
     # event lands. SSE events arriving after this take precedence by jobId
-    # — _handle_job_queued / _handle_job_requeued overwrite STATE.queued
+    # — _handle_job_queued / _handle_job_retried overwrite STATE.queued
     # with the live values.
     for entry in items:
         job_id = entry.get("jobId")
@@ -846,6 +898,7 @@ def _render_header(
     health: str,
     sse_connected: bool,
     active_count: int,
+    paused_count: int,
     queued_count: int,
     no_match_count: int,
     duplicate_count: int,
@@ -867,11 +920,14 @@ def _render_header(
             f"   {label_color}Skipped: {total} (no-match: {no_match_count}, "
             f"dup: {duplicate_count}, last {last}){RESET}"
         )
+    paused_segment = (
+        f"   Paused: {YELLOW}{paused_count}{RESET}" if paused_count > 0 else ""
+    )
     return [
         f"{BOLD}{'═' * 80}{RESET}",
         (
             f"{BOLD}  CLAWNDOM{RESET}   {hc}{health}{RESET}   {sse_state}   "
-            f"Active: {CYAN}{active_count}{RESET}   "
+            f"Active: {CYAN}{active_count}{RESET}{paused_segment}   "
             f"Queued: {YELLOW}{queued_count}{RESET}{skipped_suffix}   "
             f"{DIM}{url}   {now_text}{RESET}"
         ),
@@ -1000,6 +1056,42 @@ def _render_queued(queued: list[tuple[str, dict[str, Any]]]) -> list[str]:
     return lines
 
 
+def _render_paused(paused: list[tuple[str, dict[str, Any]]], now: float) -> list[str]:
+    """Render the PAUSED panel — quota-pause re-enqueues with countdown.
+
+    Distinct from QUEUED because the operational meaning differs: a paused
+    job is on a known timer (Anthropic's quota reset), not a failure waiting
+    for a retry slot. Showing them mixed together masks "system is healthy,
+    just throttled" as "something keeps failing."
+    """
+    if not paused:
+        return []
+    earliest_resume = min(
+        (job.get("resume_at", 0) for _, job in paused if job.get("resume_at")),
+        default=0,
+    )
+    header_suffix = ""
+    if earliest_resume:
+        seconds_until = max(0, int(earliest_resume / 1000 - now))
+        header_suffix = (
+            f" {DIM}— next resume {format_time(earliest_resume)} "
+            f"(in {_format_elapsed(seconds_until)}){RESET}"
+        )
+    lines = ["", f"  {BOLD}{YELLOW}PAUSED{RESET} {DIM}({len(paused)}){RESET}{header_suffix}"]
+    for _job_id, job in paused[:8]:
+        resume_at = job.get("resume_at", 0)
+        if resume_at:
+            seconds_until = max(0, int(resume_at / 1000 - now))
+            timing = f"resumes {format_time(resume_at)} (in {_format_elapsed(seconds_until)})"
+        else:
+            timing = "resumes ?"
+        lines.append(
+            f"     {YELLOW}⏸{RESET}  {job['context_id']:<14} {DIM}{job['provider']}{RESET}  "
+            f"{(job.get('title') or '?')[:50]}  {DIM}{timing}{RESET}"
+        )
+    return lines
+
+
 def _render_recent(recent: list[dict[str, Any]]) -> list[str]:
     if not recent:
         return []
@@ -1066,6 +1158,7 @@ def render(url: str) -> str:
     with STATE.lock:
         health = STATE.health
         active = list(STATE.active.items())
+        paused = list(STATE.paused.items())
         queued = list(STATE.queued.items())
         recent = list(STATE.recent)
         trace_context = STATE.trace_context.copy()
@@ -1088,6 +1181,7 @@ def render(url: str) -> str:
         health=health,
         sse_connected=sse_connected,
         active_count=len(active),
+        paused_count=len(paused),
         queued_count=len(queued),
         no_match_count=no_match_count,
         duplicate_count=duplicate_count,
@@ -1110,9 +1204,10 @@ def render(url: str) -> str:
     if active:
         for job_id, job in active:
             lines.extend(_render_active_job(job_id, job, job_trace, trace_context))
-    else:
+    elif not paused:
         lines.append(f"  {DIM}No active jobs — idle{RESET}")
 
+    lines.extend(_render_paused(paused, now))
     lines.extend(_render_queued(queued))
     lines.extend(_render_recent(recent))
     lines.extend(_render_tickets(ticket_history))
