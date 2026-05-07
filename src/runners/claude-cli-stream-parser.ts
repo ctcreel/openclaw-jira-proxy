@@ -145,16 +145,18 @@ export function emitStreamEvent(
  * text block and parse the reset time.
  *
  * Format observed in production: `You've hit your limit · resets 6:40pm (UTC)`.
- * The CLI emits this as a normal assistant text event then exits with code 1
- * — there is no stderr signal. Returning a typed result lets the runner
- * surface it as `RunResult.status === 'quota_exceeded'` instead of a
- * generic error, so the worker can pause-and-hold instead of burning
- * five retries on the same wall.
+ * The CLI prints the message in the host's local time zone — `(UTC)` on a
+ * UTC-set host, `(America/New_York)` on a host with TZ=America/New_York,
+ * etc. The CLI exits 1 immediately after; there is no stderr signal.
+ * Returning a typed result lets the runner surface it as
+ * `RunResult.status === 'quota_exceeded'` instead of a generic error, so
+ * the worker can pause-and-hold instead of burning five retries on the
+ * same wall.
  *
  * Returns the wall-clock millis when the reset is expected, or null when
- * the text is not a limit message. Reset times are interpreted in UTC; if
- * the parsed time is in the past relative to `now`, it's interpreted as
- * tomorrow (handles a limit hit at 11pm UTC that resets at 1am UTC).
+ * the text is not a limit message OR the captured zone string isn't a
+ * recognized IANA timezone. Reset times in the past relative to `now` are
+ * interpreted as tomorrow (handles a limit hit at 11pm with reset at 1am).
  */
 export function parseQuotaLimitMessage(
   text: string,
@@ -165,37 +167,94 @@ export function parseQuotaLimitMessage(
   // 6pm (UTC)…") doesn't get misclassified. claude-cli emits the limit
   // text as a standalone assistant_text payload — there's no other content
   // around it. The em-dash variant uses U+00B7 ("·") in the production
-  // output; tolerate both forms.
+  // output; tolerate both forms. The zone group matches any non-paren run
+  // so non-UTC hosts (e.g. America/New_York) parse correctly.
   const limitRegex =
-    /^\s*you'?ve hit your limit\s*[·\-—]\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(utc\)\s*$/i;
+    /^\s*you'?ve hit your limit\s*[·\-—]\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)\s*$/i;
   const match = limitRegex.exec(text);
   if (!match) return null;
 
-  // The regex pattern guarantees group 3 (am|pm) when match succeeds, but
-  // TypeScript can't infer that from the regex literal — explicit guard +
-  // fail-fast instead of a `!` non-null assertion (project rule). Same
-  // for the hour group, defensively.
+  // The regex pattern guarantees groups 1, 3, and 4 when match succeeds,
+  // but TypeScript can't infer that from the regex literal — explicit
+  // guard + fail-fast instead of a `!` non-null assertion (project rule).
   const hourRawGroup = match[1];
   const meridiemGroup = match[3];
-  if (hourRawGroup === undefined || meridiemGroup === undefined) return null;
+  const zoneGroup = match[4];
+  if (hourRawGroup === undefined || meridiemGroup === undefined || zoneGroup === undefined) {
+    return null;
+  }
   const hourRaw = Number(hourRawGroup);
   const minuteRaw = match[2] === undefined ? 0 : Number(match[2]);
   const meridiem = meridiemGroup.toLowerCase();
+  const zone = zoneGroup.trim();
   if (!Number.isFinite(hourRaw) || !Number.isFinite(minuteRaw)) return null;
   if (hourRaw < 1 || hourRaw > 12 || minuteRaw < 0 || minuteRaw > 59) return null;
 
   let hour24 = hourRaw % 12;
   if (meridiem === 'pm') hour24 += 12;
 
-  const reset = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour24, minuteRaw, 0, 0),
+  const offsetAtNow = getTimeZoneOffsetMs(zone, now);
+  if (offsetAtNow === null) return null;
+
+  // Build the candidate reset on the calendar day in `zone` that contains
+  // `now`. `now + offset` re-encoded as UTC components is the wall clock in
+  // the zone, so reading `getUTC*` off that gives the zoned y/m/d.
+  const zonedNow = new Date(now.getTime() + offsetAtNow);
+  const wallAsUTC = Date.UTC(
+    zonedNow.getUTCFullYear(),
+    zonedNow.getUTCMonth(),
+    zonedNow.getUTCDate(),
+    hour24,
+    minuteRaw,
+    0,
+    0,
   );
-  // Handle wrap-around: if the parsed reset is at-or-before now (e.g. limit
-  // hit at 11:30pm with reset at 1:00am), advance to the next day.
-  if (reset.getTime() <= now.getTime()) {
-    reset.setUTCDate(reset.getUTCDate() + 1);
+  // Re-resolve the offset at the candidate instant — handles DST refinements
+  // when the limit was hit just before a transition and reset falls after.
+  const offsetAtCandidate = getTimeZoneOffsetMs(zone, new Date(wallAsUTC - offsetAtNow));
+  if (offsetAtCandidate === null) return null;
+  let resetMs = wallAsUTC - offsetAtCandidate;
+  if (resetMs <= now.getTime()) {
+    resetMs += 24 * 60 * 60 * 1000;
   }
-  return { resetAt: reset.getTime() };
+  return { resetAt: resetMs };
+}
+
+/**
+ * UTC-offset (in millis) for `zone` at `instant`, such that
+ * `wallClockAsUTC - offset === instant.getTime()`. Returns null when the
+ * zone string isn't a recognized IANA timezone — the upstream caller
+ * surfaces this as "no resetAt", letting the worker fall back to its
+ * minimum pause-and-hold floor instead of misinterpreting a UTC instant.
+ */
+function getTimeZoneOffsetMs(zone: string, instant: Date): number | null {
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return null;
+  }
+  const parts = formatter.formatToParts(instant);
+  const partValue = (type: string): string | undefined =>
+    parts.find((part) => part.type === type)?.value;
+  const year = Number(partValue('year'));
+  const month = Number(partValue('month'));
+  const day = Number(partValue('day'));
+  // Some Intl backends emit "24" for midnight when hour12 is false; normalize.
+  const hour = Number(partValue('hour')) % 24;
+  const minute = Number(partValue('minute'));
+  const second = Number(partValue('second'));
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return null;
+  return Date.UTC(year, month - 1, day, hour, minute, second) - instant.getTime();
 }
 
 /**
