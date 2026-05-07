@@ -114,4 +114,75 @@ describe('parseQuotaLimitMessage', () => {
     expect(parseQuotaLimitMessage("You've hit your limit · resets soon", now)).toBeNull();
     expect(parseQuotaLimitMessage("You've hit your limit · resets 25:00pm (UTC)", now)).toBeNull();
   });
+
+  it('parses an IANA zone like America/New_York during DST (EDT, -04:00)', () => {
+    // 2026-05-06 15:50 UTC = 11:50 EDT. CLI on a TZ=America/New_York host
+    // emits "resets 5:10pm (America/New_York)" — same calendar day, so
+    // resetAt should be 21:10 UTC.
+    const now = new Date(Date.UTC(2026, 4, 6, 15, 50, 0));
+    const result = parseQuotaLimitMessage(
+      "You've hit your limit · resets 5:10pm (America/New_York)",
+      now,
+    );
+    expect(result).not.toBeNull();
+    expect(new Date(result!.resetAt).toISOString()).toBe('2026-05-06T21:10:00.000Z');
+  });
+
+  it('parses an IANA zone like America/New_York during standard time (EST, -05:00)', () => {
+    // 2026-01-15 16:00 UTC = 11:00 EST. CLI emits "resets 1:30pm
+    // (America/New_York)" — same calendar day, resetAt = 18:30 UTC.
+    const now = new Date(Date.UTC(2026, 0, 15, 16, 0, 0));
+    const result = parseQuotaLimitMessage(
+      "You've hit your limit · resets 1:30pm (America/New_York)",
+      now,
+    );
+    expect(result).not.toBeNull();
+    expect(new Date(result!.resetAt).toISOString()).toBe('2026-01-15T18:30:00.000Z');
+  });
+
+  it('parses other IANA zones (America/Los_Angeles)', () => {
+    // 2026-05-06 18:00 UTC = 11:00 PDT. CLI on a TZ=America/Los_Angeles host
+    // emits "resets 4:00pm (America/Los_Angeles)" — resetAt = 23:00 UTC.
+    const now = new Date(Date.UTC(2026, 4, 6, 18, 0, 0));
+    const result = parseQuotaLimitMessage(
+      "You've hit your limit · resets 4:00pm (America/Los_Angeles)",
+      now,
+    );
+    expect(result).not.toBeNull();
+    expect(new Date(result!.resetAt).toISOString()).toBe('2026-05-06T23:00:00.000Z');
+  });
+
+  it('rolls non-UTC zones over to the next day when reset is at-or-before now', () => {
+    // 2026-05-07 04:30 UTC = 2026-05-07 00:30 EDT. CLI emits
+    // "resets 1:00am (America/New_York)" — same zoned day, reset = 05:00 UTC,
+    // which is AFTER now, so no rollover.
+    const noRollover = new Date(Date.UTC(2026, 4, 7, 4, 30, 0));
+    const a = parseQuotaLimitMessage(
+      "You've hit your limit · resets 1:00am (America/New_York)",
+      noRollover,
+    );
+    expect(a).not.toBeNull();
+    expect(new Date(a!.resetAt).toISOString()).toBe('2026-05-07T05:00:00.000Z');
+
+    // 2026-05-07 06:00 UTC = 2026-05-07 02:00 EDT. CLI emits
+    // "resets 1:00am (America/New_York)" — same zoned day's 1am is in the
+    // past, so reset rolls to next zoned day: 2026-05-08T05:00:00 UTC.
+    const rollover = new Date(Date.UTC(2026, 4, 7, 6, 0, 0));
+    const b = parseQuotaLimitMessage(
+      "You've hit your limit · resets 1:00am (America/New_York)",
+      rollover,
+    );
+    expect(b).not.toBeNull();
+    expect(new Date(b!.resetAt).toISOString()).toBe('2026-05-08T05:00:00.000Z');
+  });
+
+  it('returns null for an unrecognized timezone string', () => {
+    // Limit message detected, but Intl.DateTimeFormat rejects the zone — the
+    // runner should treat this as "no resetAt" and let the worker fall back
+    // to its pause-and-hold floor rather than computing a wrong instant.
+    const now = new Date(Date.UTC(2026, 4, 6, 15, 50, 0));
+    expect(
+      parseQuotaLimitMessage("You've hit your limit · resets 5:10pm (Not/A_Real_Zone)", now),
+    ).toBeNull();
+  });
 });
