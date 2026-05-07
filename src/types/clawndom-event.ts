@@ -52,8 +52,31 @@ export interface JobQueuedEvent {
   contextTitle: string;
 }
 
-export interface JobRequeuedEvent {
-  type: 'job.requeued';
+/**
+ * Quota-pause re-enqueue. Emitted when a runner reports `quota_exceeded` and
+ * the worker re-enqueues the same envelope with a delay until the upstream
+ * reset time. Distinct from `job.retried` because the operational meaning is
+ * "expected wait until a known timestamp," not "something failed and we're
+ * trying again." Carries `resumeAt` so consumers can render a countdown.
+ */
+export interface JobPausedEvent {
+  type: 'job.paused';
+  timestamp: number;
+  traceId: string;
+  jobId: string;
+  provider: string;
+  attempt: number;
+  originalJobId: string;
+  resumeAt: number;
+}
+
+/**
+ * Failure-handler retry re-enqueue. Emitted when a job fails non-finally and
+ * the worker requeues it with exponential backoff. Distinct from `job.paused`
+ * because this represents an actual failure that may recur, not a known wait.
+ */
+export interface JobRetriedEvent {
+  type: 'job.retried';
   timestamp: number;
   traceId: string;
   jobId: string;
@@ -358,7 +381,8 @@ export type ClawndomEvent =
   | WebhookAcceptedEvent
   | WebhookRejectedEvent
   | JobQueuedEvent
-  | JobRequeuedEvent
+  | JobPausedEvent
+  | JobRetriedEvent
   | JobStartedEvent
   | JobCompletedEvent
   | JobFailedEvent

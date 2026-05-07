@@ -5,7 +5,8 @@ import type {
   ClawndomEvent,
   JobCompletedEvent,
   JobFailedEvent,
-  JobRequeuedEvent,
+  JobPausedEvent,
+  JobRetriedEvent,
   JobStartedEvent,
   WebhookAcceptedEvent,
 } from '../types/clawndom-event';
@@ -102,8 +103,11 @@ export class InflightRegistry {
       case 'job.started':
         await this.recordStarted(event);
         return;
-      case 'job.requeued':
-        await this.touch(event, 'job.requeued');
+      case 'job.paused':
+        await this.touch(event, 'job.paused');
+        return;
+      case 'job.retried':
+        await this.touch(event, 'job.retried');
         return;
       case 'runner.assistant_text':
       case 'runner.tool_call':
@@ -155,7 +159,7 @@ export class InflightRegistry {
   }
 
   private async touch(
-    event: JobRequeuedEvent | { traceId: string; timestamp: number },
+    event: JobPausedEvent | JobRetriedEvent | { traceId: string; timestamp: number },
     eventType: string,
   ): Promise<void> {
     const key = buildInflightKey(event.traceId);

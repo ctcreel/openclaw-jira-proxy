@@ -1,6 +1,7 @@
 import type {
   ClawndomEvent,
-  JobRequeuedEvent,
+  JobPausedEvent,
+  JobRetriedEvent,
   JobStartedEvent,
   WebhookAcceptedEvent,
 } from '../types/clawndom-event';
@@ -76,13 +77,12 @@ export class ActiveJobsRegistry {
       case 'job.started':
         this.registerStarted(event);
         return;
-      case 'job.requeued':
-        // Quota-aware pause path: handleQuotaExceeded re-enqueues the same
-        // envelope for delayed delivery and emits job.requeued. The just-
-        // paused jobId carries on in this map otherwise — drop it so the
-        // active panel reflects reality. pendingContext is keyed by
-        // traceId and the trace is preserved across the requeue, so we
-        // leave that intact for the resumed pickup.
+      case 'job.paused':
+      case 'job.retried':
+        // Both events name the prior-generation jobId in `originalJobId`.
+        // Drop it from the active map so the panel reflects reality;
+        // pendingContext is keyed by traceId (preserved across requeue)
+        // so we leave that intact for the resumed/retried pickup.
         this.handleRequeued(event);
         return;
       case 'job.completed':
@@ -110,7 +110,7 @@ export class ActiveJobsRegistry {
     });
   }
 
-  private handleRequeued(event: JobRequeuedEvent): void {
+  private handleRequeued(event: JobPausedEvent | JobRetriedEvent): void {
     // The `originalJobId` field is the BullMQ id of the prior generation
     // (just-paused or just-failed-non-final). For the failure-handler
     // retry path the corresponding entry is already gone (job.failed

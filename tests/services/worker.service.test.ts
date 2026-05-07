@@ -449,11 +449,12 @@ describe('processJob quota_exceeded handling', () => {
     });
   });
 
-  it('does not emit job.completed for the paused jobId — only job.requeued carries the cleanup signal', async () => {
+  it('does not emit job.completed for the paused jobId — only job.paused carries the cleanup signal', async () => {
+    const resetAt = Date.now() + 600_000;
     runSpy.mockResolvedValueOnce({
       status: 'quota_exceeded',
       runId: 'cli-quota-3',
-      quotaResetAt: Date.now() + 600_000,
+      quotaResetAt: resetAt,
       renderedPrompt: 'rendered',
     });
 
@@ -463,6 +464,7 @@ describe('processJob quota_exceeded handling', () => {
       type: string;
       jobId?: string;
       originalJobId?: string;
+      resumeAt?: number;
     }
     const captured: CapturedEvent[] = [];
     getEventBus().subscribe((stamped) => {
@@ -471,6 +473,9 @@ describe('processJob quota_exceeded handling', () => {
       if ('jobId' in event) entry.jobId = event.jobId;
       if ('originalJobId' in event && typeof event.originalJobId === 'string') {
         entry.originalJobId = event.originalJobId;
+      }
+      if ('resumeAt' in event && typeof event.resumeAt === 'number') {
+        entry.resumeAt = event.resumeAt;
       }
       captured.push(entry);
     });
@@ -485,18 +490,23 @@ describe('processJob quota_exceeded handling', () => {
     // The paused jobId must NOT appear in any job.completed event —
     // emitting one would pollute the dashboard's RECENT panel with a
     // phantom green-✓ row for work that's only delayed. Cleanup of the
-    // active-jobs map happens via job.requeued's originalJobId field
+    // active-jobs map happens via job.paused's originalJobId field
     // instead (see ActiveJobsRegistry.handleRequeued).
     const completedForPaused = captured.find(
       (e) => e.type === 'job.completed' && e.jobId === 'orig-3',
     );
     expect(completedForPaused).toBeUndefined();
 
-    // job.requeued must carry the paused id in originalJobId so the
-    // registries know which entry to drop.
-    const requeued = captured.find((e) => e.type === 'job.requeued');
-    expect(requeued).toBeDefined();
-    expect(requeued?.originalJobId).toBe('orig-3');
+    // job.paused must carry the paused id in originalJobId so the
+    // registries know which entry to drop, AND resumeAt so the
+    // dashboard can render a countdown.
+    const paused = captured.find((e) => e.type === 'job.paused');
+    expect(paused).toBeDefined();
+    expect(paused?.originalJobId).toBe('orig-3');
+    expect(paused?.resumeAt).toBe(resetAt);
+
+    // No job.retried in the quota path — that's the failure-handler's event.
+    expect(captured.find((e) => e.type === 'job.retried')).toBeUndefined();
   });
 
   it('persists runner-captured sessionId onto the requeued envelope so the next pickup can --resume', async () => {

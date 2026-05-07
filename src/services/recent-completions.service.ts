@@ -4,7 +4,8 @@ import type {
   ClawndomEvent,
   JobCompletedEvent,
   JobFailedEvent,
-  JobRequeuedEvent,
+  JobPausedEvent,
+  JobRetriedEvent,
   JobStartedEvent,
   WebhookAcceptedEvent,
   WebhookRejectedEvent,
@@ -85,7 +86,8 @@ export class RecentCompletionsRegistry {
       case 'job.started':
         this.recordLiveJob(event);
         return;
-      case 'job.requeued':
+      case 'job.paused':
+      case 'job.retried':
         // The prior-generation jobId is paused (quota path) or already
         // failed-non-final (failure-handler retry path). Either way its
         // liveJobs entry shouldn't survive into a future completion record
@@ -119,7 +121,7 @@ export class RecentCompletionsRegistry {
     });
   }
 
-  private handleRequeued(event: JobRequeuedEvent): void {
+  private handleRequeued(event: JobPausedEvent | JobRetriedEvent): void {
     this.liveJobs.delete(event.originalJobId);
   }
 
@@ -167,7 +169,7 @@ export class RecentCompletionsRegistry {
   }
 
   private recordFailed(event: JobFailedEvent): void {
-    // Non-final failures are followed by a job.requeued + a fresh job.started;
+    // Non-final failures are followed by a job.retried + a fresh job.started;
     // logging them here would inflate the recent count and confuse the
     // operator about which failures are real terminal outcomes.
     if (!event.final) {
