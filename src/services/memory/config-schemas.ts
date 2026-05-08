@@ -42,6 +42,22 @@ export type AgentMemoryConfig = z.infer<typeof agentMemorySchema>;
 export type NamespacePolicy = z.infer<typeof namespacePolicySchema>;
 
 /**
+ * Optional thread enrichment for memory retrieval. When configured,
+ * the worker fetches the full conversation thread (e.g., Gmail thread)
+ * and uses the concatenated thread text as the embedding query instead
+ * of just the single message body. This produces much better semantic
+ * matches for short messages like "What is my dog's name?"
+ */
+const threadEnrichmentSchema = z.object({
+  provider: z.enum(['gmail']),
+  threadIdField: z.string().min(1),
+  accountField: z.string().min(1),
+  maxMessages: z.number().int().positive().default(10),
+});
+
+export type ThreadEnrichmentConfig = z.infer<typeof threadEnrichmentSchema>;
+
+/**
  * Per-rule retrieval config. When present on a routing rule, the worker
  * pre-fetches memories before template render and exposes them as
  * `{{ memories }}`. Storage on the same rule's namespace happens via
@@ -52,6 +68,7 @@ const memoryRetrieveSchema = z.object({
   queryField: z.string().min(1),
   topK: z.number().int().positive(),
   minSimilarity: z.number().min(0).max(1),
+  threadEnrichment: threadEnrichmentSchema.optional(),
 });
 
 export const ruleMemorySchema = z.object({
