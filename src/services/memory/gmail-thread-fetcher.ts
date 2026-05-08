@@ -5,15 +5,12 @@
  */
 
 import { createSign } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 
 import { getLogger } from '../../lib/logging';
 
 const logger = getLogger('gmail-thread-fetcher');
 
-const SA_KEY_PATH =
-  process.env['GCP_SERVICE_ACCOUNT_KEY_FILE'] ??
-  `${process.env['HOME']}/.openclaw/secrets/gcp_service_account.json`;
+const SA_KEY_ENV = 'GCP_SERVICE_ACCOUNT_KEY';
 
 const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -52,7 +49,12 @@ function buildJwt(serviceAccount: ServiceAccountKey, subject: string): string {
 }
 
 async function getAccessToken(subject: string): Promise<string> {
-  const keyJson = await readFile(SA_KEY_PATH, 'utf-8');
+  const keyJson = process.env[SA_KEY_ENV];
+  if (!keyJson) {
+    throw new Error(
+      `${SA_KEY_ENV} env var not set — add gcp_service_account_key to SECRETS_CONFIG`,
+    );
+  }
   const serviceAccount = JSON.parse(keyJson) as ServiceAccountKey;
   const jwt = buildJwt(serviceAccount, subject);
 
