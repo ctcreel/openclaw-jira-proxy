@@ -63,6 +63,27 @@ export interface CreateScheduledTaskInput {
   readonly reason?: ScheduledTaskCreatedReason;
 }
 
+/**
+ * Caps applied to agent-created upserts (SPE-2049). The two caps protect
+ * different failure modes:
+ *
+ *   - `maxPerTrace` is a runaway-loop guard: an agent run that decides
+ *     to call `schedule_task()` in a loop hits the ceiling instead of
+ *     filling Redis. The counter is the size of the per-trace index set,
+ *     so it survives a Clawndom restart that lands mid-run — an
+ *     in-process counter would reset to zero and let the loop continue.
+ *   - `maxFutureWindowMs` is an "is this fireAt sane?" guard: agents
+ *     can't accidentally (or maliciously) schedule for the year 3000.
+ *
+ * Both caps fire only when the input is `createdBy:'agent'`. Static
+ * config-loaded tasks bypass the checks — operators control those
+ * directly through `clawndom.yaml` and don't need a runtime gate.
+ */
+export interface ScheduledTaskCaps {
+  readonly maxPerTrace: number;
+  readonly maxFutureWindowMs: number;
+}
+
 export interface ScheduledTasksDependencies {
   readonly redis: IORedis;
   readonly eventBus: EventBus;
@@ -80,6 +101,34 @@ export interface ScheduledTasksDependencies {
     timezone: string | undefined,
     fromMs: number,
   ) => number;
+  /**
+   * Per-trace and future-window caps. Resolved once at construction; the
+   * production `getScheduledTasksService()` wires them from `getSettings()`.
+   * Tests inject explicit numbers so the limits aren't sensitive to env.
+   */
+  readonly caps?: ScheduledTaskCaps;
+}
+
+/**
+ * Thrown when an agent-created upsert would exceed a cap. The
+ * controller maps these to HTTP responses: `per-trace` → 429,
+ * `future-window` → 422. The fields are surfaced verbatim to the
+ * caller so a Python client can read `cap`/`limit`/`observed` without
+ * parsing the message.
+ */
+export class CapExceededError extends Error {
+  constructor(
+    public readonly cap: 'per-trace' | 'future-window',
+    public readonly limit: number,
+    public readonly observed: number,
+  ) {
+    super(
+      cap === 'per-trace'
+        ? `Per-trace scheduled-task cap exceeded (limit=${limit}, observed=${observed})`
+        : `fireAt is more than ${limit} ms in the future (observed=${observed})`,
+    );
+    this.name = 'CapExceededError';
+  }
 }
 
 /**
@@ -111,6 +160,14 @@ export class ScheduledTasksService {
     const id = input.id ?? this.makeAgentTaskId(input);
     const now = this.now();
     const existing = await this.getById(id);
+
+    // Caps gate agent-created tasks only. Existing records bypass the
+    // gate so an in-place payload edit (re-upsert with the same id)
+    // doesn't fail spuriously when the per-trace count is already at
+    // the limit.
+    if (input.createdBy === 'agent' && !existing) {
+      await this.enforceCaps(input, now);
+    }
 
     const nextFireAt = this.computeNextFire(input.when, now);
     const task: ScheduledTask = scheduledTaskSchema.parse({
@@ -509,6 +566,36 @@ export class ScheduledTasksService {
     return this.deps.now ? this.deps.now() : Date.now();
   }
 
+  /**
+   * Cap enforcement for agent-created upserts. The per-trace count uses
+   * Redis SCARD against the existing `BY_TRACE_PREFIX` set so it stays
+   * accurate across Clawndom restarts; the future-window check is a
+   * pure now-vs-fireAt comparison and ignores cron tasks (they're
+   * bounded by `maxRuns`/`ttl` instead).
+   */
+  private async enforceCaps(input: CreateScheduledTaskInput, now: number): Promise<void> {
+    const caps = this.deps.caps;
+    if (!caps) return;
+
+    if (
+      caps.maxPerTrace > 0 &&
+      input.createdByTraceId !== undefined &&
+      input.createdByTraceId.length > 0
+    ) {
+      const count = await this.deps.redis.scard(this.traceKey(input.createdByTraceId));
+      if (count >= caps.maxPerTrace) {
+        throw new CapExceededError('per-trace', caps.maxPerTrace, count);
+      }
+    }
+
+    if (caps.maxFutureWindowMs > 0 && isFireAtWhen(input.when)) {
+      const delta = input.when.fireAt - now;
+      if (delta > caps.maxFutureWindowMs) {
+        throw new CapExceededError('future-window', caps.maxFutureWindowMs, delta);
+      }
+    }
+  }
+
   private checkExpired(task: ScheduledTask, now: number): ScheduledTaskExpiredReason | undefined {
     if (task.ttl !== undefined && now >= task.ttl) return 'ttl';
     if (task.maxRuns !== undefined && task.runCount >= task.maxRuns) return 'maxRuns';
@@ -584,6 +671,10 @@ export function getScheduledTasksService(): ScheduledTasksService {
     eventBus: getEventBus(),
     getQueue: getTaskQueue,
     nextFireFromCron: defaultNextFireFromCron,
+    caps: {
+      maxPerTrace: settings.scheduledTasksMaxPerTrace,
+      maxFutureWindowMs: settings.scheduledTasksMaxFutureWindowMs,
+    },
   });
   return instance;
 }

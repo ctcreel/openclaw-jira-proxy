@@ -54,6 +54,56 @@ const createdBySchema = z.enum(['config', 'agent']);
 export type ScheduledTaskCreatedBy = z.infer<typeof createdBySchema>;
 
 /**
+ * `useMemory` shape on agent-created scheduled tasks (SPE-2049). Carried
+ * through the payload as `useMemory: true | UseMemoryOverrides`. At fire
+ * time, the task-worker reads it back and — when truthy — runs RAG against
+ * the named namespace (or the agent's default namespace), prepending a
+ * recall block above the verbatim prompt before calling the runner.
+ *
+ * `topK` and `minSimilarity` fall back to the registry-level defaults
+ * (`SCHEDULED_TASKS_RAG_TOPK_DEFAULT` / `SCHEDULED_TASKS_RAG_MIN_SIMILARITY_DEFAULT`)
+ * when omitted. `namespace` falls back to the agent's first declared
+ * memory namespace.
+ */
+export const useMemoryOverridesSchema = z.object({
+  namespace: z.string().min(1).optional(),
+  topK: z.number().int().positive().optional(),
+  minSimilarity: z.number().min(0).max(1).optional(),
+});
+export type UseMemoryOverrides = z.infer<typeof useMemoryOverridesSchema>;
+
+export const useMemorySchema = z.union([z.boolean(), useMemoryOverridesSchema]);
+export type UseMemory = z.infer<typeof useMemorySchema>;
+
+/**
+ * Body schema for `POST /api/scheduled-tasks/agent-prompt` — the
+ * facade endpoint agents call to schedule a future replay of one of
+ * their own prompts. Accepts the agent-friendly fields and the
+ * controller synthesises `runner` / `runnerConfig` / `payload` before
+ * handing off to the registry.
+ */
+export const agentPromptScheduleRequestSchema = z.object({
+  agentId: z.string().min(1),
+  prompt: z.string().min(1),
+  when: whenSchema,
+  useMemory: useMemorySchema.optional(),
+  /**
+   * Required: the calling agent's current `traceId` is what the per-trace
+   * cap (`scheduled-tasks per-trace cap`) keys on (SCARD against the
+   * `BY_TRACE_PREFIX` set in `enforceCaps`). If this were optional, an
+   * agent could bypass the only runaway-loop safety net by omitting one
+   * field. Plan AC 1 assumes a traceId is always present
+   * (`createdByTraceId=<caller's traceId>`).
+   */
+  traceId: z.string().min(1),
+  name: z.string().min(1).optional(),
+  ttl: z.number().int().nonnegative().optional(),
+  maxRuns: z.number().int().positive().optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
+});
+export type AgentPromptScheduleRequest = z.infer<typeof agentPromptScheduleRequestSchema>;
+
+/**
  * The on-the-wire / on-disk shape. `payload` is opaque JSON forwarded to
  * the runner at fire time; `runnerConfig` is the runner-specific block
  * that the runner registry already knows how to interpret.

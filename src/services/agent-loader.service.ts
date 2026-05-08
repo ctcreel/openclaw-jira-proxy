@@ -273,6 +273,28 @@ function validateSessionConfig(agentName: string, config: AgentConfig): void {
 }
 
 /**
+ * Resolve the default memory namespace for fire-time RAG (SPE-2049).
+ * Returns the first declared namespace under `memory.namespaces`, in
+ * yaml-declaration order. Agents that opt into `useMemory: true` without
+ * naming a namespace get this fallback; agents that don't declare any
+ * namespaces get `undefined` and the caller skips RAG gracefully rather
+ * than failing the run.
+ *
+ * Why "first declared" instead of, say, a separate `defaultNamespace`
+ * field: it keeps the configuration surface flat. Agents that want a
+ * specific default declare that namespace first; agents that don't care
+ * (single-namespace agents, the common case) get the obvious behaviour.
+ * If we ever need a different default, an explicit field is a forward-
+ * compatible addition.
+ */
+export function getAgentDefaultMemoryNamespace(agent: ResolvedAgent): string | undefined {
+  const namespaces = agent.config.memory?.namespaces;
+  if (!namespaces) return undefined;
+  const keys = Object.keys(namespaces);
+  return keys.length > 0 ? keys[0] : undefined;
+}
+
+/**
  * Reject cross-agent namespace name collisions. Two agents declaring the
  * same namespace would either fight over pruning policy or accidentally
  * read each other's stored memories (depending on which got registered

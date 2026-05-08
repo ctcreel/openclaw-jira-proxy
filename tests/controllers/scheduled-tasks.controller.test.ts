@@ -8,11 +8,13 @@ import type { AddressInfo } from 'node:net';
 import { setScheduledTasksRegistryForTests } from '../../src/controllers/scheduled-tasks.controller';
 import { createScheduledTasksRoutes } from '../../src/routes/scheduled-tasks.routes';
 import { requireAgentBearer } from '../../src/middleware/bearer-auth.middleware';
-import type {
-  ScheduledTasksService,
-  CreateScheduledTaskInput,
-  ScheduledTaskListFilters,
-  ScheduledTaskListPage,
+import type { ResolvedAgent } from '../../src/services/agent-loader.service';
+import {
+  CapExceededError,
+  type ScheduledTasksService,
+  type CreateScheduledTaskInput,
+  type ScheduledTaskListFilters,
+  type ScheduledTaskListPage,
 } from '../../src/services/scheduled-tasks.service';
 import type { ScheduledTask } from '../../src/types/scheduled-task';
 
@@ -24,7 +26,18 @@ interface RegistryRecorder {
   lists: { filters: ScheduledTaskListFilters; cursor?: string; limit?: number }[];
 }
 
-function makeRegistryStub(records: Map<string, ScheduledTask>): {
+interface RegistryStubOptions {
+  /**
+   * Optional throw-on-upsert hook so tests can simulate
+   * `CapExceededError` being raised by the registry without booting Redis.
+   */
+  upsertThrows?: Error;
+}
+
+function makeRegistryStub(
+  records: Map<string, ScheduledTask>,
+  options: RegistryStubOptions = {},
+): {
   registry: ScheduledTasksService;
   recorder: RegistryRecorder;
 } {
@@ -32,6 +45,9 @@ function makeRegistryStub(records: Map<string, ScheduledTask>): {
   const registry = {
     async upsert(input: CreateScheduledTaskInput): Promise<ScheduledTask> {
       recorder.upserts.push(input);
+      if (options.upsertThrows) {
+        throw options.upsertThrows;
+      }
       const task: ScheduledTask = {
         id: input.id ?? `gen-${recorder.upserts.length}`,
         agentId: input.agentId,
@@ -95,9 +111,24 @@ function makeRegistryStub(records: Map<string, ScheduledTask>): {
   return { registry, recorder };
 }
 
-function mountApp(): Express {
+/**
+ * Stub agents array. The agent-prompt endpoint only needs `name` and
+ * `dir` from each entry; `config` is cast as the controller never reads
+ * it, but TypeScript doesn't know that.
+ */
+const STUB_AGENTS: readonly ResolvedAgent[] = [
+  { name: 'patch', dir: '/agents/patch', config: {} as ResolvedAgent['config'] },
+  { name: 'scarlett', dir: '/agents/scarlett', config: {} as ResolvedAgent['config'] },
+];
+
+function mountApp(agents: readonly ResolvedAgent[] = STUB_AGENTS): Express {
   const app = express();
-  app.use('/api/scheduled-tasks', express.json(), requireAgentBearer, createScheduledTasksRoutes());
+  app.use(
+    '/api/scheduled-tasks',
+    express.json(),
+    requireAgentBearer,
+    createScheduledTasksRoutes(agents),
+  );
   return app;
 }
 
@@ -365,6 +396,230 @@ describe('scheduled-tasks controller', () => {
         headers: bearerHeader(),
       });
       expect(response.status).toBe(404);
+    });
+
+    /**
+     * Ownership gate (SPE-2049): when the request carries `?agentId=<id>`,
+     * the controller must refuse to delete a record owned by a different
+     * agent — and crucially, must return 403 BEFORE calling
+     * `registry.delete`, so no `scheduled-task.cancelled` event leaks
+     * into the SSE stream that other agents consume.
+     */
+    it('returns 403 when ?agentId does not match the record owner', async () => {
+      records.set('owned-by-scarlett', {
+        id: 'owned-by-scarlett',
+        agentId: 'scarlett',
+        when: { fireAt: 1 },
+        runner: 'claude-cli',
+        runnerConfig: { type: 'claude-cli', workDirectory: '/x' },
+        createdBy: 'agent',
+        runCount: 0,
+        createdAt: 0,
+      });
+      const response = await fetch(
+        `${baseUrl}/api/scheduled-tasks/owned-by-scarlett?agentId=patch`,
+        { method: 'DELETE', headers: bearerHeader() },
+      );
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toContain('scarlett');
+      // Critical invariant: registry.delete must NOT have been called —
+      // a 403 path that emitted a `scheduled-task.cancelled` event would
+      // leak the existence + identity of another agent's schedule.
+      expect(recorder.deletes).toEqual([]);
+      // Record stays in storage.
+      expect(records.has('owned-by-scarlett')).toBe(true);
+    });
+
+    it('allows owner to delete its own record (204)', async () => {
+      records.set('owned-by-patch', {
+        id: 'owned-by-patch',
+        agentId: 'patch',
+        when: { fireAt: 1 },
+        runner: 'claude-cli',
+        runnerConfig: { type: 'claude-cli', workDirectory: '/x' },
+        createdBy: 'agent',
+        runCount: 0,
+        createdAt: 0,
+      });
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/owned-by-patch?agentId=patch`, {
+        method: 'DELETE',
+        headers: bearerHeader(),
+      });
+      expect(response.status).toBe(204);
+      expect(recorder.deletes).toEqual(['owned-by-patch']);
+    });
+
+    it('returns 404 when ?agentId is supplied but the record does not exist', async () => {
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/missing?agentId=patch`, {
+        method: 'DELETE',
+        headers: bearerHeader(),
+      });
+      expect(response.status).toBe(404);
+      // Same invariant: no event leaks for a record that doesn't exist.
+      expect(recorder.deletes).toEqual([]);
+    });
+  });
+
+  describe('POST /api/scheduled-tasks/agent-prompt', () => {
+    const validPromptBody = {
+      agentId: 'patch',
+      prompt: 'Investigate SPE-1234 on a 30-minute cadence and summarize.',
+      when: { cron: '*/30 * * * *' },
+      // traceId is required: the per-trace cap is the only runaway-loop
+      // safety net, and an optional traceId would let agents bypass it
+      // by omitting one field.
+      traceId: 'agent-trace-default',
+    };
+
+    it('creates a direct-prompt task, synthesizing claude-cli runner config from the agent registry (201)', async () => {
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify(validPromptBody),
+      });
+      expect(response.status).toBe(201);
+      expect(recorder.upserts).toHaveLength(1);
+      const upsert = recorder.upserts[0]!;
+      expect(upsert).toMatchObject({
+        agentId: 'patch',
+        runner: 'claude-cli',
+        runnerConfig: { type: 'claude-cli', workDirectory: '/agents/patch' },
+        createdBy: 'agent',
+        createdByTraceId: 'agent-trace-default',
+        reason: 'api-create',
+      });
+      // Prompt is stored under payload.directPrompt for the worker's
+      // verbatim-replay path; useMemory is omitted when not supplied.
+      expect(upsert.payload).toEqual({ directPrompt: validPromptBody.prompt });
+    });
+
+    it('returns 404 when the agentId is not in the agent registry', async () => {
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify({ ...validPromptBody, agentId: 'ghost' }),
+      });
+      expect(response.status).toBe(404);
+      expect(recorder.upserts).toHaveLength(0);
+    });
+
+    it('threads useMemory + extra context into payload', async () => {
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify({
+          ...validPromptBody,
+          useMemory: { namespace: 'jira', topK: 8 },
+          context: { ticketKey: 'SPE-1234' },
+          traceId: 'agent-trace-7',
+        }),
+      });
+      expect(response.status).toBe(201);
+      const upsert = recorder.upserts[0]!;
+      expect(upsert.payload).toEqual({
+        directPrompt: validPromptBody.prompt,
+        useMemory: { namespace: 'jira', topK: 8 },
+        ticketKey: 'SPE-1234',
+      });
+      expect(upsert.createdByTraceId).toBe('agent-trace-7');
+    });
+
+    it('rejects malformed payloads (400)', async () => {
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify({ agentId: 'patch' }),
+      });
+      expect(response.status).toBe(400);
+      expect(recorder.upserts).toHaveLength(0);
+    });
+
+    it('rejects bodies missing traceId (400) — the per-trace cap depends on it', async () => {
+      // Build the body without traceId — destructuring would leave the
+      // omitted name flagged as unused-var.
+      const withoutTrace: Record<string, unknown> = { ...validPromptBody };
+      delete withoutTrace['traceId'];
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify(withoutTrace),
+      });
+      expect(response.status).toBe(400);
+      expect(recorder.upserts).toHaveLength(0);
+    });
+  });
+
+  /**
+   * Cap enforcement happens inside ScheduledTasksService.upsert; the
+   * controller's job is just to surface the right HTTP shape. We stub
+   * the registry to throw `CapExceededError` and verify the mapping
+   * and pass-through fields without booting Redis.
+   */
+  describe('CapExceededError mapping', () => {
+    it('per-trace overflow → 429 with cap/limit/observed fields', async () => {
+      // Re-mount with a registry that throws on every upsert.
+      const localRecords = new Map<string, ScheduledTask>();
+      const stub = makeRegistryStub(localRecords, {
+        upsertThrows: new CapExceededError('per-trace', 10, 11),
+      });
+      setScheduledTasksRegistryForTests(stub.registry);
+
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify({
+          agentId: 'patch',
+          prompt: 'p',
+          when: { fireAt: 1_700_000_500_000 },
+          traceId: 'agent-trace-cap',
+        }),
+      });
+      expect(response.status).toBe(429);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({ cap: 'per-trace', limit: 10, observed: 11 });
+    });
+
+    it('future-window overflow → 422 with cap/limit/observed fields', async () => {
+      const localRecords = new Map<string, ScheduledTask>();
+      const stub = makeRegistryStub(localRecords, {
+        upsertThrows: new CapExceededError('future-window', 1_000, 5_000),
+      });
+      setScheduledTasksRegistryForTests(stub.registry);
+
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify({
+          agentId: 'patch',
+          prompt: 'p',
+          when: { fireAt: 1_700_000_500_000 },
+          traceId: 'agent-trace-cap',
+        }),
+      });
+      expect(response.status).toBe(422);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({ cap: 'future-window', limit: 1_000, observed: 5_000 });
+    });
+
+    it('per-trace overflow on operator endpoint also surfaces 429', async () => {
+      const localRecords = new Map<string, ScheduledTask>();
+      const stub = makeRegistryStub(localRecords, {
+        upsertThrows: new CapExceededError('per-trace', 10, 11),
+      });
+      setScheduledTasksRegistryForTests(stub.registry);
+
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify({
+          agentId: 'patch',
+          when: { fireAt: 1_700_000_500_000 },
+          runner: 'claude-cli',
+          runnerConfig: { type: 'claude-cli', workDirectory: '/agents/patch' },
+        }),
+      });
+      expect(response.status).toBe(429);
     });
   });
 });

@@ -45,6 +45,8 @@ SKIPPED_PANEL_VISIBLE = 20  # rows shown when `s` is pressed
 REPEAT_CONTEXT_WINDOW_SECONDS = 300  # 5-minute rolling window
 REPEAT_CONTEXT_THRESHOLD = 5  # ≥N hits on same contextId in window → spike
 STREAM_STALL_SECONDS = 60  # silent-SSE watchdog window — see staleness_watchdog
+SCHEDULED_TASK_RETAIN_MS = 6 * 60 * 60 * 1000  # 6h — fired-but-still-listed cron rows
+SCHEDULED_PANEL_VISIBLE = 8  # rows shown in the SCHEDULED panel
 
 # ANSI
 CLEAR = "\033[2J\033[H"
@@ -122,6 +124,15 @@ class State:
         # Whether the SSE reader is connected
         self.sse_connected: bool = False
         self.sse_error: str = ""
+        # Scheduled-tasks registry view, populated from scheduled-task.*
+        # SSE events. Keyed by taskId. Entries are dropped on
+        # `scheduled-task.cancelled` / `.expired`; `scheduled-task.fired`
+        # bumps `last_fired_at` and `last_fired_job_id` so the panel can
+        # render "fired 0:14:33 ago, last as job 12345" alongside upcoming
+        # `next_fire_at`. Capped indirectly — we evict any entry whose
+        # `last_fired_at` is older than SCHEDULED_TASK_RETAIN_MS so cron
+        # tasks that fire steadily never accumulate forever-stale rows.
+        self.scheduled_tasks: dict[str, dict[str, Any]] = {}
 
 
 STATE = State()
@@ -525,6 +536,57 @@ def _handle_job_failed(job_id: str, trace_id: str, payload: dict[str, Any]) -> N
     _record_ticket_event(ctx.get("id", "?"), failure)
 
 
+def _handle_scheduled_task_created(payload: dict[str, Any]) -> None:
+    """Track a newly-registered scheduled task. Insert/refresh the entry —
+    config-load is idempotent (same id, same content), and a runtime
+    upsert that overwrites payload-only doesn't fire `created` again, so
+    it's safe to clobber.
+    """
+    task_id = payload.get("taskId")
+    if not isinstance(task_id, str) or not task_id:
+        return
+    STATE.scheduled_tasks[task_id] = {
+        "agent_id": payload.get("agentId", "?"),
+        "runner": payload.get("runner", "?"),
+        "created_by": payload.get("createdBy", "?"),
+        "owner_trace_id": payload.get("ownerTraceId", ""),
+        "next_fire_at": payload.get("nextFireAt", 0),
+        "created_at": payload.get("timestamp", 0),
+        "last_fired_at": 0,
+        "last_fired_job_id": "",
+        "status": "scheduled",
+    }
+
+
+def _handle_scheduled_task_fired(payload: dict[str, Any]) -> None:
+    """Bump fire-time fields when the worker picked up a scheduled job.
+    Don't bother creating a row if we never saw `created` — that means the
+    task was registered before the dashboard connected; the operator can
+    bootstrap by restarting and we'll catch the next fire.
+    """
+    task_id = payload.get("taskId")
+    if not isinstance(task_id, str) or not task_id:
+        return
+    entry = STATE.scheduled_tasks.get(task_id)
+    if entry is None:
+        return
+    entry["last_fired_at"] = payload.get("timestamp", 0)
+    entry["last_fired_job_id"] = payload.get("jobId", "")
+    entry["status"] = "fired"
+
+
+def _handle_scheduled_task_cancelled(payload: dict[str, Any]) -> None:
+    task_id = payload.get("taskId")
+    if isinstance(task_id, str) and task_id:
+        STATE.scheduled_tasks.pop(task_id, None)
+
+
+def _handle_scheduled_task_expired(payload: dict[str, Any]) -> None:
+    task_id = payload.get("taskId")
+    if isinstance(task_id, str) and task_id:
+        STATE.scheduled_tasks.pop(task_id, None)
+
+
 def handle_event(event_type: str, payload: dict[str, Any]) -> None:
     trace_id = payload.get("traceId", "")
     job_id = payload.get("jobId", "")
@@ -554,6 +616,14 @@ def handle_event(event_type: str, payload: dict[str, Any]) -> None:
             _handle_job_completed(job_id, trace_id, payload)
         elif event_type == "job.failed":
             _handle_job_failed(job_id, trace_id, payload)
+        elif event_type == "scheduled-task.created":
+            _handle_scheduled_task_created(payload)
+        elif event_type == "scheduled-task.fired":
+            _handle_scheduled_task_fired(payload)
+        elif event_type == "scheduled-task.cancelled":
+            _handle_scheduled_task_cancelled(payload)
+        elif event_type == "scheduled-task.expired":
+            _handle_scheduled_task_expired(payload)
 
 
 # ── SSE reader ───────────────────────────────────────────────────────
@@ -1092,6 +1162,65 @@ def _render_paused(paused: list[tuple[str, dict[str, Any]]], now: float) -> list
     return lines
 
 
+def _render_scheduled(
+    scheduled: list[tuple[str, dict[str, Any]]], now_ms: float
+) -> list[str]:
+    """Render the SCHEDULED panel — registry-tracked future agent runs.
+
+    Entries are sorted by `next_fire_at` ascending so the soonest-firing
+    work is at the top. Stale fired-but-not-removed rows (recurring crons
+    that fired hours ago and won't fire again soon) are skipped — they'd
+    just push fresh entries off the panel.
+    """
+    if not scheduled:
+        return []
+    fresh: list[tuple[float, str, dict[str, Any]]] = []
+    for task_id, entry in scheduled:
+        last_fired = entry.get("last_fired_at", 0)
+        # An always-empty `next_fire_at` plus a fired timestamp means the
+        # task is one-shot and already ran; the registry will drop it on
+        # the next cycle, so suppress here too rather than render a stale
+        # row.
+        if last_fired and not entry.get("next_fire_at", 0):
+            continue
+        if last_fired and now_ms - last_fired > SCHEDULED_TASK_RETAIN_MS:
+            continue
+        sort_key = float(entry.get("next_fire_at", 0)) or float("inf")
+        fresh.append((sort_key, task_id, entry))
+    if not fresh:
+        return []
+    fresh.sort(key=lambda triple: triple[0])
+
+    lines = [
+        "",
+        f"  {BOLD}SCHEDULED{RESET} {DIM}({len(fresh)} tracked){RESET}",
+    ]
+    for _sort_key, task_id, entry in fresh[:SCHEDULED_PANEL_VISIBLE]:
+        next_fire = entry.get("next_fire_at", 0)
+        if next_fire:
+            seconds_until = int(next_fire / 1000 - now_ms / 1000)
+            if seconds_until >= 0:
+                timing = f"in {_format_elapsed(seconds_until)}"
+            else:
+                timing = f"overdue {_format_elapsed(-seconds_until)}"
+        else:
+            timing = "no nextFire"
+        last_fired = entry.get("last_fired_at", 0)
+        last_suffix = ""
+        if last_fired:
+            seconds_ago = int(now_ms / 1000 - last_fired / 1000)
+            last_suffix = f"  {DIM}last fired {_format_elapsed(seconds_ago)} ago{RESET}"
+        agent = entry.get("agent_id", "?")
+        runner = entry.get("runner", "?")
+        created_by = entry.get("created_by", "?")
+        prefix = "▸" if entry.get("status") == "scheduled" else "↻"
+        lines.append(
+            f"     {prefix}  {task_id[:20]:<20} {DIM}{agent}/{runner}/{created_by}{RESET}  "
+            f"{timing}{last_suffix}"
+        )
+    return lines
+
+
 def _render_recent(recent: list[dict[str, Any]]) -> list[str]:
     if not recent:
         return []
@@ -1164,6 +1293,7 @@ def render(url: str) -> str:
         trace_context = STATE.trace_context.copy()
         job_trace = STATE.job_trace.copy()
         ticket_history = {k: v.copy() for k, v in STATE.ticket_history.items()}
+        scheduled = list(STATE.scheduled_tasks.items())
         no_match_count = STATE.routing_skipped_count
         duplicate_count = STATE.duplicate_skipped_count
         # Header's "last" is the most recent of the two routing reasons.
@@ -1209,6 +1339,7 @@ def render(url: str) -> str:
 
     lines.extend(_render_paused(paused, now))
     lines.extend(_render_queued(queued))
+    lines.extend(_render_scheduled(scheduled, now * 1000))
     lines.extend(_render_recent(recent))
     lines.extend(_render_tickets(ticket_history))
 
