@@ -466,6 +466,10 @@ describe('scheduled-tasks controller', () => {
       agentId: 'patch',
       prompt: 'Investigate SPE-1234 on a 30-minute cadence and summarize.',
       when: { cron: '*/30 * * * *' },
+      // traceId is required: the per-trace cap is the only runaway-loop
+      // safety net, and an optional traceId would let agents bypass it
+      // by omitting one field.
+      traceId: 'agent-trace-default',
     };
 
     it('creates a direct-prompt task, synthesizing claude-cli runner config from the agent registry (201)', async () => {
@@ -482,6 +486,7 @@ describe('scheduled-tasks controller', () => {
         runner: 'claude-cli',
         runnerConfig: { type: 'claude-cli', workDirectory: '/agents/patch' },
         createdBy: 'agent',
+        createdByTraceId: 'agent-trace-default',
         reason: 'api-create',
       });
       // Prompt is stored under payload.directPrompt for the worker's
@@ -529,6 +534,20 @@ describe('scheduled-tasks controller', () => {
       expect(response.status).toBe(400);
       expect(recorder.upserts).toHaveLength(0);
     });
+
+    it('rejects bodies missing traceId (400) — the per-trace cap depends on it', async () => {
+      // Build the body without traceId — destructuring would leave the
+      // omitted name flagged as unused-var.
+      const withoutTrace: Record<string, unknown> = { ...validPromptBody };
+      delete withoutTrace['traceId'];
+      const response = await fetch(`${baseUrl}/api/scheduled-tasks/agent-prompt`, {
+        method: 'POST',
+        headers: bearerHeader(),
+        body: JSON.stringify(withoutTrace),
+      });
+      expect(response.status).toBe(400);
+      expect(recorder.upserts).toHaveLength(0);
+    });
   });
 
   /**
@@ -553,6 +572,7 @@ describe('scheduled-tasks controller', () => {
           agentId: 'patch',
           prompt: 'p',
           when: { fireAt: 1_700_000_500_000 },
+          traceId: 'agent-trace-cap',
         }),
       });
       expect(response.status).toBe(429);
@@ -574,6 +594,7 @@ describe('scheduled-tasks controller', () => {
           agentId: 'patch',
           prompt: 'p',
           when: { fireAt: 1_700_000_500_000 },
+          traceId: 'agent-trace-cap',
         }),
       });
       expect(response.status).toBe(422);

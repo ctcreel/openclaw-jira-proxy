@@ -186,7 +186,7 @@ export function createSchedulePromptHandler(agents: readonly ResolvedAgent[]) {
         payload,
         ...(parsed.data.ttl !== undefined ? { ttl: parsed.data.ttl } : {}),
         ...(parsed.data.maxRuns !== undefined ? { maxRuns: parsed.data.maxRuns } : {}),
-        ...(parsed.data.traceId !== undefined ? { createdByTraceId: parsed.data.traceId } : {}),
+        createdByTraceId: parsed.data.traceId,
         createdBy: 'agent',
         reason: 'api-create',
       });

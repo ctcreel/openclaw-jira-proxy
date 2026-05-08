@@ -41,7 +41,11 @@ interface TaskRunSummary {
   error?: string;
 }
 
-async function processTask(job: Job<string>, agent: ResolvedAgent): Promise<TaskRunSummary> {
+// Exported for integration testing — drives the fire-time pipeline end
+// to end (envelope parse → registry recordFire → directPrompt vs rule
+// → recall block → runner dispatch). The production callsite is the
+// BullMQ Worker constructed in `createTaskWorker`.
+export async function processTask(job: Job<string>, agent: ResolvedAgent): Promise<TaskRunSummary> {
   const envelope = parseTaskEnvelope(job.data);
   if (isScheduledEnvelope(envelope)) {
     return processScheduledTask(envelope, agent, job);
@@ -215,7 +219,9 @@ async function runDirectPrompt(
  * agent) must NOT prevent the prompt from running. We log + return
  * undefined and the caller falls back to verbatim replay.
  */
-async function buildRecallBlockIfRequested(
+// Exported for direct unit testing — covers AC 4-6 at the firing site,
+// not just at the HTTP boundary.
+export async function buildRecallBlockIfRequested(
   useMemory: UseMemory | undefined,
   query: string,
   agent: ResolvedAgent,
@@ -267,19 +273,31 @@ async function buildRecallBlockIfRequested(
   });
 }
 
-function readDirectPrompt(context: Record<string, unknown>): string | undefined {
+// Exported for direct unit testing.
+export function readDirectPrompt(context: Record<string, unknown>): string | undefined {
   const value = context['directPrompt'];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function readUseMemory(context: Record<string, unknown>): UseMemory | undefined {
+// Exported for direct unit testing — AC 6 (corrupt entry warns + degrades).
+export function readUseMemory(context: Record<string, unknown>): UseMemory | undefined {
   const raw = context['useMemory'];
   if (raw === undefined) return undefined;
   const parsed = useMemorySchema.safeParse(raw);
-  return parsed.success ? parsed.data : undefined;
+  if (parsed.success) return parsed.data;
+  // Defensive: a corrupt registry entry (manual Redis edit, partial
+  // schema migration) shouldn't silently degrade to verbatim with no
+  // operator signal. Warn so the breadcrumb shows up in logs and the
+  // caller falls back to the verbatim path (existing behaviour).
+  logger.warn(
+    { issues: parsed.error.issues, rawType: typeof raw },
+    'useMemory in scheduled-task envelope failed schema validation — falling back to verbatim',
+  );
+  return undefined;
 }
 
-function mapRunResult(result: RunResult): TaskRunSummary {
+// Exported for direct unit testing — covers error / timeout / quota mapping.
+export function mapRunResult(result: RunResult): TaskRunSummary {
   if (result.status === 'error') {
     throw new Error(`Task run failed: ${result.error ?? 'unknown'}`);
   }

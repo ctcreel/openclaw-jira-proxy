@@ -87,7 +87,15 @@ export const agentPromptScheduleRequestSchema = z.object({
   prompt: z.string().min(1),
   when: whenSchema,
   useMemory: useMemorySchema.optional(),
-  traceId: z.string().min(1).optional(),
+  /**
+   * Required: the calling agent's current `traceId` is what the per-trace
+   * cap (`scheduled-tasks per-trace cap`) keys on (SCARD against the
+   * `BY_TRACE_PREFIX` set in `enforceCaps`). If this were optional, an
+   * agent could bypass the only runaway-loop safety net by omitting one
+   * field. Plan AC 1 assumes a traceId is always present
+   * (`createdByTraceId=<caller's traceId>`).
+   */
+  traceId: z.string().min(1),
   name: z.string().min(1).optional(),
   ttl: z.number().int().nonnegative().optional(),
   maxRuns: z.number().int().positive().optional(),
