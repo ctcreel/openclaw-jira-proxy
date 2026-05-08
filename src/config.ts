@@ -215,6 +215,44 @@ const settingsSchema = z.object({
   secrets: z.array(secretBindingSchema).optional(),
   /** On-disk cache configuration for resolved secrets (SPE-2005). */
   secretCache: secretCacheConfigSchema.default({}),
+  /**
+   * Per-trace cap on agent-created scheduled tasks. The registry counts
+   * tasks tagged with the same `createdByTraceId` and refuses
+   * `scheduledTasksService.upsert` once the limit is reached. A zero or
+   * negative value disables the cap.
+   *
+   * Sized for SPE-2049: a single agent run shouldn't be queueing more
+   * than a handful of self-replays — 10 is comfortable headroom for a
+   * legitimate burst (a planner that schedules five sub-tasks plus a
+   * "review at end of day" reminder) while still tripping fast on a
+   * runaway loop. Override at deploy time via
+   * `SCHEDULED_TASKS_MAX_PER_TRACE`.
+   */
+  scheduledTasksMaxPerTrace: z.coerce.number().int().nonnegative().default(10),
+  /**
+   * Maximum future-window (ms) for one-shot `fireAt` scheduled tasks.
+   * The registry rejects upserts whose `fireAt` is more than this far
+   * ahead of the current wall clock. Cron tasks are unaffected — they
+   * are bounded by `maxRuns` / `ttl`. Default 30 days. Override via
+   * `SCHEDULED_TASKS_MAX_FUTURE_WINDOW_MS`.
+   */
+  scheduledTasksMaxFutureWindowMs: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30 * 24 * 60 * 60 * 1000),
+  /**
+   * Default top-K for fire-time RAG when an agent-prompt task opts into
+   * memory recall without an explicit override. Override via
+   * `SCHEDULED_TASKS_RAG_TOPK_DEFAULT`.
+   */
+  scheduledTasksRagTopKDefault: z.coerce.number().int().positive().default(5),
+  /**
+   * Default minimum cosine similarity for fire-time RAG hits. Hits below
+   * the threshold are dropped before the recall block is rendered.
+   * Override via `SCHEDULED_TASKS_RAG_MIN_SIMILARITY_DEFAULT`.
+   */
+  scheduledTasksRagMinSimilarityDefault: z.coerce.number().min(0).max(1).default(0.5),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
@@ -301,6 +339,11 @@ export function getSettings(): Settings {
       path: process.env['CLAWNDOM_SECRETS_CACHE_PATH'],
       maxAgeSeconds: process.env['CLAWNDOM_SECRETS_CACHE_MAX_AGE_SECONDS'],
     },
+    scheduledTasksMaxPerTrace: process.env['SCHEDULED_TASKS_MAX_PER_TRACE'],
+    scheduledTasksMaxFutureWindowMs: process.env['SCHEDULED_TASKS_MAX_FUTURE_WINDOW_MS'],
+    scheduledTasksRagTopKDefault: process.env['SCHEDULED_TASKS_RAG_TOPK_DEFAULT'],
+    scheduledTasksRagMinSimilarityDefault:
+      process.env['SCHEDULED_TASKS_RAG_MIN_SIMILARITY_DEFAULT'],
   });
   return cachedSettings;
 }

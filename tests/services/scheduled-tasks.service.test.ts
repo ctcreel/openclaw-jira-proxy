@@ -4,7 +4,10 @@ import type IORedis from 'ioredis';
 
 import type { Queue } from 'bullmq';
 
-import { ScheduledTasksService } from '../../src/services/scheduled-tasks.service';
+import {
+  CapExceededError,
+  ScheduledTasksService,
+} from '../../src/services/scheduled-tasks.service';
 import type { CreateScheduledTaskInput } from '../../src/services/scheduled-tasks.service';
 import { deriveConfigTaskId, stableStringify } from '../../src/types/scheduled-task';
 import type { ClawndomEvent } from '../../src/types/clawndom-event';
@@ -386,6 +389,112 @@ describe('ScheduledTasksService', () => {
       const a = stableStringify({ b: 2, a: 1, c: { z: 1, y: 2 } });
       const b = stableStringify({ a: 1, c: { y: 2, z: 1 }, b: 2 });
       expect(a).toBe(b);
+    });
+  });
+
+  // SPE-2049: caps are the registry's only line of defence against an
+  // agent run that loops on schedule_task(). Without these, a single
+  // misbehaving template could fill Redis or queue a fireAt for the
+  // year 3000 and starve the registry pruner.
+  describe('agent-created caps (SPE-2049)', () => {
+    function makeAgentInput(
+      overrides: Partial<CreateScheduledTaskInput> = {},
+    ): CreateScheduledTaskInput {
+      return {
+        agentId: 'patch',
+        when: { fireAt: FIXED_NOW + 60_000 },
+        runner: 'claude-cli',
+        runnerConfig: { type: 'claude-cli', workDirectory: '/agents/patch' },
+        createdBy: 'agent',
+        createdByTraceId: 'trace-A',
+        ...overrides,
+      };
+    }
+
+    function buildCappedService(caps: {
+      maxPerTrace: number;
+      maxFutureWindowMs: number;
+    }): ScheduledTasksService {
+      return new ScheduledTasksService({
+        redis,
+        eventBus: bus,
+        getQueue: (agentName: string): Queue => {
+          let queue = queues.get(agentName);
+          if (!queue) {
+            queue = buildQueueStub();
+            queues.set(agentName, queue);
+          }
+          return queue as unknown as Queue;
+        },
+        now: (): number => FIXED_NOW,
+        nextFireFromCron: (_cron, _tz, fromMs): number => fromMs + 60_000,
+        caps,
+      });
+    }
+
+    it('allows agent upserts up to the per-trace ceiling', async () => {
+      const cappedService = buildCappedService({
+        maxPerTrace: 3,
+        maxFutureWindowMs: Number.MAX_SAFE_INTEGER,
+      });
+      for (let i = 0; i < 3; i++) {
+        await cappedService.upsert(makeAgentInput({ when: { fireAt: FIXED_NOW + 60_000 + i } }));
+      }
+      const fourth = cappedService.upsert(
+        makeAgentInput({ when: { fireAt: FIXED_NOW + 60_000 + 99 } }),
+      );
+      await expect(fourth).rejects.toBeInstanceOf(CapExceededError);
+      await expect(fourth).rejects.toMatchObject({ cap: 'per-trace', limit: 3 });
+    });
+
+    it('rejects agent upserts whose fireAt is past the future-window cap', async () => {
+      const cappedService = buildCappedService({
+        maxPerTrace: 100,
+        maxFutureWindowMs: 60_000, // 1 minute window
+      });
+      // 2 minutes ahead — beyond the cap.
+      const tooFar = cappedService.upsert(
+        makeAgentInput({ when: { fireAt: FIXED_NOW + 2 * 60_000 } }),
+      );
+      await expect(tooFar).rejects.toBeInstanceOf(CapExceededError);
+      await expect(tooFar).rejects.toMatchObject({ cap: 'future-window', limit: 60_000 });
+    });
+
+    it('does not apply caps to config-loaded tasks', async () => {
+      const cappedService = buildCappedService({
+        maxPerTrace: 1,
+        maxFutureWindowMs: 1, // 1ms window — would block any agent task
+      });
+      // Static config-load: cron schedule, no traceId, way past the
+      // future-window cap if it applied.
+      await expect(
+        cappedService.upsert({
+          id: 'config-1',
+          agentId: 'patch',
+          name: 'daily',
+          when: { cron: '0 9 * * *', timezone: 'UTC' },
+          runner: 'claude-cli',
+          runnerConfig: { type: 'claude-cli', workDirectory: '/agents/patch' },
+          createdBy: 'config',
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it('lets a re-upsert of an existing agent task bypass the per-trace cap', async () => {
+      const cappedService = buildCappedService({
+        maxPerTrace: 1,
+        maxFutureWindowMs: Number.MAX_SAFE_INTEGER,
+      });
+      const created = await cappedService.upsert(
+        makeAgentInput({ id: 'task-A', when: { fireAt: FIXED_NOW + 60_000 } }),
+      );
+      // Same id — caps should NOT trip just because the trace already
+      // owns one task. This is the "edit in place" path.
+      await expect(
+        cappedService.upsert(
+          makeAgentInput({ id: created.id, when: { fireAt: FIXED_NOW + 60_001 } }),
+        ),
+      ).resolves.toBeDefined();
     });
   });
 });

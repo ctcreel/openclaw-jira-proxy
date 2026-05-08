@@ -51,7 +51,7 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
     '/api/scheduled-tasks',
     express.json({ limit: '1mb' }),
     requireAgentBearer,
-    createScheduledTasksRoutes(),
+    createScheduledTasksRoutes(agents),
   );
 
   for (const provider of getSettings().providers) {
