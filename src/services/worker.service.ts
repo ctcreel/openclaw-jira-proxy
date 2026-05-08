@@ -701,10 +701,21 @@ async function fetchMemoriesForRule(
     return undefined;
   }
 
+  let query = queryRaw;
+  if (memoryConfig.retrieve.threadEnrichment !== undefined) {
+    const { enrichQueryWithThread } = await import('./memory/thread-enrichment');
+    query = await enrichQueryWithThread(
+      parsedPayload,
+      memoryConfig.retrieve.threadEnrichment,
+      queryRaw,
+      traceId,
+    );
+  }
+
   try {
     const result = await getMemoryService().search({
       namespace: memoryConfig.namespace,
-      query: queryRaw,
+      query,
       topK: memoryConfig.retrieve.topK,
       minSimilarity: memoryConfig.retrieve.minSimilarity,
       traceId,
