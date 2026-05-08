@@ -21,15 +21,15 @@ interface ServiceAccountKey {
   readonly private_key: string;
 }
 
-function base64url(data: Buffer | string): string {
+function encodeBase64Url(data: Buffer | string): string {
   const buf = typeof data === 'string' ? Buffer.from(data) : data;
   return buf.toString('base64url');
 }
 
 function buildJwt(serviceAccount: ServiceAccountKey, subject: string): string {
   const now = Math.floor(Date.now() / 1000);
-  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const payload = base64url(
+  const header = encodeBase64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = encodeBase64Url(
     JSON.stringify({
       iss: serviceAccount.client_email,
       sub: subject,
@@ -43,7 +43,7 @@ function buildJwt(serviceAccount: ServiceAccountKey, subject: string): string {
   const signingInput = `${header}.${payload}`;
   const signer = createSign('RSA-SHA256');
   signer.update(signingInput);
-  const signature = base64url(signer.sign(serviceAccount.private_key));
+  const signature = encodeBase64Url(signer.sign(serviceAccount.private_key));
 
   return `${header}.${payload}.${signature}`;
 }
