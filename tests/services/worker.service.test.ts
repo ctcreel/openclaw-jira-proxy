@@ -948,6 +948,10 @@ describe('processJob message templates', () => {
       'Issue {{ issue.key }}',
       expect.objectContaining({ type: 'bug' }),
       '/agents/patch',
+      // SPE-2070: workers now pass a 4th `RenderTemplateOptions` argument
+      // carrying `agencyToolsPath` for tool-declaring templates. The test
+      // agent has no sharedTools, so the option object is empty.
+      {},
     );
     expect(runSpy.mock.calls[0]![0].prompt).toBe('rendered rule template');
   });
