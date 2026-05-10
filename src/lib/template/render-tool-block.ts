@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,41 @@ const logger = getLogger('tool-block');
  * `tsup.config.ts`) so the production build works the same way.
  */
 const introspectorPath = resolve(dirname(fileURLToPath(import.meta.url)), 'tools-introspect.py');
+
+/**
+ * Resolve `python3` to an absolute path at module load time.
+ *
+ * Sonar S4036 (and the underlying CWE-426/427 concern) flags any
+ * `spawn` that lets `$PATH` choose the executable: a writable directory
+ * earlier on PATH could shadow the real binary. Resolving once at boot
+ * to a fully-qualified path defeats that — every later `spawn` call
+ * passes the absolute path and ignores PATH for executable lookup.
+ *
+ * `command -v` is POSIX and respects the operator's PATH at boot
+ * (when nothing dynamic has had a chance to mutate it), and the
+ * resolution itself runs without a shell: `/usr/bin/env command -v ...`.
+ * If that fails (Windows, broken POSIX env), fall back to the literal
+ * `python3` name and let the first real call's ENOENT error guide the
+ * operator to install Python 3 — same surface as before, only marginally
+ * less safe, and only on platforms we don't deploy on.
+ */
+function resolvePython3Path(): string {
+  try {
+    const which = spawnSync('/usr/bin/env', ['command', '-v', 'python3'], {
+      encoding: 'utf-8',
+      shell: false,
+    });
+    if (which.status === 0) {
+      const resolvedPath = which.stdout.trim();
+      if (resolvedPath.length > 0) return resolvedPath;
+    }
+  } catch {
+    // Fall through to the literal name — surfaced via ENOENT at call time.
+  }
+  return 'python3';
+}
+
+const PYTHON3_PATH = resolvePython3Path();
 
 interface IntrospectionFailure {
   readonly ok: false;
@@ -57,7 +92,7 @@ async function invokeIntrospector(
   if (modules.length === 0) return {};
 
   return new Promise<IntrospectorResponse>((resolvePromise, rejectPromise) => {
-    const child = spawn('python3', [introspectorPath], {
+    const child = spawn(PYTHON3_PATH, [introspectorPath], {
       env: { ...process.env, PYTHONPATH: agencyToolsPath },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
