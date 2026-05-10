@@ -223,7 +223,16 @@ export async function processJob(
   let systemPrompt = '';
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
-    const rendered = await renderTemplate(templateContent, parsedPayload, agentDir);
+    const rendered = await renderTemplate(templateContent, parsedPayload, agentDir, {
+      // Pass the agent's shared-tools clone as PYTHONPATH for the
+      // {{tools}} introspector. `undefined` when the agent has no
+      // sharedTools — only tool-declaring templates need the path, and
+      // boot validation already rejects tool declarations on agents
+      // without sharedTools.
+      ...(matchedAgent.sharedToolsPath === undefined
+        ? {}
+        : { agencyToolsPath: matchedAgent.sharedToolsPath }),
+    });
     systemPrompt = rendered.systemPrompt;
     // Memory recall fragments are per-event (queryField → embed → search),
     // so they wrap the rendered BODY, not the cacheable system prompt.
