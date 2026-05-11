@@ -14,23 +14,23 @@ import type { ToolKind } from './config-schemas';
  * Requirement: Tool Definition File Format.
  */
 
-const argTypeSchema = z.enum(['string', 'number', 'boolean', 'array', 'object']);
+const argumentTypeSchema = z.enum(['string', 'number', 'boolean', 'array', 'object']);
 
-export const argSpecSchema = z.object({
-  type: argTypeSchema,
+export const argumentSchema = z.object({
+  type: argumentTypeSchema,
   description: z.string().min(1, { message: 'arg.description is required' }),
   optional: z.boolean().optional(),
 });
 
 export const toolYamlSchema = z.object({
   description: z.string().min(1, { message: 'tool.yaml.description is required' }),
-  args: z.record(z.string().min(1), argSpecSchema).default({}),
+  args: z.record(z.string().min(1), argumentSchema).default({}),
   requires: z.array(z.string().min(1)).default([]),
   name: z.string().min(1).optional(),
 });
 
-export type ArgType = z.infer<typeof argTypeSchema>;
-export type ArgSpec = z.infer<typeof argSpecSchema>;
+export type ArgumentType = z.infer<typeof argumentTypeSchema>;
+export type ArgumentDef = z.infer<typeof argumentSchema>;
 export type ToolYaml = z.infer<typeof toolYamlSchema>;
 
 /**
@@ -50,7 +50,7 @@ export interface ToolDescriptor {
    */
   readonly name: string;
   readonly description: string;
-  readonly args: Record<string, ArgSpec>;
+  readonly args: Record<string, ArgumentDef>;
   readonly requires: readonly string[];
 }
 
@@ -81,16 +81,16 @@ export function computeToolName(directory: string): string {
  * tool-use API. `properties` keys map to the `args:` entries; `required`
  * contains every arg key WITHOUT `optional: true`.
  */
-export function buildInputSchema(args: Record<string, ArgSpec>): {
+export function buildInputSchema(args: Record<string, ArgumentDef>): {
   type: 'object';
-  properties: Record<string, { type: ArgType; description: string }>;
+  properties: Record<string, { type: ArgumentType; description: string }>;
   required: string[];
 } {
-  const properties: Record<string, { type: ArgType; description: string }> = {};
+  const properties: Record<string, { type: ArgumentType; description: string }> = {};
   const required: string[] = [];
-  for (const [argName, argSpec] of Object.entries(args)) {
-    properties[argName] = { type: argSpec.type, description: argSpec.description };
-    if (!argSpec.optional) required.push(argName);
+  for (const [argumentName, argumentSpec] of Object.entries(args)) {
+    properties[argumentName] = { type: argumentSpec.type, description: argumentSpec.description };
+    if (!argumentSpec.optional) required.push(argumentName);
   }
   return { type: 'object', properties, required };
 }

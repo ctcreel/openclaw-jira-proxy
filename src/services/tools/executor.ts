@@ -64,8 +64,8 @@ export async function executeToolCall(
       result = await dispatchBash(toolUse, descriptor, credentials, timeoutMs);
     }
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    errorSummary = msg.split('\n')[0] ?? msg;
+    const message = error instanceof Error ? error.message : String(error);
+    errorSummary = message.split('\n')[0] ?? message;
     result = {
       content: { error: errorSummary },
       isError: true,
@@ -103,8 +103,8 @@ export async function executeToolCall(
     // Audit emission failure should not lose the tool result. Log
     // operationally; SPE-2079's logging framework will define the
     // policy for audit-write failures.
-    const msg = auditError instanceof Error ? auditError.message : String(auditError);
-    logger.error({ error: msg, tool: descriptor.name }, 'Failed to write audit record');
+    const message = auditError instanceof Error ? auditError.message : String(auditError);
+    logger.error({ error: message, tool: descriptor.name }, 'Failed to write audit record');
   }
 
   return result;
@@ -143,8 +143,8 @@ async function dispatchBash(
 ): Promise<ToolResult> {
   const scriptPath = join(descriptor.directory, 'impl.sh');
   const env: Record<string, string> = {};
-  for (const [argName, argValue] of Object.entries(toolUse.input)) {
-    env[`ARG_${argName.toUpperCase()}`] = stringifyArg(argValue);
+  for (const [argumentName, argumentValue] of Object.entries(toolUse.input)) {
+    env[`ARG_${argumentName.toUpperCase()}`] = stringifyArgument(argumentValue);
   }
   for (const [credName, credValue] of Object.entries(credentials)) {
     env[credName.toUpperCase()] = credValue;
@@ -152,7 +152,7 @@ async function dispatchBash(
   return runSubprocess('bash', [scriptPath], '', env, timeoutMs, descriptor);
 }
 
-function stringifyArg(value: unknown): string {
+function stringifyArgument(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === null || value === undefined) return '';
   return JSON.stringify(value);
@@ -223,8 +223,8 @@ async function runSubprocess(
         const parsed: unknown = JSON.parse(trimmed);
         finish({ content: parsed, isError: false });
       } catch (parseError) {
-        const msg = parseError instanceof Error ? parseError.message : String(parseError);
-        finish(new Error(`Tool '${descriptor.name}' produced non-JSON stdout: ${msg}`));
+        const message = parseError instanceof Error ? parseError.message : String(parseError);
+        finish(new Error(`Tool '${descriptor.name}' produced non-JSON stdout: ${message}`));
       }
     });
 

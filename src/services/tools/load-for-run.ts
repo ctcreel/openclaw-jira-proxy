@@ -42,8 +42,8 @@ export async function buildMCPBundle(
   const secretManager = getSecretManager();
   for (const desc of descriptors) {
     const creds: Record<string, string> = {};
-    for (const reqName of desc.requires) {
-      creds[reqName] = secretManager.getSecret(reqName);
+    for (const requirementName of desc.requires) {
+      creds[requirementName] = secretManager.getSecret(requirementName);
     }
     perTool[desc.name] = creds;
   }

@@ -333,9 +333,9 @@ async function validateToolsConfig(
         try {
           descriptor = await loadToolDescriptor(toolRef, agentDir);
         } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
+          const message = error instanceof Error ? error.message : String(error);
           throw new Error(
-            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${msg}`,
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${message}`,
           );
         }
         if (seenNames.has(descriptor.name)) {
@@ -347,9 +347,9 @@ async function validateToolsConfig(
         try {
           await validateToolSignature(descriptor);
         } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
+          const message = error instanceof Error ? error.message : String(error);
           throw new Error(
-            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${msg}`,
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${message}`,
           );
         }
       }

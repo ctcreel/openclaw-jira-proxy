@@ -25,8 +25,8 @@ export async function loadToolDescriptor(ref: ToolRef, agentDir: string): Promis
   try {
     rawYaml = await readFile(yamlPath, 'utf-8');
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`Missing or unreadable tool.yaml at ${yamlPath}: ${msg}`);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Missing or unreadable tool.yaml at ${yamlPath}: ${message}`);
   }
 
   const parsed = parseYaml(rawYaml);

@@ -4,7 +4,7 @@ import {
   computeToolName,
   buildInputSchema,
   toolYamlSchema,
-  type ArgSpec,
+  type ArgumentDef,
 } from '../../../src/services/tools/descriptor';
 
 describe('computeToolName', () => {
@@ -27,7 +27,7 @@ describe('computeToolName', () => {
 
 describe('buildInputSchema', () => {
   it('lists every arg in properties', () => {
-    const args: Record<string, ArgSpec> = {
+    const args: Record<string, ArgumentDef> = {
       channel: { type: 'string', description: 'Slack channel ID' },
       text: { type: 'string', description: 'Message text' },
     };
@@ -38,7 +38,7 @@ describe('buildInputSchema', () => {
   });
 
   it('includes args without optional:true in required', () => {
-    const args: Record<string, ArgSpec> = {
+    const args: Record<string, ArgumentDef> = {
       channel: { type: 'string', description: 'Slack channel ID' },
       text: { type: 'string', description: 'Message text' },
       thread_ts: { type: 'string', description: 'Optional thread ts', optional: true },
@@ -49,7 +49,7 @@ describe('buildInputSchema', () => {
   });
 
   it('omits all from required when every arg is optional', () => {
-    const args: Record<string, ArgSpec> = {
+    const args: Record<string, ArgumentDef> = {
       foo: { type: 'string', description: 'optional foo', optional: true },
     };
     const schema = buildInputSchema(args);

@@ -33,11 +33,11 @@ interface PythonSignature {
  * Extract the `invoke()` function's kwonly arguments from `impl.py` via
  * Python's stdlib `ast`. No module import, no top-level code execution.
  */
-async function extractPythonSignature(implPath: string): Promise<PythonSignature> {
+async function extractPythonSignature(implementationPath: string): Promise<PythonSignature> {
   const probe = `
 import ast, json, sys
-with open(${JSON.stringify(implPath)}) as f:
-    tree = ast.parse(f.read(), filename=${JSON.stringify(implPath)})
+with open(${JSON.stringify(implementationPath)}) as f:
+    tree = ast.parse(f.read(), filename=${JSON.stringify(implementationPath)})
 fn = None
 for node in ast.walk(tree):
     if isinstance(node, ast.FunctionDef) and node.name == 'invoke':
@@ -59,16 +59,16 @@ print(json.dumps({"kwargs": kwargs}))
     const result = await execFile('python3', ['-c', probe]);
     stdout = result.stdout;
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to parse impl.py at ${implPath}: ${msg}`);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to parse impl.py at ${implementationPath}: ${message}`);
   }
   const parsed = JSON.parse(stdout) as PythonSignature;
   return parsed;
 }
 
 async function validatePythonSignature(descriptor: ToolDescriptor): Promise<void> {
-  const implPath = join(descriptor.directory, 'impl.py');
-  const signature = await extractPythonSignature(implPath);
+  const implementationPath = join(descriptor.directory, 'impl.py');
+  const signature = await extractPythonSignature(implementationPath);
 
   const sigKwargs = signature.kwargs;
   const expectedArgs = new Set(Object.keys(descriptor.args));
@@ -78,38 +78,38 @@ async function validatePythonSignature(descriptor: ToolDescriptor): Promise<void
   const errors: string[] = [];
 
   // Every YAML arg must exist as a kwarg.
-  for (const argName of expectedArgs) {
-    if (!(argName in sigKwargs)) {
-      errors.push(`tool.yaml declares arg '${argName}' but invoke() has no such kwarg`);
+  for (const argumentName of expectedArgs) {
+    if (!(argumentName in sigKwargs)) {
+      errors.push(`tool.yaml declares arg '${argumentName}' but invoke() has no such kwarg`);
     }
   }
   // Every requires must exist as a kwarg.
-  for (const reqName of expectedRequires) {
-    if (!(reqName in sigKwargs)) {
-      errors.push(`tool.yaml requires '${reqName}' but invoke() has no such kwarg`);
+  for (const requirementName of expectedRequires) {
+    if (!(requirementName in sigKwargs)) {
+      errors.push(`tool.yaml requires '${requirementName}' but invoke() has no such kwarg`);
     }
   }
   // Optional-ness in YAML must match has-default in signature.
-  for (const [argName, argSpec] of Object.entries(descriptor.args)) {
-    const sigHasDefault = sigKwargs[argName];
+  for (const [argumentName, argumentSpec] of Object.entries(descriptor.args)) {
+    const sigHasDefault = sigKwargs[argumentName];
     if (sigHasDefault === undefined) continue; // Already reported above.
-    if (argSpec.optional && !sigHasDefault) {
+    if (argumentSpec.optional && !sigHasDefault) {
       errors.push(
-        `arg '${argName}' is optional in tool.yaml but invoke() has no signature default`,
+        `arg '${argumentName}' is optional in tool.yaml but invoke() has no signature default`,
       );
     }
-    if (!argSpec.optional && sigHasDefault) {
+    if (!argumentSpec.optional && sigHasDefault) {
       errors.push(
-        `arg '${argName}' is required in tool.yaml but invoke() has a signature default (silent optional)`,
+        `arg '${argumentName}' is required in tool.yaml but invoke() has a signature default (silent optional)`,
       );
     }
   }
   // Requires MUST have no signature default — they're always passed by the executor.
-  for (const reqName of expectedRequires) {
-    const sigHasDefault = sigKwargs[reqName];
+  for (const requirementName of expectedRequires) {
+    const sigHasDefault = sigKwargs[requirementName];
     if (sigHasDefault === true) {
       errors.push(
-        `requires '${reqName}' has a signature default in invoke(); credentials are always injected, no default allowed`,
+        `requires '${requirementName}' has a signature default in invoke(); credentials are always injected, no default allowed`,
       );
     }
   }
@@ -124,7 +124,7 @@ async function validatePythonSignature(descriptor: ToolDescriptor): Promise<void
 
   if (errors.length > 0) {
     throw new Error(
-      `Signature mismatch for tool '${descriptor.name}' at ${implPath}:\n  - ${errors.join('\n  - ')}`,
+      `Signature mismatch for tool '${descriptor.name}' at ${implementationPath}:\n  - ${errors.join('\n  - ')}`,
     );
   }
 }
@@ -199,13 +199,13 @@ function parseEnvVarName(name: string, prefix: string): string {
 }
 
 async function validateBashSignature(descriptor: ToolDescriptor): Promise<void> {
-  const implPath = join(descriptor.directory, 'impl.sh');
+  const implementationPath = join(descriptor.directory, 'impl.sh');
   let contents: string;
   try {
-    contents = await readFile(implPath, 'utf-8');
+    contents = await readFile(implementationPath, 'utf-8');
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`Missing or unreadable impl.sh at ${implPath}: ${msg}`);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Missing or unreadable impl.sh at ${implementationPath}: ${message}`);
   }
 
   const header = parseBashHeader(contents);
@@ -219,17 +219,17 @@ async function validateBashSignature(descriptor: ToolDescriptor): Promise<void> 
 
   const errors: string[] = [];
 
-  for (const argName of expectedArgs) {
-    if (!header.args.has(argName)) {
+  for (const argumentName of expectedArgs) {
+    if (!header.args.has(argumentName)) {
       errors.push(
-        `tool.yaml declares arg '${argName}' but impl.sh '# Args:' header omits ARG_${argName.toUpperCase()}`,
+        `tool.yaml declares arg '${argumentName}' but impl.sh '# Args:' header omits ARG_${argumentName.toUpperCase()}`,
       );
     }
   }
-  for (const argName of header.args) {
-    if (!expectedArgs.has(argName)) {
+  for (const argumentName of header.args) {
+    if (!expectedArgs.has(argumentName)) {
       errors.push(
-        `impl.sh '# Args:' lists ARG_${argName.toUpperCase()} but tool.yaml has no such arg`,
+        `impl.sh '# Args:' lists ARG_${argumentName.toUpperCase()} but tool.yaml has no such arg`,
       );
     }
   }
@@ -247,24 +247,24 @@ async function validateBashSignature(descriptor: ToolDescriptor): Promise<void> 
       );
     }
   }
-  for (const reqName of expectedRequires) {
-    if (!header.requires.has(reqName)) {
+  for (const requirementName of expectedRequires) {
+    if (!header.requires.has(requirementName)) {
       errors.push(
-        `tool.yaml requires '${reqName}' but impl.sh '# Requires-Env:' header omits ${reqName.toUpperCase()}`,
+        `tool.yaml requires '${requirementName}' but impl.sh '# Requires-Env:' header omits ${requirementName.toUpperCase()}`,
       );
     }
   }
-  for (const reqName of header.requires) {
-    if (!expectedRequires.has(reqName)) {
+  for (const requirementName of header.requires) {
+    if (!expectedRequires.has(requirementName)) {
       errors.push(
-        `impl.sh '# Requires-Env:' lists ${reqName.toUpperCase()} but tool.yaml doesn't require it`,
+        `impl.sh '# Requires-Env:' lists ${requirementName.toUpperCase()} but tool.yaml doesn't require it`,
       );
     }
   }
 
   if (errors.length > 0) {
     throw new Error(
-      `Signature mismatch for tool '${descriptor.name}' at ${implPath}:\n  - ${errors.join('\n  - ')}`,
+      `Signature mismatch for tool '${descriptor.name}' at ${implementationPath}:\n  - ${errors.join('\n  - ')}`,
     );
   }
 }

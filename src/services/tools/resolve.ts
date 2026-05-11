@@ -78,9 +78,9 @@ print(list(spec.submodule_search_locations)[0])
     const { stdout } = await execFile('python3', ['-c', probe], { env });
     return stdout.trim();
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Failed to locate Python package '${packageName}' (from agentDir=${agentDir}): ${msg}`,
+      `Failed to locate Python package '${packageName}' (from agentDir=${agentDir}): ${message}`,
     );
   }
 }

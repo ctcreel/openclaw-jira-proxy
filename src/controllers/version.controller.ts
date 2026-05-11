@@ -11,9 +11,9 @@ import { getAgentVersion } from '../services/version.service';
  * See `openspec/changes/spe-2078-tool-use/specs/agent-versioning/spec.md`,
  * Requirement: Version Endpoint.
  */
-export function handleGetVersion(_req: Request, res: Response): void {
+export function handleGetVersion(_request: Request, response: Response): void {
   const version = getAgentVersion();
-  res.json({
+  response.json({
     agent_version: version.hash,
     repos: version.repos,
   });

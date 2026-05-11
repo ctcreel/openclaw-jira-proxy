@@ -24,7 +24,7 @@ async function runGit(args: readonly string[]): Promise<string> {
     const { stdout } = await execFile('git', [...args]);
     return stdout;
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`git ${args.join(' ')} failed: ${msg}`);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`git ${args.join(' ')} failed: ${message}`);
   }
 }
