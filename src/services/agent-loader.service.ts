@@ -16,6 +16,7 @@ import { agentMemorySchema, ruleMemorySchema } from './memory/config-schemas';
 import { listVectorStores } from './memory/vector-store';
 import { conditionSchema } from '../strategies/routing';
 import { listSessionKeyStrategies, sessionConfigSchema } from '../strategies/session-key';
+import { ruleToolsSchema } from './tools/config-schemas';
 
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
@@ -58,6 +59,14 @@ const agentRuleSchema = z.object({
    * Only honoured by the claude-cli runner today; other runners ignore.
    */
   maxTurns: z.number().int().positive().optional(),
+  /**
+   * Agent-callable tools available to this rule's runs. Each entry is one
+   * of `module.python:` (Python tool, dotted import path) or `module.bash:`
+   * (bash tool, dotted reference resolving to a workspace-relative dir).
+   * See `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`.
+   * Implemented per SPE-2078; supersedes the reverted SPE-2070 design.
+   */
+  tools: ruleToolsSchema.optional(),
 });
 
 const agentRoutingSchema = z.object({
