@@ -24,9 +24,9 @@ describe('resolveToolDirectory (bash)', () => {
   });
 
   it('throws when the bash tool directory does not exist', async () => {
-    await expect(
-      resolveToolDirectory({ 'module.bash': 'missing.dir' }, workDir),
-    ).rejects.toThrow(/Bash tool directory not found/);
+    await expect(resolveToolDirectory({ 'module.bash': 'missing.dir' }, workDir)).rejects.toThrow(
+      /Bash tool directory not found/,
+    );
   });
 });
 
@@ -63,10 +63,7 @@ describe('resolveToolDirectory (python)', () => {
 
   it('throws when the top-level python package is not importable', async () => {
     await expect(
-      resolveToolDirectory(
-        { 'module.python': 'definitely_not_a_real_package_xyz.tool' },
-        workDir,
-      ),
+      resolveToolDirectory({ 'module.python': 'definitely_not_a_real_package_xyz.tool' }, workDir),
     ).rejects.toThrow(/Failed to locate Python package/);
   });
 

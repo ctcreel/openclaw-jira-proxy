@@ -83,11 +83,11 @@ requires:
   });
 
   it('resolves credentials and materializes MCP files', async () => {
-    const bundle = await buildMCPBundle(
-      [{ 'module.bash': 'pkg.mytool' }],
-      workDir,
-      { agentId: 'a', routeId: 'r', requestId: 'req-load' },
-    );
+    const bundle = await buildMCPBundle([{ 'module.bash': 'pkg.mytool' }], workDir, {
+      agentId: 'a',
+      routeId: 'r',
+      requestId: 'req-load',
+    });
     expect(bundle).toBeDefined();
     expect(bundle?.mcpConfigPath).toMatch(/mcp-config\.json$/);
     const creds = JSON.parse(bundle?.env['CLAWNDOM_TOOL_CREDS'] ?? '{}') as Record<
@@ -95,20 +95,20 @@ requires:
       Record<string, string>
     >;
     expect(creds['pkg_mytool']?.api_token).toBe('xoxb-mock');
-    const toolConfig = JSON.parse(
-      await readFile(bundle?.toolConfigPath ?? '', 'utf-8'),
-    ) as { tools: Array<{ name: string; requires: string[] }> };
+    const toolConfig = JSON.parse(await readFile(bundle?.toolConfigPath ?? '', 'utf-8')) as {
+      tools: Array<{ name: string; requires: string[] }>;
+    };
     expect(toolConfig.tools[0]?.name).toBe('pkg_mytool');
     expect(toolConfig.tools[0]?.requires).toEqual(['api_token']);
     await cleanupMCPBundle(bundle);
   });
 
   it('cleanupMCPBundle removes the temp directory', async () => {
-    const bundle = await buildMCPBundle(
-      [{ 'module.bash': 'pkg.mytool' }],
-      workDir,
-      { agentId: 'a', routeId: 'r', requestId: 'req-cleanup' },
-    );
+    const bundle = await buildMCPBundle([{ 'module.bash': 'pkg.mytool' }], workDir, {
+      agentId: 'a',
+      routeId: 'r',
+      requestId: 'req-cleanup',
+    });
     const tempRoot = dirname(bundle?.mcpConfigPath ?? '');
     await cleanupMCPBundle(bundle);
     await expect(readFile(bundle?.mcpConfigPath ?? '', 'utf-8')).rejects.toThrow();
