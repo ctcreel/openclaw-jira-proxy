@@ -75,7 +75,13 @@ export async function executeToolCall(
   const latencyMs = Date.now() - startedAt;
   const secretValues = Object.values(credentials);
   const redactedArgs = redactCredentials(toolUse.input, secretValues);
-  const resultSummary = errorSummary === null ? truncateForAudit(result.content) : null;
+  // Result also passes through redaction — a tool that echoes its
+  // credential value back (whether by mistake or by adversary input)
+  // would otherwise leak it into the audit log via result_summary.
+  const resultSummary =
+    errorSummary === null
+      ? truncateForAudit(redactCredentials(result.content, secretValues))
+      : null;
 
   const record: AuditRecord = {
     timestamp: new Date().toISOString(),

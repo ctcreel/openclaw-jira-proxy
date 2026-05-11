@@ -138,13 +138,16 @@ class ToolRegistry:
 
         secret_values = list(creds.values())
         redacted_args = _redact_credentials(arguments, secret_values)
+        redacted_result = (
+            _redact_credentials(result, secret_values) if error_summary is None else None
+        )
         record = {
             "timestamp": _now_iso(),
             "agent_id": self.agent_id,
             "route_id": self.route_id,
             "tool_name": name,
             "args": redacted_args,
-            "result_summary": result if error_summary is None else None,
+            "result_summary": redacted_result,
             "error_summary": error_summary,
             "latency_ms": latency_ms,
             "request_id": self.request_id,
