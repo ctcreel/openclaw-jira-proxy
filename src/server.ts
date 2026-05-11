@@ -31,7 +31,6 @@ import { OnePasswordProvider } from './secrets/onepassword.provider';
 import { OAuthSecretProvider } from './secrets/oauth.provider';
 import { FileSecretProvider } from './secrets/file.provider';
 import { validateProviderEnvSecrets } from './secrets/validate-env-secrets';
-import { validateToolTemplates } from './lib/template/validate-tool-templates';
 import { SlackSocketTransport } from './strategies/transport';
 import type { Transport } from './strategies/transport';
 
@@ -317,21 +316,6 @@ async function startServer(): Promise<void> {
     { agents: agents.map((agent) => ({ name: agent.name, dir: agent.dir })) },
     'Agents loaded',
   );
-
-  // Boot validation for template `tools:` manifests — validates frontmatter
-  // shape, placeholder/declaration consistency, every `requires_env` entry
-  // resolves via SecretManager, and every declared module imports cleanly
-  // under the agent's shared-tools clone. Throws once with every offender
-  // listed; aborts startup. The runtime renderer (`render-tool-block.ts`)
-  // re-uses the same import path, so a misconfig here is a misconfig at
-  // first event too — fail at boot, not at first webhook.
-  const sharedToolsPathByAgent = new Map<string, string>();
-  for (const agent of agents) {
-    if (agent.sharedToolsPath !== undefined) {
-      sharedToolsPathByAgent.set(agent.name, agent.sharedToolsPath);
-    }
-  }
-  await validateToolTemplates(agents, secretManager, sharedToolsPathByAgent);
 
   const memoryNamespaces = await bootstrapMemoryService(agents, secretManager);
   const pruningScheduler = new MemoryPruningScheduler(memoryNamespaces);

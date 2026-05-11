@@ -78,14 +78,6 @@ export interface ResolvedAgent {
   readonly name: string;
   readonly dir: string;
   readonly config: AgentConfig;
-  /**
-   * Filesystem path to the agent's shared-tools clone, when the agent
-   * declared `sharedTools` in `AGENTS_CONFIG`. Used by the template engine
-   * as `PYTHONPATH` for the `{{tools}}` introspector and by boot validation
-   * for module-import checks. `undefined` when the agent has no
-   * `sharedTools` configured.
-   */
-  readonly sharedToolsPath?: string;
 }
 
 export interface GitClient {
@@ -174,12 +166,11 @@ export async function loadAgents(
       cloneByRepo.set(entry.repo, cloneDir);
     }
 
-    let sharedToolsPath: string | undefined;
     if (entry.sharedTools !== undefined) {
       const previous = sharedToolsByRepo.get(entry.repo);
       if (previous === undefined) {
-        sharedToolsPath = join(cloneDir, entry.sharedTools.path);
-        await git.clonePinned(entry.sharedTools.repo, sharedToolsPath, entry.sharedTools.ref);
+        const sharedDir = join(cloneDir, entry.sharedTools.path);
+        await git.clonePinned(entry.sharedTools.repo, sharedDir, entry.sharedTools.ref);
         sharedToolsByRepo.set(entry.repo, entry.sharedTools);
       } else if (
         previous.repo !== entry.sharedTools.repo ||
@@ -191,11 +182,6 @@ export async function loadAgents(
             `previously declared ${JSON.stringify(previous)}, ` +
             `agent ${entry.name} declared ${JSON.stringify(entry.sharedTools)}`,
         );
-      } else {
-        // Same agent repo, same sharedTools spec — share the path that the
-        // first agent in this repo materialised. Path is deterministic
-        // given (cloneDir, sharedTools.path) so reconstructing it is safe.
-        sharedToolsPath = join(cloneDir, entry.sharedTools.path);
       }
     }
 
@@ -208,12 +194,7 @@ export async function loadAgents(
     validateMemoryConfig(entry.name, config);
     validateSessionConfig(entry.name, config);
 
-    resolved.push({
-      name: entry.name,
-      dir: agentDir,
-      config,
-      ...(sharedToolsPath === undefined ? {} : { sharedToolsPath }),
-    });
+    resolved.push({ name: entry.name, dir: agentDir, config });
   }
 
   validateMemoryNamespaceUniqueness(resolved);

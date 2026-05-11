@@ -197,29 +197,4 @@ describe('renderTemplate', () => {
       ).rejects.toThrow(/escapes shared root/);
     });
   });
-
-  describe('frontmatter parsing', () => {
-    it('strips a leading `---` frontmatter block from the rendered body', async () => {
-      const template = ['---', 'tools: []', '---', 'visible body'].join('\n');
-      const result = await renderTemplate(template, {}, BASE_DIR);
-      expect(result.body).toBe('visible body');
-      expect(result.systemPrompt).toBe('');
-    });
-
-    it('treats a template without an opening fence as having no frontmatter', async () => {
-      const result = await renderTemplate('# heading\n\n---\nnot frontmatter', {}, BASE_DIR);
-      // The `---` mid-document is not parsed as a fence — body unchanged.
-      expect(result.body).toBe('# heading\n\n---\nnot frontmatter');
-    });
-
-    it('throws on malformed frontmatter (unclosed fence)', async () => {
-      const template = ['---', 'tools: []', 'no closing fence here'].join('\n');
-      await expect(renderTemplate(template, {}, BASE_DIR)).rejects.toThrow(/never closes it/);
-    });
-
-    it('throws when frontmatter declares an unknown top-level key (.strict() schema)', async () => {
-      const template = ['---', 'unknown_field: oops', '---', 'body'].join('\n');
-      await expect(renderTemplate(template, {}, BASE_DIR)).rejects.toThrow();
-    });
-  });
 });
