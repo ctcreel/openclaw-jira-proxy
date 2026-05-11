@@ -23,12 +23,12 @@ export function getAuditLogPath(): string {
 
 export async function writeAuditRecord(record: AuditRecord): Promise<void> {
   const path = getAuditLogPath();
-  await ensureParentDir(path);
+  await createParentDir(path);
   const line = `${JSON.stringify(record)}\n`;
   await appendFile(path, line, 'utf-8');
 }
 
-async function ensureParentDir(path: string): Promise<void> {
+async function createParentDir(path: string): Promise<void> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true });
 }

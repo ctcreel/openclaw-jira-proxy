@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { captureRepoVersion, type RepoVersion } from './git';
+import { readRepoVersion, type RepoVersion } from './git';
 
 /**
  * Deterministic composite version identifier for the running agent's behavior.
@@ -32,7 +32,7 @@ export interface AgentVersion {
 export async function computeAgentVersion(repos: readonly RepoInput[]): Promise<AgentVersion> {
   const captured: Array<{ name: string; version: RepoVersion }> = [];
   for (const repo of repos) {
-    const version = await captureRepoVersion(repo.path);
+    const version = await readRepoVersion(repo.path);
     captured.push({ name: repo.name, version });
   }
   captured.sort((a, b) => a.name.localeCompare(b.name));
@@ -48,6 +48,6 @@ export async function computeAgentVersion(repos: readonly RepoInput[]): Promise<
  * Returns the list of dirty repo names from an `AgentVersion`. Empty array
  * if everything is clean.
  */
-export function dirtyRepos(version: AgentVersion): string[] {
+export function listDirtyRepos(version: AgentVersion): string[] {
   return version.repos.filter((r) => r.dirty).map((r) => r.name);
 }

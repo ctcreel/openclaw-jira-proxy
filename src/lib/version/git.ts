@@ -13,7 +13,7 @@ export interface RepoVersion {
   readonly dirty: boolean;
 }
 
-export async function captureRepoVersion(repoPath: string): Promise<RepoVersion> {
+export async function readRepoVersion(repoPath: string): Promise<RepoVersion> {
   const sha = await runGit(['-C', repoPath, 'rev-parse', 'HEAD']);
   const status = await runGit(['-C', repoPath, 'status', '--porcelain']);
   return { sha: sha.trim(), dirty: status.trim().length > 0 };

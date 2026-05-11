@@ -1,37 +1,37 @@
 import { describe, it, expect } from 'vitest';
 
 import {
-  deriveToolName,
-  deriveInputSchema,
+  computeToolName,
+  buildInputSchema,
   toolYamlSchema,
   type ArgSpec,
 } from '../../../src/services/tools/descriptor';
 
-describe('deriveToolName', () => {
+describe('computeToolName', () => {
   it('joins the parent and tool segments with underscore', () => {
-    expect(deriveToolName('/abs/agency_tools/slack/post')).toBe('slack_post');
+    expect(computeToolName('/abs/agency_tools/slack/post')).toBe('slack_post');
   });
 
   it('strips a "tools" parent segment', () => {
-    expect(deriveToolName('/abs/winston_agent/tools/calendar_check')).toBe('calendar_check');
+    expect(computeToolName('/abs/winston_agent/tools/calendar_check')).toBe('calendar_check');
   });
 
   it('returns just the leaf when there is no parent', () => {
-    expect(deriveToolName('/standalone')).toBe('standalone');
+    expect(computeToolName('/standalone')).toBe('standalone');
   });
 
   it('tolerates trailing slash', () => {
-    expect(deriveToolName('/abs/agency_tools/slack/post/')).toBe('slack_post');
+    expect(computeToolName('/abs/agency_tools/slack/post/')).toBe('slack_post');
   });
 });
 
-describe('deriveInputSchema', () => {
+describe('buildInputSchema', () => {
   it('lists every arg in properties', () => {
     const args: Record<string, ArgSpec> = {
       channel: { type: 'string', description: 'Slack channel ID' },
       text: { type: 'string', description: 'Message text' },
     };
-    const schema = deriveInputSchema(args);
+    const schema = buildInputSchema(args);
     expect(schema.type).toBe('object');
     expect(Object.keys(schema.properties)).toEqual(['channel', 'text']);
     expect(schema.properties.channel?.type).toBe('string');
@@ -43,7 +43,7 @@ describe('deriveInputSchema', () => {
       text: { type: 'string', description: 'Message text' },
       thread_ts: { type: 'string', description: 'Optional thread ts', optional: true },
     };
-    const schema = deriveInputSchema(args);
+    const schema = buildInputSchema(args);
     expect(schema.required).toEqual(['channel', 'text']);
     expect(schema.required).not.toContain('thread_ts');
   });
@@ -52,7 +52,7 @@ describe('deriveInputSchema', () => {
     const args: Record<string, ArgSpec> = {
       foo: { type: 'string', description: 'optional foo', optional: true },
     };
-    const schema = deriveInputSchema(args);
+    const schema = buildInputSchema(args);
     expect(schema.required).toEqual([]);
   });
 });

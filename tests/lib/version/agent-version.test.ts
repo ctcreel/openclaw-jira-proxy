@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { computeAgentVersion, dirtyRepos } from '../../../src/lib/version/agent-version';
+import { computeAgentVersion, listDirtyRepos } from '../../../src/lib/version/agent-version';
 
 const execFile = promisify(execFileCallback);
 
@@ -56,7 +56,7 @@ describe('computeAgentVersion', () => {
 
     const result = await computeAgentVersion([{ name: 'repo', path: repo }]);
     expect(result.repos[0]?.dirty).toBe(true);
-    expect(dirtyRepos(result)).toEqual(['repo']);
+    expect(listDirtyRepos(result)).toEqual(['repo']);
   });
 
   it('produces a stable hash regardless of input order', async () => {
@@ -104,6 +104,6 @@ describe('computeAgentVersion', () => {
     await writeFile(join(repo, 'f'), 'x');
     await gitCommitAll(repo, 'init');
     const result = await computeAgentVersion([{ name: 'clean', path: repo }]);
-    expect(dirtyRepos(result)).toEqual([]);
+    expect(listDirtyRepos(result)).toEqual([]);
   });
 });

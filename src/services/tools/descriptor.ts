@@ -63,7 +63,7 @@ export interface ToolDescriptor {
  * Tool authors can override this with `name:` in `tool.yaml` if a different
  * API-facing name is needed (e.g. to match an existing Anthropic tool name).
  */
-export function deriveToolName(directory: string): string {
+export function computeToolName(directory: string): string {
   const segments = directory.split('/').filter(Boolean);
   const last = segments[segments.length - 1] ?? '';
   if (segments.length < 2) return last;
@@ -81,7 +81,7 @@ export function deriveToolName(directory: string): string {
  * tool-use API. `properties` keys map to the `args:` entries; `required`
  * contains every arg key WITHOUT `optional: true`.
  */
-export function deriveInputSchema(args: Record<string, ArgSpec>): {
+export function buildInputSchema(args: Record<string, ArgSpec>): {
   type: 'object';
   properties: Record<string, { type: ArgType; description: string }>;
   required: string[];

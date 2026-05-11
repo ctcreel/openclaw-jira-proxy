@@ -26,7 +26,7 @@ const logger = getLogger('tools-load');
  * See `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`,
  * Requirement: Structured Tool-Use Dispatch.
  */
-export async function prepareMCPBundle(
+export async function buildMCPBundle(
   tools: RuleTools | undefined,
   agentDir: string,
   context: BridgeContext,

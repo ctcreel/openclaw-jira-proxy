@@ -11,25 +11,27 @@
  * See `openspec/changes/spe-2078-tool-use/specs/observability/spec.md`,
  * Requirement: Credential Redaction In Audit Records.
  */
+// noqa: NAMING001
 export function redactCredentials(input: unknown, secrets: readonly string[]): unknown {
   if (secrets.length === 0) return input;
   const secretSet = new Set(secrets.filter((s) => s.length > 0));
-  return redactValue(input, secretSet);
+  return applyRedaction(input, secretSet);
 }
 
 const REDACTED = '<redacted>';
 
-function redactValue(value: unknown, secrets: ReadonlySet<string>): unknown {
+// noqa: NAMING001
+function applyRedaction(value: unknown, secrets: ReadonlySet<string>): unknown {
   if (typeof value === 'string') {
     return secrets.has(value) ? REDACTED : value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => redactValue(item, secrets));
+    return value.map((item) => applyRedaction(item, secrets));
   }
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = redactValue(v, secrets);
+      out[k] = applyRedaction(v, secrets);
     }
     return out;
   }

@@ -4,7 +4,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { ToolDescriptor } from './descriptor';
-import { deriveInputSchema } from './descriptor';
+import { buildInputSchema } from './descriptor';
 import { getAgentVersion } from '../version.service';
 
 /**
@@ -80,7 +80,7 @@ export async function buildMCPRunFiles(
       kind: d.kind,
       reference: d.reference,
       directory: d.directory,
-      inputSchema: deriveInputSchema(d.args),
+      inputSchema: buildInputSchema(d.args),
     })),
   };
   const toolConfigPath = join(workDir, 'tool-config.json');

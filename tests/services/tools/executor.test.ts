@@ -5,18 +5,16 @@ import { join } from 'node:path';
 
 import { executeToolCall } from '../../../src/services/tools/executor';
 import {
-  _resetAgentVersionCache,
+  resetAgentVersionCacheForTests,
   initializeAgentVersion,
 } from '../../../src/services/version.service';
 import type { ToolDescriptor } from '../../../src/services/tools/descriptor';
-
-const AUDIT_FIXTURE_VERSION = 'sha256:test-version';
 
 async function primeAgentVersion(repoPath: string): Promise<void> {
   // The executor calls getAgentVersion() to stamp records. We rely on a
   // real repo (the test repo) for the boot check; the helper uses the repo
   // path passed in.
-  _resetAgentVersionCache();
+  resetAgentVersionCacheForTests();
   // Initialize against the workdir itself (not a real git repo); the test
   // doesn't care about the resulting hash, only that the cache is primed.
   // We accept the warning about no .git by using process.cwd() which IS a
@@ -41,7 +39,7 @@ describe('executeToolCall (bash)', () => {
     if (originalAuditEnv === undefined) delete process.env['CLAWNDOM_AUDIT_LOG'];
     else process.env['CLAWNDOM_AUDIT_LOG'] = originalAuditEnv;
     await rm(workDir, { recursive: true, force: true });
-    _resetAgentVersionCache();
+    resetAgentVersionCacheForTests();
   });
 
   function makeBashDescriptor(): ToolDescriptor {
@@ -134,6 +132,94 @@ exit 1
     const record = JSON.parse(contents.trim()) as { error_summary: string };
     expect(record.error_summary).toContain('deliberate failure');
   });
+
+  it('truncates very long result_summary in the audit record', async () => {
+    const longString = 'x'.repeat(5000);
+    await writeFile(
+      join(workDir, 'impl.sh'),
+      [
+        '#!/usr/bin/env bash',
+        '# Args: ARG_VALUE',
+        '# Requires-Env: API_TOKEN',
+        `printf '%s' '"${longString}"'`,
+        '',
+      ].join('\n'),
+    );
+    await chmod(join(workDir, 'impl.sh'), 0o755);
+
+    await executeToolCall(
+      { name: 'echo_tool', input: { value: 'x' } },
+      makeBashDescriptor(),
+      { api_token: 't' },
+      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-4' },
+    );
+    const contents = await readFile(auditPath, 'utf-8');
+    const record = JSON.parse(contents.trim()) as { result_summary: string };
+    // 4KB cap + "…[truncated]" suffix means total length < 5000 but contains truncation marker.
+    expect(record.result_summary.length).toBeLessThan(5000);
+    expect(record.result_summary).toContain('[truncated]');
+  });
+
+  it('captures a spawn-error when the impl path is unrunnable', async () => {
+    // impl.sh doesn't exist at the descriptor's path.
+    const result = await executeToolCall(
+      { name: 'echo_tool', input: { value: 'x' } },
+      makeBashDescriptor(),
+      { api_token: 't' },
+      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-spawnerr' },
+    );
+    expect(result.isError).toBe(true);
+  });
+
+  it('truncates a non-string result (no truncation marker)', async () => {
+    // Tool returns an object — the truncate branch must NOT add a marker.
+    await writeFile(
+      join(workDir, 'impl.sh'),
+      [
+        '#!/usr/bin/env bash',
+        '# Args: ARG_VALUE',
+        '# Requires-Env: API_TOKEN',
+        `printf '{"ok": true, "value": "%s"}' "$ARG_VALUE"`,
+        '',
+      ].join('\n'),
+    );
+    await chmod(join(workDir, 'impl.sh'), 0o755);
+    await executeToolCall(
+      { name: 'echo_tool', input: { value: 'short' } },
+      makeBashDescriptor(),
+      { api_token: 't' },
+      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-obj' },
+    );
+    const contents = await readFile(auditPath, 'utf-8');
+    const record = JSON.parse(contents.trim()) as {
+      result_summary: { ok: boolean; value: string };
+    };
+    expect(record.result_summary).toEqual({ ok: true, value: 'short' });
+  });
+
+  it('times out a slow tool with a clear error', async () => {
+    await writeFile(
+      join(workDir, 'impl.sh'),
+      `#!/usr/bin/env bash
+sleep 5
+echo '{}'
+`,
+    );
+    await chmod(join(workDir, 'impl.sh'), 0o755);
+
+    const result = await executeToolCall(
+      { name: 'echo_tool', input: { value: 'x' } },
+      makeBashDescriptor(),
+      { api_token: 't' },
+      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-5' },
+      500, // 500ms timeout
+    );
+
+    expect(result.isError).toBe(true);
+    const contents = await readFile(auditPath, 'utf-8');
+    const record = JSON.parse(contents.trim()) as { error_summary: string };
+    expect(record.error_summary).toMatch(/timed out/);
+  });
 });
 
 describe('executeToolCall (python)', () => {
@@ -173,7 +259,7 @@ describe('executeToolCall (python)', () => {
     if (originalPythonPath === undefined) delete process.env['PYTHONPATH'];
     else process.env['PYTHONPATH'] = originalPythonPath;
     await rm(workDir, { recursive: true, force: true });
-    _resetAgentVersionCache();
+    resetAgentVersionCacheForTests();
   });
 
   it('dispatches a python tool with credentials as kwargs', async () => {

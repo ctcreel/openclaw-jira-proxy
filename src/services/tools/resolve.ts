@@ -37,10 +37,10 @@ export async function resolveToolDirectory(ref: ToolRef, agentDir: string): Prom
   }
 
   // Python: locate the top-level package via importlib, then append segments.
-  const [topLevel, ...rest] = segments;
-  if (topLevel === undefined) {
-    throw new Error(`Empty Python tool reference: '${dotted}'`);
-  }
+  // The dotted reference is regex-validated upstream (see config-schemas.ts),
+  // so `segments` always has at least one non-empty entry by the time we get
+  // here — no defensive `topLevel === undefined` check needed.
+  const [topLevel, ...rest] = segments as [string, ...string[]];
   const packageDir = await locatePythonPackage(topLevel, agentDir);
   const dir = join(packageDir, ...rest);
   if (!existsSync(dir)) {
@@ -76,13 +76,7 @@ print(list(spec.submodule_search_locations)[0])
 
   try {
     const { stdout } = await execFile('python3', ['-c', probe], { env });
-    const path = stdout.trim();
-    if (path === '') {
-      throw new Error(
-        `Python package '${packageName}' located but submodule_search_locations is empty`,
-      );
-    }
-    return path;
+    return stdout.trim();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(

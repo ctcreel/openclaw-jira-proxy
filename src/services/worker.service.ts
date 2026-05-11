@@ -11,7 +11,7 @@ import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
-import { prepareMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
+import { buildMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
 import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
@@ -339,7 +339,7 @@ export async function processJob(
   // and materializes the per-run --mcp-config + tool-config files. The
   // bundle's env carries CLAWNDOM_TOOL_CREDS (JSON) so the spawned MCP
   // server has the resolved values; the agent never sees them.
-  const mcpBundle = await prepareMCPBundle(resolved.rule.tools, agentDir, {
+  const mcpBundle = await buildMCPBundle(resolved.rule.tools, agentDir, {
     agentId,
     routeId: `${provider.name}:${resolved.rule.name ?? '<unnamed>'}`,
     requestId: traceId,

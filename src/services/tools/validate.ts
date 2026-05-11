@@ -160,7 +160,7 @@ function parseBashHeader(contents: string): BashHeader {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean)) {
-        args.add(stripEnvPrefix(name, 'ARG_'));
+        args.add(parseEnvVarName(name, 'ARG_'));
       }
       continue;
     }
@@ -170,7 +170,7 @@ function parseBashHeader(contents: string): BashHeader {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean)) {
-        optional.add(stripEnvPrefix(name, 'ARG_'));
+        optional.add(parseEnvVarName(name, 'ARG_'));
       }
       continue;
     }
@@ -189,7 +189,7 @@ function parseBashHeader(contents: string): BashHeader {
   return { args, optional, requires };
 }
 
-function stripEnvPrefix(name: string, prefix: string): string {
+function parseEnvVarName(name: string, prefix: string): string {
   // Header uses ARG_CHANNEL (env var form); descriptor uses 'channel' (lower).
   // Strip the prefix and lowercase for comparison.
   if (name.startsWith(prefix)) {

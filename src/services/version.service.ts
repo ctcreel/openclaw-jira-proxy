@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { getLogger } from '../lib/logging';
 import {
   computeAgentVersion,
-  dirtyRepos,
+  listDirtyRepos,
   type AgentVersion,
   type RepoInput,
 } from '../lib/version/agent-version';
@@ -26,10 +26,10 @@ export async function initializeAgentVersion(
   agentDirs: readonly string[],
   clawndomCheckout: string = process.cwd(),
 ): Promise<AgentVersion> {
-  const repos = await discoverRepos(agentDirs, clawndomCheckout);
+  const repos = await findRepos(agentDirs, clawndomCheckout);
   const version = await computeAgentVersion(repos);
 
-  const dirty = dirtyRepos(version);
+  const dirty = listDirtyRepos(version);
   if (dirty.length > 0) {
     logger.warn(
       { repos: dirty, hash: version.hash },
@@ -64,7 +64,7 @@ export function getAgentVersion(): AgentVersion {
 }
 
 /** For tests only. */
-export function _resetAgentVersionCache(): void {
+export function resetAgentVersionCacheForTests(): void {
   cached = undefined;
 }
 
@@ -73,7 +73,7 @@ export function _resetAgentVersionCache(): void {
  * Walks up from each agent directory to find `.git`; dedupes by canonical
  * repo path; includes the Clawndom checkout.
  */
-async function discoverRepos(
+async function findRepos(
   agentDirs: readonly string[],
   clawndomCheckout: string,
 ): Promise<RepoInput[]> {
@@ -81,14 +81,14 @@ async function discoverRepos(
 
   const clawndomRoot = await findRepoRoot(clawndomCheckout);
   if (clawndomRoot !== undefined) {
-    seen.set(clawndomRoot, { name: deriveRepoName(clawndomRoot), path: clawndomRoot });
+    seen.set(clawndomRoot, { name: computeRepoName(clawndomRoot), path: clawndomRoot });
   }
 
   for (const agentDir of agentDirs) {
     const root = await findRepoRoot(agentDir);
     if (root === undefined) continue;
     if (!seen.has(root)) {
-      seen.set(root, { name: deriveRepoName(root), path: root });
+      seen.set(root, { name: computeRepoName(root), path: root });
     }
   }
 
@@ -96,7 +96,7 @@ async function discoverRepos(
   // the agent-loader as a sibling directory of an agent workspace). Each
   // such sibling that contains a `.git` directory is its own repo.
   for (const agentDir of agentDirs) {
-    await collectSiblingRepos(agentDir, seen);
+    await findSiblingRepos(agentDir, seen);
   }
 
   return Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name));
@@ -116,7 +116,7 @@ async function findRepoRoot(start: string): Promise<string | undefined> {
   return undefined;
 }
 
-async function collectSiblingRepos(agentDir: string, seen: Map<string, RepoInput>): Promise<void> {
+async function findSiblingRepos(agentDir: string, seen: Map<string, RepoInput>): Promise<void> {
   // Climb to the agent's repo root, then list its parent — sibling
   // directories that themselves contain `.git` are independent tool repos
   // (e.g. agency-tools cloned alongside winston-agency).
@@ -140,13 +140,13 @@ async function collectSiblingRepos(agentDir: string, seen: Map<string, RepoInput
     }
     if (existsSync(join(candidate, '.git'))) {
       if (!seen.has(candidate)) {
-        seen.set(candidate, { name: deriveRepoName(candidate), path: candidate });
+        seen.set(candidate, { name: computeRepoName(candidate), path: candidate });
       }
     }
   }
 }
 
-function deriveRepoName(repoPath: string): string {
+function computeRepoName(repoPath: string): string {
   // Use the directory basename for the repo name. This is what `agent_version`
   // serializes in its hash; sibling repos with the same basename would collide
   // but in practice each repo lives under a unique parent path.
