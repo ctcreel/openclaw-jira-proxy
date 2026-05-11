@@ -61,6 +61,28 @@ export interface RunOptions {
    * field; the worker forwards it here. Other runners ignore.
    */
   maxTurns?: number;
+  /**
+   * SPE-2078: per-run tool registration. When present, the runner is
+   * expected to expose these tools to the model via the Anthropic tool-use
+   * protocol (claude-cli does this via MCP-server registration in the
+   * MCPBundle.mcpConfigPath). Each tool's `requires:` credentials live in
+   * `mcpBundle.env.CLAWNDOM_TOOL_CREDS` (JSON-encoded) and are passed to
+   * the MCP server, never to the agent's prompt context. Runners that
+   * don't support tool-use (e.g. `openai`, `bedrock` today) MUST ignore.
+   */
+  mcpBundle?: ToolMCPBundle;
+}
+
+/**
+ * Output of `buildMCPRunFiles` from `src/services/tools/mcp-bridge.ts`.
+ * Carries the on-disk paths the claude CLI needs (`--mcp-config`) plus
+ * the env vars the MCP server reads at startup. Caller is responsible
+ * for cleanup of the parent temp dir after the run completes.
+ */
+export interface ToolMCPBundle {
+  readonly mcpConfigPath: string;
+  readonly toolConfigPath: string;
+  readonly env: Record<string, string>;
 }
 
 /**

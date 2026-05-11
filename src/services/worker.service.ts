@@ -11,6 +11,7 @@ import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
+import { prepareMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
 import { extractWebhookContext } from '../strategies/context';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
@@ -333,6 +334,17 @@ export async function processJob(
     traceId,
   );
 
+  // SPE-2078: build the MCP bundle when this route declares tools.
+  // Resolves each tool's `requires:` credentials via the SecretManager
+  // and materializes the per-run --mcp-config + tool-config files. The
+  // bundle's env carries CLAWNDOM_TOOL_CREDS (JSON) so the spawned MCP
+  // server has the resolved values; the agent never sees them.
+  const mcpBundle = await prepareMCPBundle(resolved.rule.tools, agentDir, {
+    agentId,
+    routeId: `${provider.name}:${resolved.rule.name ?? '<unnamed>'}`,
+    requestId: traceId,
+  });
+
   const result = await dispatchToRunner(runner, {
     prompt,
     sessionKey,
@@ -343,6 +355,7 @@ export async function processJob(
     jobId: jobIdString,
     ...(envOverlay ? { env: envOverlay } : {}),
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+    ...(mcpBundle === undefined ? {} : { mcpBundle }),
     // Quota-pause recovery: when the prior run captured a session_id and
     // got walled by upstream, the requeued envelope carries that id so
     // this pickup resumes the same conversation instead of replanning.
@@ -354,6 +367,7 @@ export async function processJob(
     sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
     sessionUserMessage,
   });
+  await cleanupMCPBundle(mcpBundle);
 
   if (result.status === 'quota_exceeded') {
     await handleQuotaExceeded(
