@@ -10,7 +10,9 @@ import {
 describe('toolRefSchema', () => {
   describe('module.python', () => {
     it('accepts a valid dotted Python reference', () => {
-      expect(() => toolRefSchema.parse({ 'module.python': 'agency_tools.slack.post' })).not.toThrow();
+      expect(() =>
+        toolRefSchema.parse({ 'module.python': 'agency_tools.slack.post' }),
+      ).not.toThrow();
     });
 
     it('accepts a single-segment Python reference', () => {
@@ -18,9 +20,9 @@ describe('toolRefSchema', () => {
     });
 
     it('rejects a Python reference containing hyphens', () => {
-      expect(() =>
-        toolRefSchema.parse({ 'module.python': 'agency_tools.slack-post' }),
-      ).toThrow(/Python tool reference/);
+      expect(() => toolRefSchema.parse({ 'module.python': 'agency_tools.slack-post' })).toThrow(
+        /Python tool reference/,
+      );
     });
 
     it('rejects a Python reference with leading dot', () => {
@@ -52,9 +54,7 @@ describe('toolRefSchema', () => {
     });
 
     it('accepts underscores in bash reference segments', () => {
-      expect(() =>
-        toolRefSchema.parse({ 'module.bash': 'winston_agent.tool_name' }),
-      ).not.toThrow();
+      expect(() => toolRefSchema.parse({ 'module.bash': 'winston_agent.tool_name' })).not.toThrow();
     });
 
     it('rejects a bash reference with leading hyphen on a segment', () => {

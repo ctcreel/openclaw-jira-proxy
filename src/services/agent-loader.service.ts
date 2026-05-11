@@ -16,7 +16,9 @@ import { agentMemorySchema, ruleMemorySchema } from './memory/config-schemas';
 import { listVectorStores } from './memory/vector-store';
 import { conditionSchema } from '../strategies/routing';
 import { listSessionKeyStrategies, sessionConfigSchema } from '../strategies/session-key';
-import { ruleToolsSchema } from './tools/config-schemas';
+import { ruleToolsSchema, type ToolRef } from './tools/config-schemas';
+import { loadToolDescriptor } from './tools/parse';
+import { validateToolSignature } from './tools/validate';
 
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
@@ -202,6 +204,7 @@ export async function loadAgents(
 
     validateMemoryConfig(entry.name, config);
     validateSessionConfig(entry.name, config);
+    await validateToolsConfig(entry.name, config, agentDir);
 
     resolved.push({ name: entry.name, dir: agentDir, config });
   }
@@ -301,6 +304,57 @@ export function getAgentDefaultMemoryNamespace(agent: ResolvedAgent): string | u
   if (!namespaces) return undefined;
   const keys = Object.keys(namespaces);
   return keys.length > 0 ? keys[0] : undefined;
+}
+
+/**
+ * Boot-time validation for `routing.<provider>.rules[].tools:` declarations.
+ * For each declared tool: resolve the directory, parse `tool.yaml`, and run
+ * the signature validator that matches the tool's kind. Also reject duplicate
+ * derived tool names within a rule so the Anthropic API registration can't
+ * collide.
+ *
+ * Failing here at boot is the contract that catches YAML↔helper drift before
+ * any agent invokes the tool. See
+ * `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`.
+ */
+async function validateToolsConfig(
+  agentName: string,
+  config: AgentConfig,
+  agentDir: string,
+): Promise<void> {
+  for (const [providerName, providerRouting] of Object.entries(config.routing)) {
+    for (const rule of providerRouting.rules) {
+      const tools: readonly ToolRef[] = rule.tools ?? [];
+      if (tools.length === 0) continue;
+      const ruleLabel = rule.name ?? '<unnamed>';
+      const seenNames = new Set<string>();
+      for (const toolRef of tools) {
+        let descriptor;
+        try {
+          descriptor = await loadToolDescriptor(toolRef, agentDir);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${msg}`,
+          );
+        }
+        if (seenNames.has(descriptor.name)) {
+          throw new Error(
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": duplicate tool name '${descriptor.name}' (set explicit 'name:' in tool.yaml to disambiguate)`,
+          );
+        }
+        seenNames.add(descriptor.name);
+        try {
+          await validateToolSignature(descriptor);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${msg}`,
+          );
+        }
+      }
+    }
+  }
 }
 
 /**
