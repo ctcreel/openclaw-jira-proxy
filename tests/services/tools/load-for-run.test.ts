@@ -123,10 +123,11 @@ describe('cleanupMCPBundle', () => {
 
   it('swallows errors from missing temp dirs', async () => {
     // Passing a bundle whose temp dir doesn't exist should not throw.
+    const missingRoot = join(tmpdir(), 'spe-2078-nonexistent-cleanup');
     await expect(
       cleanupMCPBundle({
-        mcpConfigPath: '/tmp/nonexistent-spe-2078/mcp-config.json',
-        toolConfigPath: '/tmp/nonexistent-spe-2078/tool-config.json',
+        mcpConfigPath: join(missingRoot, 'mcp-config.json'),
+        toolConfigPath: join(missingRoot, 'tool-config.json'),
         env: {},
       }),
     ).resolves.toBeUndefined();

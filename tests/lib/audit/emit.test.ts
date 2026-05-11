@@ -79,9 +79,10 @@ describe('writeAuditRecord', () => {
 describe('getAuditLogPath', () => {
   it('uses the env override when set', () => {
     const previous = process.env['CLAWNDOM_AUDIT_LOG'];
-    process.env['CLAWNDOM_AUDIT_LOG'] = '/tmp/custom/audit.log';
+    const customPath = join(tmpdir(), 'spe-2078-audit-env-override', 'audit.log');
+    process.env['CLAWNDOM_AUDIT_LOG'] = customPath;
     try {
-      expect(getAuditLogPath()).toBe('/tmp/custom/audit.log');
+      expect(getAuditLogPath()).toBe(customPath);
     } finally {
       if (previous === undefined) {
         delete process.env['CLAWNDOM_AUDIT_LOG'];

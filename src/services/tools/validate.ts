@@ -154,7 +154,7 @@ function parseBashHeader(contents: string): BashHeader {
     if (line.trim() === '') continue;
     if (!line.startsWith('#')) break; // End of leading comment block.
     const stripped = line.replace(/^#\s*/, '');
-    const argsMatch = /^Args:\s*(.+)$/i.exec(stripped);
+    const argsMatch = /^Args:\s*([^\n]+)$/i.exec(stripped);
     if (argsMatch?.[1] !== undefined) {
       for (const name of argsMatch[1]
         .split(',')
@@ -164,7 +164,7 @@ function parseBashHeader(contents: string): BashHeader {
       }
       continue;
     }
-    const optionalMatch = /^Optional:\s*(.+)$/i.exec(stripped);
+    const optionalMatch = /^Optional:\s*([^\n]+)$/i.exec(stripped);
     if (optionalMatch?.[1] !== undefined) {
       for (const name of optionalMatch[1]
         .split(',')
@@ -174,7 +174,7 @@ function parseBashHeader(contents: string): BashHeader {
       }
       continue;
     }
-    const requiresMatch = /^Requires-Env:\s*(.+)$/i.exec(stripped);
+    const requiresMatch = /^Requires-Env:\s*([^\n]+)$/i.exec(stripped);
     if (requiresMatch?.[1] !== undefined) {
       for (const name of requiresMatch[1]
         .split(',')
