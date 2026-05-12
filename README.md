@@ -1,206 +1,249 @@
 # clawndom
 
-## Why
+The runtime that hosts sc0red's agent fleet — receives events, renders prompts, dispatches Claude / OpenAI / Bedrock runs against agent workspaces cloned from Git. Webhooks, scheduled tasks, internal task envelopes, and Slack Socket Mode all land here.
 
-You've got OpenClaw agents reacting to external events — Jira transitions, GitHub pushes, Linear updates. The problem: these services don't send one webhook at a time. A Jira board reorganization fires 10 events in 2 seconds. A GitHub merge triggers webhooks for the push, the PR close, the deployment, and the status checks. Each event wakes an agent, each agent calls an LLM API, and suddenly you're rate-limited, runs are failing, and you're burning tokens on retries.
+## What clawndom is
 
-clawndom sits between your webhook sources and OpenClaw. It accepts events, validates them, and queues them — but the key thing is it **waits for each agent run to actually finish** before letting the next event through. Not "wait for OpenClaw to accept the POST" — wait for the agent to complete its work, send its messages, and go idle. One run at a time. No bursts. No rate limits. No wasted spend.
+A long-running Node service that loads one or more **agent workspaces** at boot (each is a Git repo specified in `AGENTS_CONFIG`), reads each workspace's `clawndom.yaml` for routing rules, and dispatches every matching event into a per-agent BullMQ queue. The worker renders the rule's Nunjucks template, spawns the chosen runner (today the production runner is `claude-cli`), waits for the run to reach a terminal state, and emits structured audit + observability data the whole time.
 
-It also solves the auth gap: most webhook providers (Jira, GitHub) can't send bearer tokens. They sign payloads with HMAC instead. clawndom validates the signature, then forwards to OpenClaw with proper auth.
+Three dispatch surfaces, one engine:
 
-**Use clawndom if:**
-- Your OpenClaw agents are triggered by external webhooks
-- Those webhooks arrive in bursts (most do)
-- You're hitting LLM API rate limits or seeing dropped/duplicate runs
-- Your webhook source can't send bearer auth (needs HMAC validation)
+- **Webhook** — third-party services POST to `/hooks/<provider>`. HMAC-validated per provider (`websub` for Jira, `github`, `slack`, `bearer` for trusted callers). Used by Jira, GitHub, Slack, Gmail Push.
+- **Slack Socket Mode** — for Slack apps that need to receive `message.im`, `app_mention`, and assistant-thread events without a public ingress. Opened as an outbound WebSocket via `@slack/socket-mode`.
+- **Scheduled / internal tasks** — `routing.schedule` rules fire on cron (BullMQ repeatable jobs). `/api/tasks` accepts a bearer-authenticated POST that dispatches a `taskType` against `routing.internal` rules. SPE-1981's registry stores durable schedule entries that survive a restart.
 
-**You don't need clawndom if:**
-- Your agents are only triggered by chat messages or scheduled tasks
-- You're running a single webhook source with low volume
-- You're fine with fire-and-forget delivery (no completion tracking)
+Each agent gets its own per-provider BullMQ queue; a Redis-backed global semaphore caps total concurrent runs across all providers (default 1) so a single Anthropic API key isn't spammed by parallel bursts.
 
-## How It Works
+## Architecture at a glance
 
 ```
-Third-Party Service (Jira, GitHub, etc.)
-    │
-    │  POST /hooks/:provider  (HMAC signature)
-    ▼
-Tailscale Funnel (public HTTPS → local port)
-    │
-    ▼
-clawndom :8792
-    │
-    │  1. Validate HMAC signature (per-provider strategy)
-    │  2. Enqueue in BullMQ (per-provider queue)
-    │  3. Return 202
-    │
-    ▼
-Redis (BullMQ queue: "webhooks:<provider>")
-    │
-    │  Worker (concurrency: 1 per provider, global semaphore)
-    │
-    ▼
-OpenClaw Gateway :18789
-    │  POST /hooks/agent  → { ok: true, runId }
-    │  WS   agent.wait    → { status: "ok"|"error"|"timeout" }
-    ▼
-  Terminal state → release job → next event
+Inbound:
+    Webhook (Jira / GitHub / Slack / Gmail Push)
+    Slack Socket Mode (WS, inbound only)
+    POST /api/tasks (bearer)
+    routing.schedule cron firings
+              │
+              ▼
+    Match an agent + a rule via clawndom.yaml
+              │
+              ▼
+    Render Nunjucks template + system-doc injections
+              │
+              ▼
+    Enqueue on BullMQ queue (per agent + per provider)
+              │
+              │   Worker (concurrency 1 per provider, global semaphore)
+              ▼
+    Spawn runner (claude-cli today; openai / bedrock / shell / null also wired)
+              │
+              ▼
+    Stream stdout, parse session JSON, write audit records,
+    emit SSE events for the dashboard, hold the queue until
+    the run reaches a terminal state.
 ```
 
-### The Serialization Problem
+The agent workspace is the source of truth for prompts, identity, and routing — clawndom is the dispatcher.
 
-External webhooks arrive in bursts. A Jira board transition can fire 5 events in 2 seconds. Each event triggers an OpenClaw agent run, and each run consumes Anthropic API tokens. Without throttling, bursts cause rate limiting, dropped runs, and wasted spend.
+## SPE-2078 route-side tool-use
 
-clawndom solves this by making the BullMQ worker completion-aware: it doesn't just fire-and-forget the POST to OpenClaw — it holds the job open until `agent.wait` confirms the run reached a terminal state. Only then does BullMQ dequeue the next event.
+When a routing rule declares `tools:`, clawndom resolves each tool's `secrets:` via `SECRETS_CONFIG`, materializes a mode-600 credentials file inside a per-run temp directory, and registers a clawndom-tools MCP server with the spawned claude-cli via `--mcp-config`. The MCP server reads the credentials file at startup, unlinks it, and dispatches every `tool_use` block to the tool's `impl.py` over stdio JSON-RPC. Every dispatch lands a redacted audit record at `$CLAWNDOM_AUDIT_LOG`.
 
-A Redis-backed global semaphore caps total concurrent runs across all providers (default: 1).
+The literal credential value never enters the agent process's environment, the prompt context, or `/proc/<pid>/environ`. See `docs/REGULATED_BUYER_READINESS.md` for the full design.
+
+## Agent workspaces
+
+`AGENTS_CONFIG` lists one or more agents:
+
+```json
+[
+  {
+    "name": "winston",
+    "repo": "git@github.com:ctcreel/winston-agency.git",
+    "path": "workspaces/winston",
+    "sharedTools": {
+      "repo": "git@github.com:SC0RED/agency-tools.git",
+      "ref": "v1.4.1",
+      "path": "agency-tools"
+    }
+  }
+]
+```
+
+At boot, clawndom clones each `repo` at `main` (or the pinned `ref`) under `CLAWNDOM_CONFIG_DIR`, plus the `sharedTools` repo as a sibling. Each agent's workspace exposes:
+
+- `clawndom.yaml` — routing rules + per-rule tools + memory namespace declarations
+- `templates/` — Nunjucks templates (one per route)
+- `docs/` — `IDENTITY.md`, `SOUL.md`, and any policy / identity docs the templates inject
+- `team.json` (Winston) or `workspaces/shared/docs/` (the-agency) — shared identity / reference data
+
+A 5-minute systemd timer (`clawndom-sync-agents.timer` on the Patches box) `git pull`s each agent repo; pushes to `main` reach the agent without a clawndom restart. Winston's box doesn't run the timer — Winston restarts manually on config changes.
 
 ## Prerequisites
 
 - Node.js 22+
 - pnpm 10+ (`corepack enable`)
-- Redis (for BullMQ job queue and concurrency semaphore)
-- Tailscale with Funnel enabled (to expose routes to external services)
-- OpenClaw gateway running locally (default `127.0.0.1:18789`)
+- Redis (BullMQ job queue + concurrency semaphore + scheduled-tasks registry)
+- Tailscale with Funnel enabled (HTTPS ingress for webhook providers)
+- 1Password Service Account (resolves `SECRETS_CONFIG` references at boot via `op` CLI)
+- A claude-cli binary on `$PATH` (default `/usr/bin/claude`) or a custom runner
 
 ## Installation
 
-Clawndom runs on a dedicated EC2 host in `sc0red-dev` (us-east-1). Infrastructure (VPC wiring, systemd units, Redis, Tailscale) is under `infra/ec2/` — `cloudformation.yaml` provisions the instance, `bootstrap.sh` sets it up, and GitHub Actions (`deploy-ec2.yml`) ships every push to `main` via `scripts/deploy.sh`.
+clawndom runs on a dedicated EC2 host in `sc0red-dev` (us-east-1). Infrastructure (VPC wiring, systemd units, Redis, Tailscale) is under `infra/ec2/` — `cloudformation.yaml` provisions a `t3.small` / `t3.medium`, `bootstrap.sh` sets it up, and GitHub Actions (`deploy-ec2.yml`) ships every push to `main` via `scripts/deploy.sh`.
 
 For a new instance: deploy the CloudFormation stack, SSH in, run `infra/ec2/bootstrap.sh`, **register the per-instance SSH deploy key it prints as a read-only deploy key on `SC0RED/clawndom`** (Settings → Deploy keys → Add new — without this, `git fetch` from the `clawndom` user fails and the deploy workflow breaks), then follow the printed next steps (Tailscale up, populate `/etc/clawndom/clawndom.env`, `claude login`, `scripts/sync-agents.sh`, `scripts/deploy.sh`).
 
+Winston's EC2 is provisioned the same way with its own `clawndom-winston.service` unit and a separate `/etc/clawndom-winston/clawndom.env`. The clawndom binary is shared; only the env file + workspace differ.
+
 ## Configuration
 
-### Environment Variables
+### Core env
 
-#### Required
-
-| Variable | Description |
-|---|---|
-| `OPENCLAW_TOKEN` | Bearer token for OpenClaw API authentication |
-
-#### Optional
-
-| Variable | Default | Description |
+| Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `8792` | HTTP server port |
-| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection URL |
-| `OPENCLAW_GATEWAY_WS_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL for `agent.wait` RPC |
-| `MAX_CONCURRENT_RUNS` | `1` | Global concurrency limit across all providers |
-| `AGENT_WAIT_TIMEOUT_MS` | `1800000` | Timeout for `agent.wait` calls (30 min) |
-| `NODE_ENV` | `development` | Environment name |
-| `SERVICE_NAME` | `clawndom` | Service identifier for structured logging |
-| `LOG_LEVEL` | `info` | Log level (debug, info, warn, error, fatal) |
-| `LOG_FORMAT` | `json` | Log format (json, human) |
-| `PROVIDERS_CONFIG` | — | JSON array of provider configurations (required, see below) |
+| `PORT` | `8792` | HTTP server port (production: `8793` Patches, `8794` Winston) |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis URL for BullMQ + semaphore + registry |
+| `CLAWNDOM_CONFIG_DIR` | — | Where agent workspaces are cloned at boot |
+| `CLAWNDOM_AGENT_TOKEN` | — | Bearer token for `/api/tasks` + agent → memory writes |
+| `MAX_CONCURRENT_RUNS` | `1` | Global concurrency cap across all providers |
+| `AGENT_WAIT_TIMEOUT_MS` | `1800000` | Per-run timeout (30 min) |
+| `CLAWNDOM_AUDIT_LOG` | `/var/log/clawndom-winston/audit.log` | Where SPE-2078 tool audit records land |
+| `NODE_ENV` | `development` | `production` enables optimizations |
+| `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | Pino logger config |
 
-> **systemd quoting:** when this file is loaded via `EnvironmentFile=` (the production setup on the EC2), every JSON-valued env var **must be wrapped in single quotes** or systemd's parser silently drops it. See [docs/guides/ENVIRONMENT_VARIABLES.md](docs/guides/ENVIRONMENT_VARIABLES.md#systemd-environmentfile-parsing--quote-your-json-values) for the full convention and the bundled `infra/ec2/validate-env.sh` self-check (SPE-2000).
+> **systemd quoting:** every JSON-valued env var in `EnvironmentFile=` MUST be wrapped in single quotes or systemd silently drops it. The bundled `infra/ec2/validate-env.sh` (SPE-2000) catches this before deploy.
 
-#### Provider Configuration
+### `AGENTS_CONFIG`
 
-All providers are defined in `PROVIDERS_CONFIG` as a JSON string. There are no hardcoded providers — every webhook source is configured the same way.
+JSON array. Each entry declares an agent's git source + optional `sharedTools`. Shape above.
+
+### `PROVIDERS_CONFIG`
+
+JSON array. Each entry declares one event ingress:
 
 ```json
 [
   {
     "name": "jira",
     "routePath": "/hooks/jira",
-    "hmacSecret": "your-jira-hmac-secret",
     "signatureStrategy": "websub",
-    "openclawHookUrl": "http://127.0.0.1:18789/hooks/jira"
+    "hmacSecret": "...",
+    "runner": {
+      "type": "claude-cli",
+      "workDirectory": "/home/clawndom/.clawndom/agents/SC0RED__the-agency/workspaces/patch",
+      "binary": "/usr/bin/claude"
+    },
+    "secrets": ["JIRA_HMAC"]
   },
   {
-    "name": "github",
-    "routePath": "/hooks/github",
-    "hmacSecret": "your-github-hmac-secret",
-    "signatureStrategy": "github",
-    "openclawHookUrl": "http://127.0.0.1:18789/hooks/agent"
+    "name": "slack-winston",
+    "transport": "slack-socket",
+    "contextStrategy": "slack",
+    "appTokenSecret": "SLACK_WINSTON_APP_TOKEN",
+    "botTokenSecret": "SLACK_WINSTON_BOT_TOKEN",
+    "envSecrets": ["GCP_SERVICE_ACCOUNT_KEY", "XERO_CLIENT_ID", "XERO_CLIENT_SECRET"],
+    "runner": { "type": "claude-cli", "workDirectory": "...", "binary": "/usr/bin/claude" }
   }
 ]
 ```
 
-Each provider declares:
-
-| Field | Description |
+| Field | Purpose |
 |---|---|
-| `name` | Unique identifier (used for queue naming, logging) |
-| `routePath` | Inbound route the proxy listens on |
-| `hmacSecret` | Shared secret for HMAC signature validation |
-| `signatureStrategy` | Which HMAC format to use (`websub`, `github`) |
-| `openclawHookUrl` | Where to forward validated events |
+| `name` | Stable identifier — queue suffix, log facet, semaphore key |
+| `routePath` | HTTP webhook path (omit for Slack Socket Mode) |
+| `transport` | `webhook` (default) or `slack-socket` |
+| `signatureStrategy` | `websub`, `github`, `slack`, or `bearer` |
+| `hmacSecret` | Per-provider HMAC secret (or the bearer token for `bearer`) |
+| `runner` | `{ type, workDirectory, binary }` — which runner + where to spawn |
+| `secrets` | `SECRETS_CONFIG` keys the runner needs at boot validation |
+| `envSecrets` | Keys injected into the agent subprocess env at run time |
+
+### `SECRETS_CONFIG`
+
+JSON array of `{ key, provider, reference }`. `provider: "onepassword"` looks up the secret via `op` CLI using the service account token in `OP_SERVICE_ACCOUNT_TOKEN`. Keys are `UPPER_CASE_ENV_VAR` style and must match the aliases in each tool's `tool.yaml` `secrets:` map.
 
 ### Tailscale Funnel
 
-Funnel allowlists each public path individually — there's no wildcard. Every provider's webhook route *and* every `/api/*` endpoint the dashboard consumes has to be registered explicitly, or the public URL returns a Funnel-level 404. Rules persist in Tailscale's own state, not in this repo.
+Each public path is allowlisted individually — there's no wildcard. Source of truth: [`infra/ec2/configure-tailscale-funnel.sh`](infra/ec2/configure-tailscale-funnel.sh). Re-run it on the box whenever the route list changes; the script resets and reapplies the full config so removed routes also disappear.
 
-Source of truth: [`infra/ec2/configure-tailscale-funnel.sh`](infra/ec2/configure-tailscale-funnel.sh). Re-run it on the box whenever the route list changes:
-
-```bash
-sudo bash /opt/clawndom/infra/ec2/configure-tailscale-funnel.sh
-```
-
-The script resets and reapplies the full configuration, so removed routes also disappear. Verify with `tailscale funnel status`.
-
-The endpoints currently funnelled (each must be in the script before code that depends on them ships):
-
-| Path | Why it's public |
-|---|---|
-| `/hooks/jira`, `/hooks/slack` | Webhook ingestion |
-| `/api/health` | Uptime monitors + dashboard status LED |
-| `/api/events` | Live SSE stream consumed by the dashboard |
-| `/api/jobs/active` | Active-job snapshot (legacy bootstrap) |
-| `/api/queue/snapshot` | Dashboard bootstrap — active + queued + recent + SSE replay anchor |
-| `/api/webhooks/skipped/recent` | Dashboard bootstrap — recently-rejected webhooks panel |
-
-## Webhook Setup by Provider
+## Webhook provider setup
 
 ### Jira
 
 1. Jira Settings → System → WebHooks
 2. URL: `https://<machine>.ts.net/hooks/jira`
-3. Enable desired events
-4. HMAC authentication with your `JIRA_HMAC_SECRET`
-5. Jira sends `X-Hub-Signature: sha256=<hex>` (WebSub format)
+3. Authenticated via HMAC — Jira sends `X-Hub-Signature: sha256=<hex>` (WebSub format)
 
 ### GitHub
 
-> **Before configuring the GitHub webhook**, add `/hooks/github` to the route list in `infra/ec2/configure-tailscale-funnel.sh` and re-run the script on the host. The default funnel inventory only registers Jira and Slack; without this step, GitHub will deliver to a 404.
-
-1. Repo Settings → Webhooks → Add webhook
+1. Repo Settings → Webhooks → Add webhook (or org-level for multi-repo)
 2. Payload URL: `https://<machine>.ts.net/hooks/github`
-3. Content type: `application/json`
-4. Secret: your `GITHUB_HMAC_SECRET`
-5. GitHub sends `X-Hub-Signature-256: sha256=<hex>`
+3. Content type: `application/json`, secret: your `GITHUB_HMAC_SECRET`
+4. GitHub sends `X-Hub-Signature-256: sha256=<hex>`
+
+> Before configuring any new public webhook, add its `routePath` to `infra/ec2/configure-tailscale-funnel.sh` and re-run on the host.
+
+### Slack (Socket Mode)
+
+No public URL needed — clawndom opens a WebSocket outbound. Configure the Slack app with `app_mentions:read`, `chat:write`, `assistant:write`, plus per-channel `*:history` scopes for the read tools. App + bot tokens go into `SECRETS_CONFIG` as `SLACK_<AGENT>_APP_TOKEN` / `SLACK_<AGENT>_BOT_TOKEN`.
+
+### Slack (HTTP webhook — legacy)
+
+For non-Socket-Mode usage, route via `/hooks/slack` with Slack's `v0` signature strategy.
+
+## Memory namespaces
+
+Each agent's `clawndom.yaml` can declare memory namespaces it wants:
+
+```yaml
+memory:
+  namespaces:
+    winston-personal:
+      embeddingProvider: openai
+      vectorStore: redis
+      pruneAfter: 365d
+      maxStoresPerRun: 5
+```
+
+The agent calls `/api/memory/store`, `/api/memory/search`, and `/api/memory/delete` via the `agency_tools.memory` Python client (or curl). Pruning is access-LRU; `maxStoresPerRun` caps runaway-loop write amplification.
+
+## Scheduled tasks
+
+Two ways to fire on a clock:
+
+1. **`routing.schedule` rules** in `clawndom.yaml` — declared at config time, fire via BullMQ repeatable jobs.
+2. **`/api/scheduled-tasks` (SPE-1981 registry)** — agents POST a `{ when, runner, payload }` envelope; the registry persists it in Redis and BullMQ owns the timing. Survives a clawndom restart.
 
 ## Development
 
 ```bash
-make dev          # Local server with hot reload
-make check        # Lint + test + security + naming
-make check-all    # Full validation (required before commit)
+make dev          # Local server with hot reload (lint-quick first)
+make check        # lint + test + test-infra + security + naming
+make check-all    # check + sonar — required before commit
 make format       # Auto-fix formatting
 ```
 
-## Health Check
+`make check-all` is the gate clawndom expects before any push to `main`. `make sonar` requires `SONAR_TOKEN` in env; it's non-blocking when run locally because the GitHub App also runs SonarCloud on every PR.
+
+## Health check
 
 ```
 GET /api/health
 ```
 
-Returns overall status plus individual checks for Redis, WebSocket gateway connection, and per-provider queue health.
+Returns overall status plus individual checks for application boot, secret manager readiness, and each registered runner.
 
 ```json
 {
   "status": "healthy",
   "checks": [
-    { "name": "redis", "status": "healthy" },
-    { "name": "gateway-websocket", "status": "healthy" },
-    { "name": "queue:jira", "status": "healthy" }
+    { "name": "application", "status": "healthy" },
+    { "name": "secrets", "status": "healthy" },
+    { "name": "runner:claude-cli", "status": "healthy" }
   ],
   "version": "0.2.0",
   "environment": "production",
-  "timestamp": "2026-03-28T13:00:00.000Z"
+  "timestamp": "2026-05-12T17:09:32.000Z"
 }
 ```
 
@@ -208,16 +251,19 @@ Returns overall status plus individual checks for Redis, WebSocket gateway conne
 
 Architecture and behavior are defined in OpenSpec format under `openspec/specs/`:
 
-| Spec | What it covers |
+| Spec | Covers |
 |---|---|
-| `webhook-proxy-domain` | Core domain: ingestion, signature validation, queuing, completion-aware processing, concurrency |
-| `testing` | Test strategy, coverage thresholds, mock patterns |
-| `api-design` | HTTP response contracts (RFC 7807 errors) |
-| `code-architecture` | Layered architecture, file size limits, dependency direction |
-| `error-handling` | Exception hierarchy, structured error responses |
-| `observability` | Structured logging, health checks |
+| `webhook-proxy-domain` | Webhook ingestion, signature validation, queuing, completion-aware processing |
+| `agent-runner-strategy` | Runner abstraction; how claude-cli / openai / bedrock plug in |
+| `agent-tool-use` | SPE-2078 route-side tool-use, MCP bridge, credential confinement, audit |
+| `agent-versioning` | How the audit log records the SHA of every agent repo for forensic replay |
 | `infrastructure` | EC2, systemd, Tailscale, Redis deployment |
-| `ci-cd` | GitHub Actions pipeline |
-| `enforcement` | Pre-commit hooks, CI quality gates |
+| `observability` | Pino structured logging, health checks, SSE event bus |
+| `error-handling` | Exception hierarchy, structured error responses (RFC 7807) |
 | `quality-framework` | Coverage thresholds, principles |
+| `testing` | Test strategy, coverage thresholds, mock patterns |
 | `developer-experience` | Makefile, tooling, onboarding |
+| `enforcement` | Pre-commit hooks, CI quality gates |
+| `ci-cd` | GitHub Actions pipeline |
+| `api-design` | HTTP response contracts |
+| `code-architecture` | Layered architecture, file size limits, dependency direction, runtime/application boundary |
