@@ -59,16 +59,16 @@ function collectAdditionalHeaders(
 /**
  * Returns the raw body when signature verification passes, otherwise
  * returns null after sending a 401/500 response. Callers short-circuit
- * on null.
+ * on null. Async because the OIDC strategy fetches Google's JWKs.
  */
-function verifyRequestSignature(
+async function verifyRequestSignature(
   request: Request,
   response: Response,
   provider: WebhookProviderConfig,
   strategy: SignatureStrategy,
   events: EventBus,
   traceId: string,
-): Buffer | null {
+): Promise<Buffer | null> {
   const signatureHeader = getStringHeader(request, strategy.headerName);
   if (signatureHeader === undefined) {
     logger.warn({ provider: provider.name }, `Missing ${strategy.headerName} header`);
@@ -83,7 +83,9 @@ function verifyRequestSignature(
     return null;
   }
 
-  if (!provider.hmacSecret) {
+  // OIDC verifies tokens against Google's JWKs and doesn't use a static
+  // shared secret, so hmacSecret is required only for the other strategies.
+  if (provider.signatureStrategy !== 'oidc' && !provider.hmacSecret) {
     logger.error({ provider: provider.name }, 'No HMAC secret configured');
     response.status(500).json({ error: 'Provider misconfigured' });
     return null;
@@ -103,7 +105,14 @@ function verifyRequestSignature(
   const rawBody: Buffer = request.body;
   const additionalHeaders = collectAdditionalHeaders(request, strategy);
 
-  if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret, additionalHeaders)) {
+  const passed = await strategy.validate(
+    rawBody,
+    signatureHeader,
+    provider.hmacSecret ?? '',
+    additionalHeaders,
+    provider,
+  );
+  if (!passed) {
     logger.warn({ provider: provider.name }, 'Invalid HMAC signature');
     events.publish({
       type: 'webhook.rejected',
@@ -163,7 +172,14 @@ export function createWebhookHandler(
       rawHeadersHash: hashHeaders(request.headers),
     });
 
-    const rawBody = verifyRequestSignature(request, response, provider, strategy, events, traceId);
+    const rawBody = await verifyRequestSignature(
+      request,
+      response,
+      provider,
+      strategy,
+      events,
+      traceId,
+    );
     if (rawBody === null) return;
 
     const rawBodyString = rawBody.toString('utf-8');
