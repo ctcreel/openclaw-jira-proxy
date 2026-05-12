@@ -7,6 +7,7 @@ import type { Queue } from 'bullmq';
 import {
   CapExceededError,
   ScheduledTasksService,
+  defaultNextFireFromCron,
 } from '../../src/services/scheduled-tasks.service';
 import type { CreateScheduledTaskInput } from '../../src/services/scheduled-tasks.service';
 import { deriveConfigTaskId, stableStringify } from '../../src/types/scheduled-task';
@@ -495,6 +496,32 @@ describe('ScheduledTasksService', () => {
           makeAgentInput({ id: created.id, when: { fireAt: FIXED_NOW + 60_001 } }),
         ),
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe('defaultNextFireFromCron — real `cron-parser` integration', () => {
+    // Regression guard for the boot warning "Cannot find module 'cron-parser'"
+    // surfaced during the SPE-2078 EC2 deploy: BullMQ's transitive copy went
+    // away, so cron-parser is now a direct dependency. This test exercises the
+    // real module — no stub — so a removed/broken-API upgrade fails CI before
+    // it pollutes operator logs.
+    it('computes the next fire time for a weekday-only cron in NY time', () => {
+      // Sun 2026-05-10 00:00:00 UTC — next 6:00 AM ET weekday is Mon 2026-05-11.
+      const fromMs = Date.UTC(2026, 4, 10, 0, 0, 0);
+      const next = defaultNextFireFromCron('0 6 * * 1-5', 'America/New_York', fromMs);
+      const expected = Date.UTC(2026, 4, 11, 10, 0, 0); // 6 AM ET = 10 AM UTC (EDT)
+      expect(next).toBe(expected);
+    });
+
+    it('returns a strictly-future fire time when no timezone is supplied', () => {
+      // cron-parser v5 defaults to the host process's local TZ when `tz`
+      // is omitted; nailing down a specific epoch ms would make this test
+      // flaky on CI vs. dev. Asserting strict-monotonic + 1-day window is
+      // enough to confirm the parser handed back a valid Date.
+      const fromMs = Date.UTC(2026, 4, 10, 0, 0, 0);
+      const next = defaultNextFireFromCron('0 12 * * *', undefined, fromMs);
+      expect(next).toBeGreaterThan(fromMs);
+      expect(next - fromMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
     });
   });
 });
