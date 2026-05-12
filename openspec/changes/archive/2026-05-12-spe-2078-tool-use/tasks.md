@@ -1,3 +1,7 @@
+## Post-implementation note (SPE-2078 followups)
+
+The original task list below included a `module.bash:` kind alongside `module.python:`. The bash kind was deleted in the SPE-2078 followups — zero production users, smaller security-review surface. Tasks referencing bash variants (1.1 bashToolSchema; 1.5 bash-ref tests; 2.1 `kind: 'python' | 'bash'`; 3.3 validate-bash; 6.3 bash dispatch; 6.5 bash fixture test) are obsolete and were removed when bash was deleted. The Python parts of those tasks remain authoritative. The Python interpreter is now configurable via `CLAWNDOM_PYTHON_BINARY` (defaults to `python3`).
+
 ## 1. Phase 1 — Route schema and tool resolution
 
 - [ ] 1.1 Create `src/services/tools/config-schemas.ts` with Zod schemas: `pythonToolSchema` (one-key object with `module.python` value matching the Python dotted-import regex), `bashToolSchema` (one-key object with `module.bash` value matching the bash dotted-segment regex including hyphens), `toolRefSchema = z.union([pythonToolSchema, bashToolSchema])`, and `ruleToolsSchema = z.array(toolRefSchema)`. Strict-mode schemas reject objects with both `module.python` and `module.bash` keys.

@@ -3,8 +3,13 @@ import { join } from 'node:path';
 
 import { load as parseYaml } from 'js-yaml';
 
-import { getToolKind, type ToolRef } from './config-schemas';
-import { computeToolName, toolYamlSchema, type ToolDescriptor } from './descriptor';
+import { getToolReference, type ToolRef } from './config-schemas';
+import {
+  computeToolName,
+  normalizeSecrets,
+  toolYamlSchema,
+  type ToolDescriptor,
+} from './descriptor';
 import { resolveToolDirectory } from './resolve';
 
 /**
@@ -41,16 +46,13 @@ export async function loadToolDescriptor(ref: ToolRef, agentDir: string): Promis
 
   const yaml = validation.data;
   const name = yaml.name ?? computeToolName(directory);
-  const kind = getToolKind(ref);
-  const reference = 'module.python' in ref ? ref['module.python'] : ref['module.bash'];
 
   return {
-    kind,
     directory,
-    reference,
+    reference: getToolReference(ref),
     name,
     description: yaml.description,
     args: yaml.args,
-    requires: yaml.requires,
+    secrets: normalizeSecrets(yaml.secrets),
   };
 }

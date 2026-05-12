@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
 
 import { getLogger } from '../../lib/logging';
 import { writeAuditRecord } from '../../lib/audit/emit';
@@ -38,9 +37,9 @@ const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 const MAX_RESULT_SUMMARY_BYTES = 4096;
 
 /**
- * Dispatch a single `tool_use` block to the appropriate impl, with
- * credentials injected in subprocess-scoped state (Python: kwargs via stdin
- * JSON; bash: scoped env). Emits exactly one audit record per call,
+ * Dispatch a single `tool_use` block to the tool's `impl.py` in a Python
+ * subprocess. Credentials are injected as kwargs via stdin JSON (never as
+ * env vars, never echoed back). Emits exactly one audit record per call,
  * regardless of success or failure.
  *
  * See `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`,
@@ -58,11 +57,7 @@ export async function executeToolCall(
   let errorSummary: string | null = null;
 
   try {
-    if (descriptor.kind === 'python') {
-      result = await dispatchPython(toolUse, descriptor, credentials, timeoutMs);
-    } else {
-      result = await dispatchBash(toolUse, descriptor, credentials, timeoutMs);
-    }
+    result = await dispatchPython(toolUse, descriptor, credentials, timeoutMs);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     errorSummary = message.split('\n')[0] ?? message;
@@ -126,53 +121,37 @@ print(json.dumps(result))
 
   const payload = { ...toolUse.input, ...credentials };
   return runSubprocess(
-    'python3',
+    pythonBinary(),
     ['-c', wrapper],
     JSON.stringify(payload),
-    {},
     timeoutMs,
     descriptor,
   );
 }
 
-async function dispatchBash(
-  toolUse: ToolUseInput,
-  descriptor: ToolDescriptor,
-  credentials: Readonly<Record<string, string>>,
-  timeoutMs: number,
-): Promise<ToolResult> {
-  const scriptPath = join(descriptor.directory, 'impl.sh');
-  const env: Record<string, string> = {};
-  for (const [argumentName, argumentValue] of Object.entries(toolUse.input)) {
-    env[`ARG_${argumentName.toUpperCase()}`] = stringifyArgument(argumentValue);
-  }
-  for (const [credName, credValue] of Object.entries(credentials)) {
-    env[credName.toUpperCase()] = credValue;
-  }
-  return runSubprocess('bash', [scriptPath], '', env, timeoutMs, descriptor);
-}
-
-function stringifyArgument(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (value === null || value === undefined) return '';
-  return JSON.stringify(value);
+/**
+ * Resolve the Python interpreter the executor and signature validator
+ * should spawn. Operators on EC2s or Docker images with the venv at a
+ * non-standard location set `CLAWNDOM_PYTHON_BINARY` to point at it.
+ * Defaults to `python3` (PATH lookup) for local development.
+ */
+export function pythonBinary(): string {
+  const override = process.env['CLAWNDOM_PYTHON_BINARY'];
+  return override !== undefined && override !== '' ? override : 'python3';
 }
 
 async function runSubprocess(
   command: string,
   args: readonly string[],
   stdinInput: string,
-  extraEnv: Readonly<Record<string, string>>,
   timeoutMs: number,
   descriptor: ToolDescriptor,
 ): Promise<ToolResult> {
   return new Promise((resolveResult, reject) => {
-    // Inherit a sanitized env. We start from process.env so PATH and locale
-    // work, then layer the per-call extras. Credentials are scoped here only;
-    // they do not leak back to the parent process.
-    const env = { ...process.env, ...extraEnv };
+    // Credentials are passed via stdin JSON, not env, so the subprocess
+    // env stays free of secret material.
     const child = spawn(command, [...args], {
-      env,
+      env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

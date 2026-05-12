@@ -5,32 +5,7 @@ import { join } from 'node:path';
 
 import { resolveToolDirectory } from '../../../src/services/tools/resolve';
 
-describe('resolveToolDirectory (bash)', () => {
-  let workDir: string;
-
-  beforeEach(async () => {
-    workDir = await mkdtemp(join(tmpdir(), 'spe-2078-resolve-bash-'));
-  });
-
-  afterEach(async () => {
-    await rm(workDir, { recursive: true, force: true });
-  });
-
-  it('resolves a bash reference to a directory relative to agentDir', async () => {
-    const tool = join(workDir, 'pkg', 'tools', 'my-tool');
-    await mkdir(tool, { recursive: true });
-    const resolved = await resolveToolDirectory({ 'module.bash': 'pkg.tools.my-tool' }, workDir);
-    expect(resolved).toBe(tool);
-  });
-
-  it('throws when the bash tool directory does not exist', async () => {
-    await expect(resolveToolDirectory({ 'module.bash': 'missing.dir' }, workDir)).rejects.toThrow(
-      /Bash tool directory not found/,
-    );
-  });
-});
-
-describe('resolveToolDirectory (python)', () => {
+describe('resolveToolDirectory', () => {
   let workDir: string;
   let originalPythonPath: string | undefined;
 

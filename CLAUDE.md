@@ -36,7 +36,7 @@ Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, H
 - Functions start with a verb: get, create, update, delete, build, process, handle, validate
 - No abbreviations: use `message` not `msg`, `request` not `req`, `response` not `res`
 - Files under 300 lines, functions under 50 lines
-- Test coverage gate enforced in `vitest.config.ts` (current floor: 87% lines/statements, 88% branches, 93% functions — raise as missing specs land)
+- Test coverage gate enforced in `vitest.config.ts` (current floor: 95% statements/lines/functions, 88% branches — branch ceiling is bounded by documented-unreachable `noUncheckedIndexedAccess` narrows; see config comment)
 
 ## Patterns
 
@@ -51,6 +51,8 @@ Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, H
 | Agent Runners | `src/runners/` (strategy pattern) |
 | Secrets Management | `src/secrets/` (strategy pattern — env, 1password, oauth, file providers) |
 | Prompt Observability | `src/services/worker.service.ts` (hash at info, full at debug) |
+| Agent Tool Use (SPE-2078) | `src/services/tools/` — route-side `tools:` declaration, credential-agent pattern via MCP, per-call audit log. See `docs/guides/TOOLS_AND_TOOL_USE.md`. |
+| Agent Versioning | `src/services/version.service.ts` + `src/lib/version/` — deterministic sha256 over involved repos, served at `GET /api/version`, embedded in every audit record. |
 
 ## Commands
 

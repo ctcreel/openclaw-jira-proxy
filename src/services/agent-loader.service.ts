@@ -63,9 +63,9 @@ const agentRuleSchema = z.object({
    */
   maxTurns: z.number().int().positive().optional(),
   /**
-   * Agent-callable tools available to this rule's runs. Each entry is one
-   * of `module.python:` (Python tool, dotted import path) or `module.bash:`
-   * (bash tool, dotted reference resolving to a workspace-relative dir).
+   * Agent-callable tools available to this rule's runs. Each entry uses
+   * `module.python:` with a dotted import-path reference to a Python tool
+   * directory containing `tool.yaml` and `impl.py`.
    * See `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`.
    * Implemented per SPE-2078; supersedes the reverted SPE-2070 design.
    */
@@ -353,15 +353,17 @@ async function validateToolsConfig(
             `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${message}`,
           );
         }
-        // Fail-fast on missing `requires:` entries. Resolution happens
-        // per-invocation in load-for-run.ts, but a typo in tool.yaml's
-        // requires would today surface only on the FIRST tool_use — boot
-        // is the right place to catch it.
+        // Fail-fast on missing `secrets:` aliases. Resolution happens
+        // per-invocation in load-for-run.ts, but a typo or missing binding
+        // would today surface only on the FIRST tool_use — boot is the
+        // right place to catch it. For each secret, at least one declared
+        // alias MUST be registered in SECRETS_CONFIG.
         const secretManager = getSecretManager();
-        for (const requirementName of descriptor.requires) {
-          if (!secretManager.hasSecret(requirementName)) {
+        for (const secretSpec of descriptor.secrets) {
+          const resolvable = secretSpec.aliases.some((a) => secretManager.hasSecret(a));
+          if (!resolvable) {
             throw new Error(
-              `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": tool '${descriptor.name}' requires secret '${requirementName}' but it is not declared in SECRETS_CONFIG.`,
+              `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": tool '${descriptor.name}' needs secret '${secretSpec.canonical}' but none of its aliases [${secretSpec.aliases.join(', ')}] are registered in SECRETS_CONFIG.`,
             );
           }
         }

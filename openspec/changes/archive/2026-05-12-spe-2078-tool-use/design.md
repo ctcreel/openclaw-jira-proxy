@@ -1,3 +1,7 @@
+## Post-implementation note (SPE-2078 followups)
+
+Decision 5 below originally shipped two tool kinds (`module.python:` and `module.bash:`). The bash kind was removed in the SPE-2078 followups: no production route used it, every shipped tool was Python, and the smaller surface improves security review. The schema retains its discriminated-union shape so future kinds (`module.rust:`, `module.deno:`) can be added without restructuring. The credential-agent pattern in Decision 3 is unchanged — credentials are now always passed as kwargs to `invoke()` via stdin JSON. Read the rest of this document with that scope reduction in mind.
+
 ## Context
 
 Clawndom is the runtime for a multi-agent platform targeting regulated industries (HIPAA / SOC2 / FedRAMP). Today, agents shell out to `python3` via their bash tool to call Python helpers like `agency_tools.slack.post.message(...)`. The helper signature is whatever the helper author wrote; credentials (Slack bot tokens, Xero API keys, etc.) live in environment variables injected by Clawndom at job-start; templates manually enumerate which helpers exist by writing prose TOOLS sections in their markdown.

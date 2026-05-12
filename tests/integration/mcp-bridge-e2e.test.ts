@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,13 +13,9 @@ import { join } from 'node:path';
  *   - The server replies with the expected protocol version + tools list.
  *   - The tools list mirrors the input config's `args`/`required` shape.
  *   - A `tools/call` dispatches to the real Python helper, invoking it
- *     with the provided credentials.
+ *     with the provided credentials as kwargs.
  *   - An audit record lands at CLAWNDOM_AUDIT_LOG with the expected
  *     fields, and credential values stuffed into args are redacted.
- *
- * Uses a fixture bash tool (no network), so the test is offline and
- * deterministic. The Slack helpers' Python path is exercised separately
- * in `tests/services/tools/executor.test.ts`.
  */
 
 interface MCPResponse {
@@ -63,31 +59,27 @@ const SERVER_SCRIPT = join(__dirname, '..', '..', 'scripts', 'clawndom_mcp_serve
 
 describe('MCP bridge end-to-end (spawned Python server)', () => {
   let workDir: string;
-  let toolDir: string;
+  let pkgDir: string;
   let toolConfigPath: string;
   let auditPath: string;
+  let originalPythonPath: string | undefined;
 
   beforeEach(async () => {
     workDir = await mkdtemp(join(tmpdir(), 'spe-2078-e2e-'));
 
-    // Set up a fixture bash tool that the MCP server can dispatch to.
-    // Echoes ARG_VALUE plus the first 4 chars of API_TOKEN so we can
-    // verify the credential made it into the subprocess env.
-    toolDir = join(workDir, 'fixture_tool');
-    await mkdir(toolDir, { recursive: true });
+    // Stage a Python fixture tool that echoes its value plus the first 4
+    // chars of the credential, so we can verify the credential reached the
+    // impl via kwargs.
+    pkgDir = join(workDir, 'fixture_e2e_pkg', 'echo');
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(join(workDir, 'fixture_e2e_pkg', '__init__.py'), '');
+    await writeFile(join(pkgDir, '__init__.py'), '');
     await writeFile(
-      join(toolDir, 'impl.sh'),
-      [
-        '#!/usr/bin/env bash',
-        '# Args: ARG_VALUE',
-        '# Requires-Env: API_TOKEN',
-        'set -euo pipefail',
-        'TOKEN_HEAD="${API_TOKEN:0:4}"',
-        'printf \'{"echoed":"%s","token_head":"%s"}\' "$ARG_VALUE" "$TOKEN_HEAD"',
-        '',
-      ].join('\n'),
+      join(pkgDir, 'impl.py'),
+      `def invoke(*, value, api_token):
+    return {"echoed": value, "token_head": api_token[:4]}
+`,
     );
-    await chmod(join(toolDir, 'impl.sh'), 0o755);
 
     toolConfigPath = join(workDir, 'tool-config.json');
     await writeFile(
@@ -96,14 +88,15 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
         tools: [
           {
             name: 'fixture_echo',
-            description: 'Echo a value and the first 4 chars of API_TOKEN',
+            description: 'Echo a value and the first 4 chars of api_token',
             args: {
               value: { type: 'string', description: 'value to echo' },
             },
-            requires: ['api_token'],
-            kind: 'bash',
-            reference: 'fixture',
-            directory: toolDir,
+            secrets: [
+              { canonical: 'api_token', aliases: ['API_TOKEN'] },
+            ],
+            reference: 'fixture_e2e_pkg.echo',
+            directory: pkgDir,
             inputSchema: {
               type: 'object',
               properties: { value: { type: 'string', description: 'value to echo' } },
@@ -115,9 +108,13 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
     );
 
     auditPath = join(workDir, 'audit.log');
+    originalPythonPath = process.env['PYTHONPATH'];
+    process.env['PYTHONPATH'] = `${workDir}:${originalPythonPath ?? ''}`;
   });
 
   afterEach(async () => {
+    if (originalPythonPath === undefined) delete process.env['PYTHONPATH'];
+    else process.env['PYTHONPATH'] = originalPythonPath;
     await rm(workDir, { recursive: true, force: true });
   });
 
@@ -190,10 +187,10 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
     const tool = list?.tools[0];
     expect(tool?.name).toBe('fixture_echo');
     expect(tool?.inputSchema.required).toEqual(['value']);
-    expect(tool?.inputSchema.properties.value).toMatchObject({ type: 'string' });
+    expect(tool?.inputSchema.properties['value']).toMatchObject({ type: 'string' });
   });
 
-  it('dispatches tools/call to the bash impl with credentials in env', async () => {
+  it('dispatches tools/call to the python impl with credentials as kwargs', async () => {
     const responses = await drive([
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
       JSON.stringify({

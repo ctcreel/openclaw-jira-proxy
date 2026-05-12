@@ -30,21 +30,13 @@ args:
     type: string
     description: When present, posts as a thread reply.
     optional: true
-requires:
-  - bot_token
+secrets:
+  # `bot_token` is the kwarg name `invoke()` receives.
+  # Operators may wire either env name in SECRETS_CONFIG; first-match wins.
+  bot_token: [SLACK_WINSTON_BOT_TOKEN, SLACK_BOT_TOKEN]
 ```
 
-Bash tools follow the same shape but the implementation is `impl.sh` and
-declares its args/credentials via leading comment lines:
-
-```bash
-#!/usr/bin/env bash
-# Args: ARG_CHANNEL, ARG_TEXT, ARG_THREAD_TS
-# Optional: ARG_THREAD_TS
-# Requires-Env: BOT_TOKEN
-set -euo pipefail
-…
-```
+For tools that only need a single alias, the shorthand `bot_token: SLACK_BOT_TOKEN` is equivalent to `bot_token: [SLACK_BOT_TOKEN]`.
 
 ## Declaring tools on a route
 
@@ -60,26 +52,32 @@ routing:
         tools:
           - module.python: agency_tools.slack.post
           - module.python: agency_tools.slack.conversations_replies
-          - module.bash:   winston_agent.shared.generate-something
 ```
 
 Resolution rule: dots are directory separators; the leaf directory must
 contain `tool.yaml`. Categories are optional — `winston_agent.standalone`
-resolves to `winston_agent/standalone/`. Python references use only
-identifier characters (no hyphens); bash references may use hyphens.
+resolves to `winston_agent/standalone/`. References use only Python
+identifier characters (no hyphens).
+
+The schema is extensible to additional `module.<lang>:` keys (e.g.
+`module.rust:`) by registering a new executor. Today only Python tools
+are first-class.
 
 ## What Clawndom does at boot
 
 1. Reads each route's `tools:` list.
-2. Resolves every entry to a directory containing `tool.yaml` + `impl.{py,sh}`.
+2. Resolves every entry to a directory containing `tool.yaml` + `impl.py`.
 3. Parses each `tool.yaml`.
-4. Validates the helper's signature matches the YAML:
-   - Python: parses `impl.py` with `ast.parse` (stdlib, no module import).
-     `invoke()` must use kwarg-only params. Every YAML `args:` key must
-     exist as a kwarg; required-ness must match no-default; optional-ness
-     must match has-default; no extra kwargs allowed.
-   - Bash: parses leading `# Args:` / `# Optional:` / `# Requires-Env:`
-     comments and cross-checks against `tool.yaml`.
+4. Validates the helper's signature matches the YAML by parsing `impl.py`
+   with Python's stdlib `ast` module (no module import, no top-level
+   execution). `invoke()` must use kwarg-only params. Every YAML `args:`
+   key must exist as a kwarg; required-ness must match no-default;
+   optional-ness must match has-default; every `secrets:` canonical name
+   must exist as a kwarg with no default (credentials are always
+   injected); no extra kwargs allowed.
+5. Validates that for each `secrets:` entry, at least one declared alias
+   is registered in `SECRETS_CONFIG`. Operators see a clear list of
+   acceptable binding keys when a tool can't be resolved.
 5. Any drift → boot fails fast with a clear error naming the divergence
    and the offending file path.
 
@@ -90,14 +88,17 @@ and helper disagree.
 
 When a route declares tools and the model emits a `tool_use` block:
 
-1. Clawndom resolves each tool's `requires:` entries via the configured
-   secrets strategy (`SECRETS_PROVIDERS_CONFIG`). Resolved values live in
-   Clawndom's process address space only.
-2. The executor spawns a subprocess for the chosen tool:
-   - **Python:** `python3 -c "import json,sys,importlib; m = importlib.import_module('<ref>.impl'); print(json.dumps(m.invoke(**json.loads(sys.stdin.read()))))"` with args + credentials passed via stdin JSON.
-   - **Bash:** the `impl.sh` script with `ARG_<NAME>` env vars for each arg
-     and `<CREDNAME_UPPER>` env vars for each credential. Env is scoped to
-     this subprocess.
+1. Clawndom resolves each tool's `secrets:` entries: for each canonical
+   name, the resolver walks its alias list in order and uses the first
+   registered binding from the configured secrets strategy
+   (`SECRETS_PROVIDERS_CONFIG`). The resolved value is keyed by the
+   canonical name in the per-tool credentials map. Resolved values live
+   in Clawndom's process address space only.
+2. The executor spawns a Python subprocess for the chosen tool:
+   `<python> -c "import json,sys,importlib; m = importlib.import_module('<ref>.impl'); print(json.dumps(m.invoke(**json.loads(sys.stdin.read()))))"`
+   with args + credentials passed via stdin JSON. The Python binary
+   defaults to `python3` and is overridable via `CLAWNDOM_PYTHON_BINARY`
+   (set this when the venv isn't on PATH).
 3. Stdout is parsed as the JSON `tool_result`. Stderr contributes to
    `error_summary` on non-zero exit. 30s default timeout
    (SIGTERM-then-SIGKILL).
@@ -115,6 +116,15 @@ Credentials are never:
 - visible in the `tool_use` definition registered with the Anthropic API
 - present unredacted in audit records
 
+## Configuration env vars
+
+| Var | Default | Purpose |
+|---|---|---|
+| `CLAWNDOM_PYTHON_BINARY` | `python3` (PATH) | Python interpreter for boot-time signature validation, runtime dispatch, and the MCP server. Set when the venv isn't on PATH (e.g. `/home/ubuntu/clawndom-venv/bin/python`). |
+| `CLAWNDOM_AUDIT_LOG` | `/var/log/clawndom-winston/audit.log` | NDJSON audit log path. Per-invocation records append here. |
+| `CLAWNDOM_MCP_SERVER_SCRIPT` | resolved from layout | Absolute path to `scripts/clawndom_mcp_server.py`. Override when the bundled binary's auto-detection fails (e.g. in a Docker image with a non-standard layout). |
+| `CLAWNDOM_ENV` | `development` | Set to `production` to fail boot on dirty repos (so `agent_version` is reproducible). |
+
 ## agent_version
 
 At boot Clawndom captures git SHAs of every involved repository (its own
@@ -124,27 +134,6 @@ This hash is embedded in every audit record and surfaced at
 `GET /api/version`. In `CLAWNDOM_ENV=production`, boot fails if any
 involved repo has uncommitted changes — regulated buyers cannot
 reproduce "what was running" if the state isn't fully in git.
-
-## Status of runner integration
-
-The route-side declarations, boot validation, executor, audit, and
-versioning all ship with SPE-2078. The remaining piece — wiring the
-`claude-cli` runner to register tool definitions with the Anthropic
-tool-use API and call back into `executeToolCall` for each `tool_use`
-block — is in flight. Until it lands, declared tools are validated at
-boot but the model invocation path doesn't yet route through the
-executor; templates that declare tools and run today will see the
-tool definitions but the model won't have a working dispatch path.
-
-The cleanest path forward for the runner integration is one of:
-
-1. Extend `claude-cli.runner.ts` to accept `tools` in `RunOptions` and
-   surface them via `claude-cli`'s MCP-server registration (Clawndom
-   exposes itself as an MCP server that wraps the executor).
-2. Add a new runner that uses the Anthropic SDK directly, bypassing
-   `claude-cli` for routes that declare tools.
-
-Either path is a focused follow-up rather than part of this change.
 
 ## Migrating an existing template
 

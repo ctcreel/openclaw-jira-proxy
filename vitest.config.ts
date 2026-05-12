@@ -10,22 +10,31 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      // Thresholds match the current measured CI baseline. The aspirational
-      // 94/89/94/94 target was never enforced — `make test` wasn't running
-      // in CI until the pull-request.yml rewire — so the real numbers are
-      // lower. Raise these back after context.ts branch coverage and
-      // task.service.ts happy-path specs land.
+      // Threshold ratchet (SPE-2078 followups):
+      //   statements 87 → 95
+      //   branches   87 → 88   (see note below)
+      //   functions  93 → 95
+      //   lines      87 → 95
       //
-      // Branches lowered 88 → 87 in SPE-1987 (agent-memory landing). The
-      // structural drag is pre-existing low-branch files (context.ts at
-      // 62.5%, transport/types.ts at 60%, slack-socket.transport.ts at
-      // 74.41%) — none in this PR's scope. Memory module's own branch
-      // coverage is solid; ratchet 87 → 88 once those files' specs land.
+      // Why branches lands at 88, not 95: the remaining gap is in files
+      // whose uncovered branches are documented-unreachable defensive
+      // narrowing for `noUncheckedIndexedAccess` (e.g. `if (byteAt ===
+      // undefined) throw 'unreachable'` in embedding/null.ts, the
+      // `multiplier === undefined` branch in lib/duration.ts, the
+      // `error instanceof Error ? ... : String(error)` ternaries on
+      // `try { exec }` blocks). Forcing the 95% branch number would
+      // require either fake tests of unreachable code or deleting the
+      // TypeScript narrows — both make the code worse, not better.
+      // Reachable error paths are covered.
+      //
+      // To genuinely push branches higher: remove `noUncheckedIndexedAccess`
+      // from tsconfig (drops a real safety net), or refactor to runtime
+      // shape-validation primitives (large change, separate scope).
       thresholds: {
-        statements: 87,
-        branches: 87,
-        functions: 93,
-        lines: 87,
+        statements: 95,
+        branches: 88,
+        functions: 95,
+        lines: 95,
       },
       exclude: [
         'tests/**',
@@ -53,20 +62,11 @@ export default defineConfig({
         // class itself has 11 dedicated unit tests; this file is the
         // thin "deliver one turn" adapter on top.
         'src/runners/claude-cli-session-mode.ts',
-        // SPE-2078: subprocess + MCP orchestration. The tool executor and
-        // MCP bridge spawn Python/bash subprocesses and shell out to the
-        // claude CLI; their branches are dominated by defensive timer +
-        // spawn-error paths that don't lend themselves to deterministic
-        // unit-line coverage. End-to-end coverage lives in
-        // tests/integration/mcp-bridge-e2e.test.ts (real Python MCP server
-        // driven over stdio JSON-RPC, real bash impl, real audit-record
-        // round-trip with redaction verification). Same justification as
-        // session-pool.service.ts and claude-cli-session-mode.ts.
-        'src/services/tools/executor.ts',
-        'src/services/tools/mcp-bridge.ts',
-        'src/services/tools/resolve.ts',
-        'src/services/tools/load-for-run.ts',
-        'src/services/version.service.ts',
+        // SPE-2078 tool surface (executor.ts, mcp-bridge.ts, resolve.ts,
+        // load-for-run.ts, version.service.ts) was previously excluded
+        // here on a YAGNI-conservative basis. Coverage is now demonstrably
+        // high enough that they belong in the gate — rolled back in the
+        // SPE-2078 followups (see #20 in the change log).
         'src/lib/logging/adapters/**',
         'src/lib/observability/**',
         'src/lib/exceptions/handlers.ts',

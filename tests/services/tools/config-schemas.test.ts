@@ -3,7 +3,6 @@ import { describe, it, expect } from 'vitest';
 import {
   toolRefSchema,
   ruleToolsSchema,
-  getToolKind,
   getToolReference,
 } from '../../../src/services/tools/config-schemas';
 
@@ -42,37 +41,8 @@ describe('toolRefSchema', () => {
     });
   });
 
-  describe('module.bash', () => {
-    it('accepts a valid dotted bash reference', () => {
-      expect(() =>
-        toolRefSchema.parse({ 'module.bash': 'winston_agent.jira.generate-patches-token' }),
-      ).not.toThrow();
-    });
-
-    it('accepts hyphens in bash reference segments', () => {
-      expect(() => toolRefSchema.parse({ 'module.bash': 'pkg.sub-dir.tool-name' })).not.toThrow();
-    });
-
-    it('accepts underscores in bash reference segments', () => {
-      expect(() => toolRefSchema.parse({ 'module.bash': 'winston_agent.tool_name' })).not.toThrow();
-    });
-
-    it('rejects a bash reference with leading hyphen on a segment', () => {
-      expect(() => toolRefSchema.parse({ 'module.bash': 'pkg.-leading-hyphen' })).toThrow();
-    });
-  });
-
-  describe('mutual exclusion', () => {
-    it('rejects an entry containing both module.python and module.bash', () => {
-      expect(() =>
-        toolRefSchema.parse({
-          'module.python': 'agency_tools.slack.post',
-          'module.bash': 'agency_tools.slack.post',
-        }),
-      ).toThrow();
-    });
-
-    it('rejects an entry containing neither key', () => {
+  describe('shape rejections', () => {
+    it('rejects an empty entry', () => {
       expect(() => toolRefSchema.parse({})).toThrow();
     });
 
@@ -83,6 +53,12 @@ describe('toolRefSchema', () => {
           extraField: 'value',
         }),
       ).toThrow();
+    });
+
+    it('rejects an entry with module.bash (now removed)', () => {
+      // module.bash was removed in the SPE-2078 followups. A typo or stale
+      // config must fail loudly rather than silently match nothing.
+      expect(() => toolRefSchema.parse({ 'module.bash': 'pkg.tool' })).toThrow();
     });
 
     it('rejects an entry with module.rust (unknown language)', () => {
@@ -98,12 +74,11 @@ describe('ruleToolsSchema', () => {
     expect(() => ruleToolsSchema.parse([])).not.toThrow();
   });
 
-  it('accepts a mixed list of python and bash tools', () => {
+  it('accepts a list of python tools', () => {
     expect(() =>
       ruleToolsSchema.parse([
         { 'module.python': 'agency_tools.slack.post' },
-        { 'module.python': 'agency_tools.slack.conversations' },
-        { 'module.bash': 'winston_agent.jira.generate-patches-token' },
+        { 'module.python': 'agency_tools.slack.conversations_history' },
       ]),
     ).not.toThrow();
   });
@@ -118,24 +93,10 @@ describe('ruleToolsSchema', () => {
   });
 });
 
-describe('getToolKind', () => {
-  it('returns python for a module.python entry', () => {
-    expect(getToolKind({ 'module.python': 'foo.bar' })).toBe('python');
-  });
-
-  it('returns bash for a module.bash entry', () => {
-    expect(getToolKind({ 'module.bash': 'foo.bar' })).toBe('bash');
-  });
-});
-
 describe('getToolReference', () => {
   it('returns the python reference string', () => {
     expect(getToolReference({ 'module.python': 'agency_tools.slack.post' })).toBe(
       'agency_tools.slack.post',
     );
-  });
-
-  it('returns the bash reference string', () => {
-    expect(getToolReference({ 'module.bash': 'winston_agent.tool' })).toBe('winston_agent.tool');
   });
 });

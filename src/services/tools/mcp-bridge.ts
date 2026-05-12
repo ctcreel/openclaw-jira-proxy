@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { ToolDescriptor } from './descriptor';
 import { buildInputSchema } from './descriptor';
+import { pythonBinary } from './executor';
 import { getAgentVersion } from '../version.service';
 
 /**
@@ -110,8 +111,7 @@ export async function buildMCPRunFiles(
       name: d.name,
       description: d.description,
       args: d.args,
-      requires: d.requires,
-      kind: d.kind,
+      secrets: d.secrets.map((s) => ({ canonical: s.canonical, aliases: [...s.aliases] })),
       reference: d.reference,
       directory: d.directory,
       inputSchema: buildInputSchema(d.args),
@@ -123,7 +123,7 @@ export async function buildMCPRunFiles(
   const mcpConfig = {
     mcpServers: {
       [SERVER_NAME]: {
-        command: 'python3',
+        command: pythonBinary(),
         args: [resolveMCPServerScript(), toolConfigPath],
       },
     },

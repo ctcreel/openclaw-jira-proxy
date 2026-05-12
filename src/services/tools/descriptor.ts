@@ -1,14 +1,18 @@
 import { z } from 'zod';
 
-import type { ToolKind } from './config-schemas';
-
 /**
  * Tool definition file (`tool.yaml`) shape. Hand-written by the tool author,
- * adjacent to the tool's `impl.py` or `impl.sh`.
+ * adjacent to the tool's `impl.py`.
  *
  * Args are required by default; `optional: true` flags the exception. The
  * Anthropic JSON Schema `required:` list is derived by collecting every arg
  * key without `optional: true`.
+ *
+ * Secrets are declared as a map from the canonical kwarg name (passed to
+ * `invoke()`) to the env-alias list operators may use to provide the value.
+ * A bare string is shorthand for a single alias; an array lists multiple
+ * acceptable bindings (first hit wins). The canonical name decouples the
+ * tool's interface from the operator's deployment naming.
  *
  * See `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`,
  * Requirement: Tool Definition File Format.
@@ -22,10 +26,12 @@ export const argumentSchema = z.object({
   optional: z.boolean().optional(),
 });
 
+const secretAliasSchema = z.union([z.string().min(1), z.array(z.string().min(1)).nonempty()]);
+
 export const toolYamlSchema = z.object({
   description: z.string().min(1, { message: 'tool.yaml.description is required' }),
   args: z.record(z.string().min(1), argumentSchema).default({}),
-  requires: z.array(z.string().min(1)).default([]),
+  secrets: z.record(z.string().min(1), secretAliasSchema).default({}),
   name: z.string().min(1).optional(),
 });
 
@@ -34,13 +40,26 @@ export type ArgumentDef = z.infer<typeof argumentSchema>;
 export type ToolYaml = z.infer<typeof toolYamlSchema>;
 
 /**
+ * Normalized secret declaration: canonical kwarg name plus the ordered list
+ * of binding keys (env names registered with SECRETS_CONFIG) operators may
+ * use to provide the value. `aliases` is non-empty by construction.
+ */
+export interface SecretSpec {
+  /** Kwarg name `invoke()` receives at dispatch time. */
+  readonly canonical: string;
+  /**
+   * Binding keys to try, in order. The first one for which SecretManager
+   * has a resolved value wins.
+   */
+  readonly aliases: readonly string[];
+}
+
+/**
  * Fully-resolved tool descriptor: the parsed `tool.yaml` plus the on-disk
- * location, the derived API-facing name, and the canonical kind.
+ * location and the derived API-facing name.
  */
 export interface ToolDescriptor {
-  /** 'python' or 'bash'; chosen by the route's `module.<lang>:` key. */
-  readonly kind: ToolKind;
-  /** Absolute path to the tool's directory. Contains `tool.yaml` and `impl.{py,sh}`. */
+  /** Absolute path to the tool's directory. Contains `tool.yaml` and `impl.py`. */
   readonly directory: string;
   /** Original dotted reference, preserved for error messages and diagnostics. */
   readonly reference: string;
@@ -51,7 +70,7 @@ export interface ToolDescriptor {
   readonly name: string;
   readonly description: string;
   readonly args: Record<string, ArgumentDef>;
-  readonly requires: readonly string[];
+  readonly secrets: readonly SecretSpec[];
 }
 
 /**
@@ -74,6 +93,18 @@ export function computeToolName(directory: string): string {
   // Skip generic Python package roots so we don't end up with names like
   // `agency_tools_post` for `agency_tools/post/`.
   return `${parent}_${last}`;
+}
+
+/**
+ * Normalize a `tool.yaml` `secrets:` map into an ordered list of SecretSpec.
+ * The YAML map's iteration order is preserved (js-yaml uses insertion order),
+ * so authors who care about canonical-name ordering control it via the YAML.
+ */
+export function normalizeSecrets(raw: Record<string, string | string[]>): SecretSpec[] {
+  return Object.entries(raw).map(([canonical, aliasOrAliases]) => ({
+    canonical,
+    aliases: typeof aliasOrAliases === 'string' ? [aliasOrAliases] : [...aliasOrAliases],
+  }));
 }
 
 /**

@@ -91,4 +91,14 @@ describe('getAuditLogPath', () => {
       }
     }
   });
+
+  it('falls back to /var/log/clawndom-winston/audit.log when env unset', () => {
+    const previous = process.env['CLAWNDOM_AUDIT_LOG'];
+    delete process.env['CLAWNDOM_AUDIT_LOG'];
+    try {
+      expect(getAuditLogPath()).toBe('/var/log/clawndom-winston/audit.log');
+    } finally {
+      if (previous !== undefined) process.env['CLAWNDOM_AUDIT_LOG'] = previous;
+    }
+  });
 });

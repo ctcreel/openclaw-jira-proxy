@@ -2,8 +2,9 @@ import { rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { getLogger } from '../../lib/logging';
-import { getSecretManager } from '../../secrets/manager';
+import { getSecretManager, type SecretManager } from '../../secrets/manager';
 import type { RuleTools } from './config-schemas';
+import type { SecretSpec, ToolDescriptor } from './descriptor';
 import { loadToolDescriptor } from './parse';
 import {
   buildMCPRunFiles,
@@ -33,7 +34,7 @@ export async function buildMCPBundle(
 ): Promise<MCPRunFiles | undefined> {
   if (tools === undefined || tools.length === 0) return undefined;
 
-  const descriptors = [];
+  const descriptors: ToolDescriptor[] = [];
   for (const ref of tools) {
     descriptors.push(await loadToolDescriptor(ref, agentDir));
   }
@@ -42,8 +43,8 @@ export async function buildMCPBundle(
   const secretManager = getSecretManager();
   for (const desc of descriptors) {
     const creds: Record<string, string> = {};
-    for (const requirementName of desc.requires) {
-      creds[requirementName] = secretManager.getSecret(requirementName);
+    for (const spec of desc.secrets) {
+      creds[spec.canonical] = resolveSecretFromAliases(spec, secretManager, desc.name);
     }
     perTool[desc.name] = creds;
   }
@@ -60,6 +61,31 @@ export async function buildMCPBundle(
     'Materialized MCP bundle for tool-equipped run',
   );
   return bundle;
+}
+
+/**
+ * Try each alias in order; return the value of the first one SecretManager
+ * has resolved. Throws a clear error if no alias resolves — operators see
+ * exactly which keys they could declare to fix the gap.
+ *
+ * Boot-time validation in `agent-loader.service.ts` runs this check too,
+ * so a missing-alias error here would normally have surfaced at startup.
+ * Keeping the runtime guard means a key removed mid-run still fails loudly.
+ */
+export function resolveSecretFromAliases(
+  spec: SecretSpec,
+  secretManager: SecretManager,
+  toolName: string,
+): string {
+  for (const alias of spec.aliases) {
+    if (secretManager.hasSecret(alias)) {
+      return secretManager.getSecret(alias);
+    }
+  }
+  throw new Error(
+    `Tool '${toolName}' needs secret '${spec.canonical}' but none of its declared ` +
+      `aliases [${spec.aliases.join(', ')}] are registered in SECRETS_CONFIG.`,
+  );
 }
 
 /**

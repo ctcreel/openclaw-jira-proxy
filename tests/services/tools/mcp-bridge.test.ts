@@ -26,7 +26,6 @@ describe('buildMCPRunFiles', () => {
 
   function makeDescriptor(): ToolDescriptor {
     return {
-      kind: 'python',
       directory: workDir,
       reference: 'fixture.tool',
       name: 'fixture_tool',
@@ -36,7 +35,7 @@ describe('buildMCPRunFiles', () => {
         text: { type: 'string', description: 'text' },
         thread_ts: { type: 'string', description: 'thread', optional: true },
       },
-      requires: ['bot_token'],
+      secrets: [{ canonical: 'bot_token', aliases: ['SLACK_BOT_TOKEN'] }],
     };
   }
 
@@ -122,5 +121,78 @@ describe('buildMCPRunFiles', () => {
     expect(dirname(a.mcpConfigPath)).not.toBe(dirname(b.mcpConfigPath));
     await rm(dirname(a.mcpConfigPath), { recursive: true, force: true });
     await rm(dirname(b.mcpConfigPath), { recursive: true, force: true });
+  });
+
+  it('uses CLAWNDOM_MCP_SERVER_SCRIPT override when set', async () => {
+    const previous = process.env['CLAWNDOM_MCP_SERVER_SCRIPT'];
+    process.env['CLAWNDOM_MCP_SERVER_SCRIPT'] = '/opt/clawndom/mcp_server.py';
+    try {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-override' },
+      );
+      const mcp = JSON.parse(await readFile(files.mcpConfigPath, 'utf-8')) as {
+        mcpServers: Record<string, { args: string[] }>;
+      };
+      expect(mcp.mcpServers['clawndom-tools']?.args[0]).toBe('/opt/clawndom/mcp_server.py');
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    } finally {
+      if (previous === undefined) delete process.env['CLAWNDOM_MCP_SERVER_SCRIPT'];
+      else process.env['CLAWNDOM_MCP_SERVER_SCRIPT'] = previous;
+    }
+  });
+
+  it('respects CLAWNDOM_PYTHON_BINARY override', async () => {
+    const previous = process.env['CLAWNDOM_PYTHON_BINARY'];
+    process.env['CLAWNDOM_PYTHON_BINARY'] = '/opt/venv/bin/python';
+    try {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-pybin' },
+      );
+      const mcp = JSON.parse(await readFile(files.mcpConfigPath, 'utf-8')) as {
+        mcpServers: Record<string, { command: string }>;
+      };
+      expect(mcp.mcpServers['clawndom-tools']?.command).toBe('/opt/venv/bin/python');
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    } finally {
+      if (previous === undefined) delete process.env['CLAWNDOM_PYTHON_BINARY'];
+      else process.env['CLAWNDOM_PYTHON_BINARY'] = previous;
+    }
+  });
+
+  it('propagates CLAWNDOM_AUDIT_LOG into the run env when set', async () => {
+    const previous = process.env['CLAWNDOM_AUDIT_LOG'];
+    process.env['CLAWNDOM_AUDIT_LOG'] = '/var/log/test-audit.log';
+    try {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-audit' },
+      );
+      expect(files.env['CLAWNDOM_AUDIT_LOG']).toBe('/var/log/test-audit.log');
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    } finally {
+      if (previous === undefined) delete process.env['CLAWNDOM_AUDIT_LOG'];
+      else process.env['CLAWNDOM_AUDIT_LOG'] = previous;
+    }
+  });
+
+  it('omits CLAWNDOM_AUDIT_LOG from the run env when not set', async () => {
+    const previous = process.env['CLAWNDOM_AUDIT_LOG'];
+    delete process.env['CLAWNDOM_AUDIT_LOG'];
+    try {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-no-audit' },
+      );
+      expect(files.env['CLAWNDOM_AUDIT_LOG']).toBeUndefined();
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    } finally {
+      if (previous !== undefined) process.env['CLAWNDOM_AUDIT_LOG'] = previous;
+    }
   });
 });
