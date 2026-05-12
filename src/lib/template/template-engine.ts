@@ -3,6 +3,8 @@ import { dirname, join, resolve, sep } from 'node:path';
 
 import nunjucks from 'nunjucks';
 
+import { isPlainObject } from '../extract';
+
 // Body-level tags — content is inlined into the rendered user prompt.
 const DOC_TAG_PATTERN = /\{\{doc:([^}]+)\}\}/g;
 const SHARED_TAG_PATTERN = /\{\{shared:([^}]+)\}\}/g;
@@ -142,7 +144,7 @@ export async function renderTemplate(
   );
   const bodyAfterDocTags = await preprocessDocTags(bodyAfterSystemExtraction, baseDir);
 
-  const spreadable = typeof payload === 'object' && payload !== null ? payload : {};
+  const spreadable = isPlainObject(payload) ? payload : {};
   const context = {
     payload: JSON.stringify(payload, null, 2),
     ...spreadable,

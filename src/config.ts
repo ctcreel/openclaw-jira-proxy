@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 
+import { isPlainObject } from './lib/extract';
 import { runnerConfigSchema } from './runners/types';
 import { secretBindingSchema, secretProviderConfigSchema } from './secrets/types';
 
@@ -98,8 +99,8 @@ const slackSocketProviderSchema = baseProviderSchema.extend({
 // pre-existing entry parses unchanged.
 export const providerSchema = z.preprocess(
   (input) => {
-    if (input && typeof input === 'object' && !('transport' in input)) {
-      return { ...(input as Record<string, unknown>), transport: 'webhook' };
+    if (isPlainObject(input) && !('transport' in input)) {
+      return { ...input, transport: 'webhook' };
     }
     return input;
   },

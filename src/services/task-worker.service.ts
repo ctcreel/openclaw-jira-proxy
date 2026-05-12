@@ -13,6 +13,7 @@ import { getRunner } from '../runners/registry';
 import { ShellRunner } from '../runners/shell.runner';
 import type { AgentRunner, RunResult } from '../runners/types';
 import { evaluateCondition } from '../strategies/routing';
+import { readString } from '../lib/extract';
 import { buildMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
 import { useMemorySchema, type UseMemory } from '../types/scheduled-task';
 import {
@@ -279,8 +280,7 @@ export async function buildRecallBlockIfRequested(
 
 // Exported for direct unit testing.
 export function readDirectPrompt(context: Record<string, unknown>): string | undefined {
-  const value = context['directPrompt'];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return readString(context['directPrompt']);
 }
 
 // Exported for direct unit testing — AC 6 (corrupt entry warns + degrades).

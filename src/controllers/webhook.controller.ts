@@ -10,6 +10,7 @@ import type { EventBus } from '../services/event-bus.service';
 import { ingestEvent } from '../services/event-ingest.service';
 import { getSignatureStrategy } from '../strategies/signature';
 import type { SignatureStrategy } from '../strategies/signature';
+import { getStringHeader } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('webhook-controller');
@@ -48,10 +49,8 @@ function collectAdditionalHeaders(
     return headers;
   }
   for (const name of strategy.additionalHeaders) {
-    const value = request.headers[name];
-    if (typeof value === 'string') {
-      headers[name] = value;
-    }
+    const value = getStringHeader(request, name);
+    if (value !== undefined) headers[name] = value;
   }
   return headers;
 }
@@ -69,8 +68,8 @@ function verifyRequestSignature(
   events: EventBus,
   traceId: string,
 ): Buffer | null {
-  const signatureHeader = request.headers[strategy.headerName];
-  if (typeof signatureHeader !== 'string') {
+  const signatureHeader = getStringHeader(request, strategy.headerName);
+  if (signatureHeader === undefined) {
     logger.warn({ provider: provider.name }, `Missing ${strategy.headerName} header`);
     events.publish({
       type: 'webhook.rejected',

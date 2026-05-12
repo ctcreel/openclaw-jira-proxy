@@ -5,8 +5,8 @@
  * on failure.
  */
 
+import { getOptionalStringField } from '../../lib/extract';
 import { getLogger } from '../../lib/logging';
-import { resolveFieldPath } from '../../strategies/routing/field-path';
 import type { ThreadEnrichmentConfig } from './config-schemas';
 import { fetchGmailThread } from './gmail-thread-fetcher';
 
@@ -20,10 +20,10 @@ export async function enrichQueryWithThread(
   fallbackQuery: string,
   traceId: string,
 ): Promise<string> {
-  const threadId = resolveFieldPath(parsedPayload, config.threadIdField);
-  const account = resolveFieldPath(parsedPayload, config.accountField);
+  const threadId = getOptionalStringField(parsedPayload, config.threadIdField);
+  const account = getOptionalStringField(parsedPayload, config.accountField);
 
-  if (typeof threadId !== 'string' || typeof account !== 'string') {
+  if (threadId === undefined || account === undefined) {
     logger.debug(
       { threadIdField: config.threadIdField, accountField: config.accountField, traceId },
       'Thread enrichment skipped — missing threadId or account',

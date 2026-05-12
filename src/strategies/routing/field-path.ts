@@ -1,3 +1,5 @@
+import { isPlainObject } from '../../lib/extract';
+
 /**
  * Resolve a dot-notation field path against an unknown payload.
  * Returns the resolved value, or undefined if any segment is missing.
@@ -29,8 +31,9 @@ export function resolveFieldPath(payload: unknown, path: string): unknown {
  * pay that tax once here rather than scattering `as` casts at call sites.
  */
 function readIndexed(subject: unknown, key: string): unknown {
-  if (subject === null || subject === undefined || typeof subject !== 'object') {
-    return undefined;
-  }
+  // `isPlainObject` rejects arrays, but arrays are indexable here too —
+  // a field path like `items.0` should pull the first element. Accept
+  // both shapes; reject everything else (null, undefined, primitives).
+  if (!isPlainObject(subject) && !Array.isArray(subject)) return undefined;
   return (subject as Record<string, unknown>)[key];
 }

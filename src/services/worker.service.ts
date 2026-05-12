@@ -13,6 +13,7 @@ import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
 import { buildMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
 import { extractWebhookContext } from '../strategies/context';
+import { getOptionalStringField } from '../lib/extract';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
 import { getMemoryService } from './memory/memory.service';
@@ -705,8 +706,8 @@ async function fetchMemoriesForRule(
   const memoryConfig = rule.memory;
   if (memoryConfig === undefined || memoryConfig.retrieve === undefined) return undefined;
 
-  const queryRaw = resolveFieldPath(parsedPayload, memoryConfig.retrieve.queryField);
-  if (typeof queryRaw !== 'string' || queryRaw.length === 0) {
+  const queryRaw = getOptionalStringField(parsedPayload, memoryConfig.retrieve.queryField);
+  if (queryRaw === undefined) {
     logger.debug(
       {
         namespace: memoryConfig.namespace,
