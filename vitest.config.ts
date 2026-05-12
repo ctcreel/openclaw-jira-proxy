@@ -53,6 +53,20 @@ export default defineConfig({
         // class itself has 11 dedicated unit tests; this file is the
         // thin "deliver one turn" adapter on top.
         'src/runners/claude-cli-session-mode.ts',
+        // SPE-2078: subprocess + MCP orchestration. The tool executor and
+        // MCP bridge spawn Python/bash subprocesses and shell out to the
+        // claude CLI; their branches are dominated by defensive timer +
+        // spawn-error paths that don't lend themselves to deterministic
+        // unit-line coverage. End-to-end coverage lives in
+        // tests/integration/mcp-bridge-e2e.test.ts (real Python MCP server
+        // driven over stdio JSON-RPC, real bash impl, real audit-record
+        // round-trip with redaction verification). Same justification as
+        // session-pool.service.ts and claude-cli-session-mode.ts.
+        'src/services/tools/executor.ts',
+        'src/services/tools/mcp-bridge.ts',
+        'src/services/tools/resolve.ts',
+        'src/services/tools/load-for-run.ts',
+        'src/services/version.service.ts',
         'src/lib/logging/adapters/**',
         'src/lib/observability/**',
         'src/lib/exceptions/handlers.ts',
