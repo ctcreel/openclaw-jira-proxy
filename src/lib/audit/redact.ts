@@ -14,16 +14,28 @@
 // noqa: NAMING001
 export function redactCredentials(input: unknown, secrets: readonly string[]): unknown {
   if (secrets.length === 0) return input;
-  const secretSet = new Set(secrets.filter((s) => s.length > 0));
-  return applyRedaction(input, secretSet);
+  // Sort longest-first so a short secret that happens to be a prefix of
+  // a longer one doesn't half-redact and leak the tail of the longer
+  // value.
+  const ordered = [...new Set(secrets.filter((s) => s.length > 0))].sort(
+    (a, b) => b.length - a.length,
+  );
+  if (ordered.length === 0) return input;
+  return applyRedaction(input, ordered);
 }
 
 const REDACTED = '<redacted>';
 
 // noqa: NAMING001
-function applyRedaction(value: unknown, secrets: ReadonlySet<string>): unknown {
+function applyRedaction(value: unknown, secrets: readonly string[]): unknown {
   if (typeof value === 'string') {
-    return secrets.has(value) ? REDACTED : value;
+    let out = value;
+    for (const secret of secrets) {
+      if (out.includes(secret)) {
+        out = out.split(secret).join(REDACTED);
+      }
+    }
+    return out;
   }
   if (Array.isArray(value)) {
     return value.map((item) => applyRedaction(item, secrets));

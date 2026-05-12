@@ -335,10 +335,12 @@ export async function processJob(
   );
 
   // SPE-2078: build the MCP bundle when this route declares tools.
-  // Resolves each tool's `requires:` credentials via the SecretManager
-  // and materializes the per-run --mcp-config + tool-config files. The
-  // bundle's env carries CLAWNDOM_TOOL_CREDS (JSON) so the spawned MCP
-  // server has the resolved values; the agent never sees them.
+  // Resolves each tool's `secrets:` credentials via the SecretManager
+  // and materializes the per-run --mcp-config + tool-config + creds files.
+  // The bundle's env carries CLAWNDOM_TOOL_CREDS_FILE (a path, not the
+  // value) so the spawned MCP server reads the resolved values from a
+  // mode-600 file and unlinks it; the literal credential never lands in
+  // the process envp.
   const mcpBundle = await buildMCPBundle(resolved.rule.tools, agentDir, {
     agentId,
     routeId: `${provider.name}:${resolved.rule.name ?? '<unnamed>'}`,

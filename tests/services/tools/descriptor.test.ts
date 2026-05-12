@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   computeToolName,
   buildInputSchema,
+  normalizeSecrets,
   toolYamlSchema,
   type ArgumentDef,
 } from '../../../src/services/tools/descriptor';
@@ -23,6 +24,14 @@ describe('computeToolName', () => {
   it('tolerates trailing slash', () => {
     expect(computeToolName('/abs/agency_tools/slack/post/')).toBe('slack_post');
   });
+
+  it('returns empty string for an empty directory argument', () => {
+    expect(computeToolName('')).toBe('');
+  });
+
+  it('returns empty string for just a slash', () => {
+    expect(computeToolName('/')).toBe('');
+  });
 });
 
 describe('buildInputSchema', () => {
@@ -34,7 +43,7 @@ describe('buildInputSchema', () => {
     const schema = buildInputSchema(args);
     expect(schema.type).toBe('object');
     expect(Object.keys(schema.properties)).toEqual(['channel', 'text']);
-    expect(schema.properties.channel?.type).toBe('string');
+    expect(schema.properties['channel']?.type).toBe('string');
   });
 
   it('includes args without optional:true in required', () => {
@@ -62,20 +71,40 @@ describe('toolYamlSchema', () => {
     expect(() => toolYamlSchema.parse({ description: 'A tool' })).not.toThrow();
   });
 
-  it('defaults args to empty map and requires to empty array', () => {
+  it('defaults args to empty map and secrets to empty map', () => {
     const parsed = toolYamlSchema.parse({ description: 'A tool' });
     expect(parsed.args).toEqual({});
-    expect(parsed.requires).toEqual([]);
+    expect(parsed.secrets).toEqual({});
   });
 
-  it('accepts args with descriptions and types', () => {
+  it('accepts secrets with a single string alias', () => {
     const parsed = toolYamlSchema.parse({
       description: 'A tool',
-      args: { channel: { type: 'string', description: 'ID' } },
-      requires: ['slack_bot_token'],
+      secrets: { bot_token: 'SLACK_BOT_TOKEN' },
     });
-    expect(parsed.args.channel?.type).toBe('string');
-    expect(parsed.requires).toEqual(['slack_bot_token']);
+    expect(parsed.secrets).toEqual({ bot_token: 'SLACK_BOT_TOKEN' });
+  });
+
+  it('accepts secrets with an array of aliases', () => {
+    const parsed = toolYamlSchema.parse({
+      description: 'A tool',
+      secrets: { bot_token: ['SLACK_WINSTON_BOT_TOKEN', 'SLACK_BOT_TOKEN'] },
+    });
+    expect(parsed.secrets).toEqual({
+      bot_token: ['SLACK_WINSTON_BOT_TOKEN', 'SLACK_BOT_TOKEN'],
+    });
+  });
+
+  it('rejects an empty alias array', () => {
+    expect(() =>
+      toolYamlSchema.parse({ description: 'A tool', secrets: { bot_token: [] } }),
+    ).toThrow();
+  });
+
+  it('rejects an empty alias string', () => {
+    expect(() =>
+      toolYamlSchema.parse({ description: 'A tool', secrets: { bot_token: '' } }),
+    ).toThrow();
   });
 
   it('rejects a tool.yaml missing description', () => {
@@ -103,5 +132,39 @@ describe('toolYamlSchema', () => {
   it('accepts an explicit name override', () => {
     const parsed = toolYamlSchema.parse({ description: 'A tool', name: 'custom_name' });
     expect(parsed.name).toBe('custom_name');
+  });
+});
+
+describe('normalizeSecrets', () => {
+  it('returns an empty array for an empty map', () => {
+    expect(normalizeSecrets({})).toEqual([]);
+  });
+
+  it('wraps a single-string alias into a one-element list', () => {
+    expect(normalizeSecrets({ bot_token: 'SLACK_BOT_TOKEN' })).toEqual([
+      { canonical: 'bot_token', aliases: ['SLACK_BOT_TOKEN'] },
+    ]);
+  });
+
+  it('copies an array form into the SecretSpecification aliases', () => {
+    expect(
+      normalizeSecrets({
+        bot_token: ['SLACK_WINSTON_BOT_TOKEN', 'SLACK_BOT_TOKEN'],
+      }),
+    ).toEqual([
+      {
+        canonical: 'bot_token',
+        aliases: ['SLACK_WINSTON_BOT_TOKEN', 'SLACK_BOT_TOKEN'],
+      },
+    ]);
+  });
+
+  it('preserves YAML map iteration order across multiple secrets', () => {
+    const result = normalizeSecrets({
+      first: 'A',
+      second: 'B',
+      third: 'C',
+    });
+    expect(result.map((s) => s.canonical)).toEqual(['first', 'second', 'third']);
   });
 });

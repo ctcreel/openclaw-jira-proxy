@@ -2,15 +2,17 @@
 """Clawndom MCP server bridge for SPE-2078 route-side tools.
 
 Spawned by ``claude`` CLI via ``--mcp-config`` per run. Exposes the
-route's declared tools to the model via the Model Context Protocol's
-stdio JSON-RPC transport. When the model calls a tool, this server loads
-the helper module, invokes it with credentials passed via env, writes a
-single audit record per call (NDJSON), and returns the result.
+route's declared Python tools to the model via the Model Context
+Protocol's stdio JSON-RPC transport. When the model calls a tool, this
+server loads the helper module, invokes it with credentials passed via
+env, writes a single audit record per call (NDJSON), and returns the
+result.
 
 Configuration is passed as a single JSON file path argument. The config
-contains the tool descriptors. Credentials are passed via the
-``CLAWNDOM_TOOL_CREDS`` env var (JSON-encoded ``{tool_name: {requires_key:
-value}}``); audit log path via ``CLAWNDOM_AUDIT_LOG``; agent_version via
+contains the tool descriptors. Credentials are passed via a mode-600
+file at the path in ``CLAWNDOM_TOOL_CREDS_FILE`` (JSON-encoded
+``{tool_name: {canonical_name: value}}``); the file is read once and
+unlinked. Audit log path via ``CLAWNDOM_AUDIT_LOG``; agent_version via
 ``CLAWNDOM_AGENT_VERSION``; agent + route IDs via ``CLAWNDOM_AGENT_ID``
 and ``CLAWNDOM_ROUTE_ID``; request id via ``CLAWNDOM_REQUEST_ID``.
 
@@ -27,8 +29,6 @@ import datetime
 import importlib
 import json
 import os
-import re
-import subprocess
 import sys
 import time
 
@@ -45,8 +45,29 @@ def _load_config(path):
 
 
 def _load_credentials():
-    raw = os.environ.get("CLAWNDOM_TOOL_CREDS", "{}")
-    return json.loads(raw)
+    """Read the per-run credentials file once, then unlink it.
+
+    Credentials arrive via a mode-600 file path passed in
+    CLAWNDOM_TOOL_CREDS_FILE rather than as the env value itself. The
+    Linux kernel snapshots envp at execve() time and exposes it via
+    /proc/<pid>/environ for the lifetime of the process — os.environ.pop
+    cannot scrub that snapshot. Passing only the path through env keeps
+    the literal credential value out of /proc entirely. We unlink the
+    file immediately after read so a later /proc/<pid>/cwd or
+    open-file-table sweep yields nothing either.
+    """
+    path = os.environ.pop("CLAWNDOM_TOOL_CREDS_FILE", "")
+    if not path:
+        return {}
+    try:
+        with open(path) as f:
+            raw = f.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return json.loads(raw) if raw else {}
 
 
 def _agent_version():
@@ -58,14 +79,26 @@ def _audit_path():
 
 
 def _redact_credentials(value, secrets):
-    """Exact-match redaction. Mirrors src/lib/audit/redact.ts."""
-    secret_set = {s for s in secrets if s}
-    return _redact_value(value, secret_set)
+    """Substring redaction. Mirrors src/lib/audit/redact.ts.
+
+    Exact-match is insufficient — an in-process impl can embed the
+    credential inside a larger string (an env dump, a /proc snapshot, a
+    stack trace) and exact-match would let that through. Replace every
+    occurrence as a substring instead. Longest secrets are replaced first
+    so a short secret that happens to be a prefix of a long one doesn't
+    half-redact and leak the tail.
+    """
+    ordered = sorted({s for s in secrets if s}, key=len, reverse=True)
+    return _redact_value(value, ordered)
 
 
 def _redact_value(value, secrets):
     if isinstance(value, str):
-        return "<redacted>" if value in secrets else value
+        out = value
+        for secret in secrets:
+            if secret in out:
+                out = out.replace(secret, "<redacted>")
+        return out
     if isinstance(value, list):
         return [_redact_value(v, secrets) for v in value]
     if isinstance(value, dict):
@@ -86,7 +119,11 @@ def _now_iso():
 
 class ToolRegistry:
     def __init__(self, config):
-        # config["tools"]: list of {name, description, args, requires, kind, reference, directory}
+        # config["tools"]: list of {name, description, args, secrets, reference, directory}.
+        # `secrets` is a list of {canonical, aliases}; per-tool credential maps
+        # (keyed by canonical name) arrive via the file at
+        # CLAWNDOM_TOOL_CREDS_FILE, so the server itself never resolves
+        # aliases — load-for-run did that.
         self.descriptors = {t["name"]: t for t in config.get("tools", [])}
         self.credentials = _load_credentials()
         self.agent_id = os.environ.get("CLAWNDOM_AGENT_ID", "unknown")
@@ -126,10 +163,9 @@ class ToolRegistry:
         creds = self.credentials.get(name, {})
         started = time.time()
         try:
-            if desc["kind"] == "python":
-                result = self._call_python(desc, arguments, creds)
-            else:
-                result = self._call_bash(desc, arguments, creds)
+            module_path = f"{desc['reference']}.impl"
+            module = importlib.import_module(module_path)
+            result = module.invoke(**arguments, **creds)
             error_summary = None
         except Exception as exc:
             error_summary = f"{type(exc).__name__}: {exc}".split("\n")[0]
@@ -159,35 +195,6 @@ class ToolRegistry:
         except Exception as exc:
             _log(f"Failed to write audit record: {exc}")
         return result, error_summary is not None
-
-    def _call_python(self, desc, arguments, creds):
-        module_path = f"{desc['reference']}.impl"
-        module = importlib.import_module(module_path)
-        return module.invoke(**arguments, **creds)
-
-    def _call_bash(self, desc, arguments, creds):
-        script_path = os.path.join(desc["directory"], "impl.sh")
-        env = os.environ.copy()
-        for arg_name, arg_value in arguments.items():
-            env[f"ARG_{arg_name.upper()}"] = (
-                arg_value if isinstance(arg_value, str) else json.dumps(arg_value)
-            )
-        for cred_name, cred_value in creds.items():
-            env[cred_name.upper()] = cred_value
-        result = subprocess.run(
-            ["bash", script_path],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            tail = "\n".join(result.stderr.strip().split("\n")[-3:])
-            raise RuntimeError(f"bash tool failed: {tail or f'exit {result.returncode}'}")
-        stdout = result.stdout.strip()
-        if not stdout:
-            return None
-        return json.loads(stdout)
 
 
 def _respond(message_id, result=None, error=None):

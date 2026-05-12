@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { ToolDescriptor } from './descriptor';
 import { buildInputSchema } from './descriptor';
+import { resolvePythonBinary } from './executor';
 import { getAgentVersion } from '../version.service';
 
 /**
@@ -16,11 +17,15 @@ import { getAgentVersion } from '../version.service';
  *      (descriptors only — no credentials on disk).
  *   2. An MCP-config JSON file the ``claude`` CLI takes via ``--mcp-config``.
  *
- * Credentials flow via the ``CLAWNDOM_TOOL_CREDS`` env var (JSON-encoded
- * map ``{tool_name: {requires_name: resolved_value}}``) which the MCP
- * server reads at startup. Env vars are inherited by ``claude`` and passed
- * to the spawned MCP server; they do not exist in the agent's prompt
- * context.
+ * Credentials flow via a mode-600 file at the path in
+ * ``CLAWNDOM_TOOL_CREDS_FILE`` (JSON-encoded map
+ * ``{tool_name: {canonical_name: resolved_value}}``); the MCP server
+ * reads it at startup then immediately unlinks it. The literal credential
+ * value is never placed in an env var because Linux's ``/proc/<pid>/environ``
+ * exposes the kernel-captured envp for the process lifetime, and
+ * ``os.environ.pop`` cannot scrub that snapshot. Env vars are inherited
+ * by ``claude`` and passed to the spawned MCP server; they do not exist
+ * in the agent's prompt context.
  *
  * See `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`,
  * Requirement: Structured Tool-Use Dispatch.
@@ -110,8 +115,7 @@ export async function buildMCPRunFiles(
       name: d.name,
       description: d.description,
       args: d.args,
-      requires: d.requires,
-      kind: d.kind,
+      secrets: d.secrets.map((s) => ({ canonical: s.canonical, aliases: [...s.aliases] })),
       reference: d.reference,
       directory: d.directory,
       inputSchema: buildInputSchema(d.args),
@@ -120,10 +124,18 @@ export async function buildMCPRunFiles(
   const toolConfigPath = join(workDir, 'tool-config.json');
   await writeFile(toolConfigPath, JSON.stringify(toolConfig), { mode: 0o600 });
 
+  // Credentials travel as a mode-600 file path, not an env value. The
+  // kernel snapshots envp at execve() time and exposes it via
+  // /proc/<pid>/environ for the lifetime of the process — even after
+  // os.environ.pop. Sending only the path through env means the literal
+  // credential value never lands in that snapshot.
+  const credsPath = join(workDir, 'tool-creds.json');
+  await writeFile(credsPath, JSON.stringify(credentials.perTool), { mode: 0o600 });
+
   const mcpConfig = {
     mcpServers: {
       [SERVER_NAME]: {
-        command: 'python3',
+        command: resolvePythonBinary(),
         args: [resolveMCPServerScript(), toolConfigPath],
       },
     },
@@ -132,7 +144,7 @@ export async function buildMCPRunFiles(
   await writeFile(mcpConfigPath, JSON.stringify(mcpConfig), { mode: 0o600 });
 
   const env: Record<string, string> = {
-    CLAWNDOM_TOOL_CREDS: JSON.stringify(credentials.perTool),
+    CLAWNDOM_TOOL_CREDS_FILE: credsPath,
     CLAWNDOM_AGENT_ID: context.agentId,
     CLAWNDOM_ROUTE_ID: context.routeId,
     CLAWNDOM_REQUEST_ID: context.requestId,

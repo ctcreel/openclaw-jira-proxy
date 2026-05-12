@@ -26,7 +26,6 @@ describe('buildMCPRunFiles', () => {
 
   function makeDescriptor(): ToolDescriptor {
     return {
-      kind: 'python',
       directory: workDir,
       reference: 'fixture.tool',
       name: 'fixture_tool',
@@ -36,8 +35,30 @@ describe('buildMCPRunFiles', () => {
         text: { type: 'string', description: 'text' },
         thread_ts: { type: 'string', description: 'thread', optional: true },
       },
-      requires: ['bot_token'],
+      secrets: [{ canonical: 'bot_token', aliases: ['SLACK_BOT_TOKEN'] }],
     };
+  }
+
+  /**
+   * Set an env var for the duration of `fn`, restoring or deleting it after.
+   * The override-honoring tests (CLAWNDOM_MCP_SERVER_SCRIPT,
+   * CLAWNDOM_PYTHON_BINARY, CLAWNDOM_AUDIT_LOG) all follow the same
+   * try/finally pattern; this helper centralizes it.
+   */
+  async function withTempEnv<T>(
+    key: string,
+    value: string | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const previous = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+    try {
+      return await fn();
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
   }
 
   it('writes mcp-config.json and tool-config.json with mode 0o600', async () => {
@@ -78,7 +99,7 @@ describe('buildMCPRunFiles', () => {
     ]);
   });
 
-  it('env contains credentials JSON, identifiers, and agent_version', async () => {
+  it('env carries identifiers and a credentials FILE path (never the literal value)', async () => {
     const files = await buildMCPRunFiles(
       [makeDescriptor()],
       { perTool: { fixture_tool: { bot_token: 'xoxb-actual' } } },
@@ -94,7 +115,12 @@ describe('buildMCPRunFiles', () => {
     expect(files.env['CLAWNDOM_REQUEST_ID']).toBe('req-abc');
     expect(files.env['CLAWNDOM_CORRELATION_ID']).toBe('corr-xyz');
     expect(files.env['CLAWNDOM_AGENT_VERSION']).toMatch(/^sha256:/);
-    expect(JSON.parse(files.env['CLAWNDOM_TOOL_CREDS'] ?? '{}')).toEqual({
+    // The credential value MUST NOT travel through env (env gets
+    // snapshotted into /proc/<pid>/environ at execve()).
+    expect(files.env['CLAWNDOM_TOOL_CREDS']).toBeUndefined();
+    const credsPath = files.env['CLAWNDOM_TOOL_CREDS_FILE'];
+    expect(credsPath).toBeDefined();
+    expect(JSON.parse(await readFile(credsPath ?? '', 'utf-8'))).toEqual({
       fixture_tool: { bot_token: 'xoxb-actual' },
     });
   });
@@ -122,5 +148,59 @@ describe('buildMCPRunFiles', () => {
     expect(dirname(a.mcpConfigPath)).not.toBe(dirname(b.mcpConfigPath));
     await rm(dirname(a.mcpConfigPath), { recursive: true, force: true });
     await rm(dirname(b.mcpConfigPath), { recursive: true, force: true });
+  });
+
+  it('uses CLAWNDOM_MCP_SERVER_SCRIPT override when set', async () => {
+    await withTempEnv('CLAWNDOM_MCP_SERVER_SCRIPT', '/opt/clawndom/mcp_server.py', async () => {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-override' },
+      );
+      const mcp = JSON.parse(await readFile(files.mcpConfigPath, 'utf-8')) as {
+        mcpServers: Record<string, { args: string[] }>;
+      };
+      expect(mcp.mcpServers['clawndom-tools']?.args[0]).toBe('/opt/clawndom/mcp_server.py');
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    });
+  });
+
+  it('respects CLAWNDOM_PYTHON_BINARY override', async () => {
+    await withTempEnv('CLAWNDOM_PYTHON_BINARY', '/opt/venv/bin/python', async () => {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-pybin' },
+      );
+      const mcp = JSON.parse(await readFile(files.mcpConfigPath, 'utf-8')) as {
+        mcpServers: Record<string, { command: string }>;
+      };
+      expect(mcp.mcpServers['clawndom-tools']?.command).toBe('/opt/venv/bin/python');
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    });
+  });
+
+  it('propagates CLAWNDOM_AUDIT_LOG into the run env when set', async () => {
+    await withTempEnv('CLAWNDOM_AUDIT_LOG', '/var/log/test-audit.log', async () => {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-audit' },
+      );
+      expect(files.env['CLAWNDOM_AUDIT_LOG']).toBe('/var/log/test-audit.log');
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    });
+  });
+
+  it('omits CLAWNDOM_AUDIT_LOG from the run env when not set', async () => {
+    await withTempEnv('CLAWNDOM_AUDIT_LOG', undefined, async () => {
+      const files = await buildMCPRunFiles(
+        [makeDescriptor()],
+        { perTool: { fixture_tool: { bot_token: 'x' } } },
+        { agentId: 'a', routeId: 'r', requestId: 'req-no-audit' },
+      );
+      expect(files.env['CLAWNDOM_AUDIT_LOG']).toBeUndefined();
+      await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
+    });
   });
 });

@@ -50,12 +50,26 @@ describe('redactCredentials', () => {
     expect(result).toEqual({ n: 42, b: true, s: '<redacted>' });
   });
 
-  it('does not partial-match (substring) — only exact', () => {
-    // Substring matches would risk redacting unrelated content. Current
-    // policy is exact-match only; this test documents the boundary.
+  it('redacts substring occurrences inside larger strings', () => {
+    // A credential embedded in a URL, error message, or env dump is the
+    // exact pattern an adversarial impl would use to exfiltrate. The
+    // redactor catches it.
     const result = redactCredentials({ url: 'https://example.com?token=xoxb-secret&other=foo' }, [
       'xoxb-secret',
     ]);
-    expect(result).toEqual({ url: 'https://example.com?token=xoxb-secret&other=foo' });
+    expect(result).toEqual({ url: 'https://example.com?token=<redacted>&other=foo' });
+  });
+
+  it('redacts every occurrence when the secret appears multiple times in one string', () => {
+    const result = redactCredentials({ dump: 'A=xoxb-secret B=xoxb-secret C=safe' }, [
+      'xoxb-secret',
+    ]);
+    expect(result).toEqual({ dump: 'A=<redacted> B=<redacted> C=safe' });
+  });
+
+  it('redacts the longer secret first so a prefix overlap does not leak the tail', () => {
+    // If 'foo' were redacted before 'foobar', the tail 'bar' would leak.
+    const result = redactCredentials({ s: 'foobar' }, ['foo', 'foobar']);
+    expect(result).toEqual({ s: '<redacted>' });
   });
 });

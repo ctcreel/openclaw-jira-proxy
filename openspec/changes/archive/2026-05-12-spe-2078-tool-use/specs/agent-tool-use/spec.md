@@ -2,18 +2,15 @@
 
 ### Requirement: Route-Side Tool Declaration
 
-Routing rules in `clawndom.yaml` MAY declare a `tools:` list. Each entry MUST use exactly one of the keys `module.python:` (Python tool, dotted import-path reference) or `module.bash:` (bash tool, dotted reference resolving to a workspace-relative directory). Additional `module.<lang>:` keys MAY be added by future changes registering new executors. Each entry's value MUST be a dotted reference where:
+Routing rules in `clawndom.yaml` MAY declare a `tools:` list. Each entry MUST use the key `module.python:` with a dotted Python import-path reference. Schema is extensible to additional `module.<lang>:` keys (e.g. `module.rust:`) by registering a new executor variant. The value MUST be a dotted reference whose segments are valid Python identifiers (letters, digits, underscores; no hyphens).
 
-- For `module.python:`, segments are valid Python identifiers (letters, digits, underscores; no hyphens) joined by dots.
-- For `module.bash:`, segments may additionally contain hyphens.
-
-#### Scenario: Both Keys Present is Rejected
-- **GIVEN** A tool entry containing both `module.python` and `module.bash` keys
+#### Scenario: Unknown Key is Rejected
+- **GIVEN** A tool entry containing a key other than `module.python:` (e.g. `module.bash:` or `module.rust:`)
 - **WHEN** Clawndom loads the agent config at boot
 - **THEN** Boot MUST fail with a schema-validation error naming the offending entry
 
-#### Scenario: Neither Key Present is Rejected
-- **GIVEN** A tool entry containing neither `module.python` nor `module.bash`
+#### Scenario: Empty Entry is Rejected
+- **GIVEN** A tool entry containing no recognized key
 - **WHEN** Clawndom loads the agent config at boot
 - **THEN** Boot MUST fail with a schema-validation error
 
@@ -29,7 +26,7 @@ Routing rules in `clawndom.yaml` MAY declare a `tools:` list. Each entry MUST us
 
 ### Requirement: Tool Directory Layout
 
-Each declared tool MUST resolve to a directory containing a `tool.yaml` file and one of `impl.py` (for `module.python:` tools) or `impl.sh` (for `module.bash:` tools). Dotted reference segments are interpreted as directory separators; the final directory is the tool. Intermediate directories (categories) are OPTIONAL — a tool may sit at any depth as long as its directory contains `tool.yaml`.
+Each declared tool MUST resolve to a directory containing a `tool.yaml` file and an `impl.py` file. Dotted reference segments are interpreted as directory separators; the final directory is the tool. Intermediate directories (categories) are OPTIONAL — a tool may sit at any depth as long as its directory contains `tool.yaml`.
 
 #### Scenario: Tool With Category Resolves Correctly
 - **GIVEN** A route declares `module.python: agency_tools.slack.post`
@@ -57,12 +54,17 @@ args:                                 # optional; empty map allowed
     type: string | number | boolean | array | object
     description: <free-text>
     optional: true                    # optional; defaults to false (i.e., required)
-requires:                             # optional list of named credentials
-  - <named-secret-key>
+secrets:                              # optional map of canonical-kwarg-name → alias(es)
+  <canonical-kwarg-name>: <ENV_ALIAS> # shorthand for a single alias
+  <other-kwarg-name>:                 # multiple aliases: first hit wins
+    - <ENV_ALIAS_PRIMARY>
+    - <ENV_ALIAS_LEGACY>
 name: <optional-explicit-tool-name>   # overrides the directory-derived name
 ```
 
 Required fields: `description`. All other top-level fields are optional. `args` entries are required by default; `optional: true` flags exceptions. The Anthropic API's JSON Schema `required:` list MUST be derived from args without `optional: true`.
+
+The `secrets:` map decouples the tool's canonical kwarg name (what `invoke()` receives) from the operator's deployment naming (binding keys in `SECRETS_CONFIG`). Each canonical name maps to either one alias (string shorthand) or an ordered list of aliases; resolution at job-start tries each alias in order and the first registered binding wins. This lets a tool target both legacy and current operator naming without code changes on either side.
 
 #### Scenario: Args Are Required By Default
 - **GIVEN** A `tool.yaml` declaring `args: { channel: {type: string, description: "..."} }` with no `optional` field
@@ -81,18 +83,20 @@ Required fields: `description`. All other top-level fields are optional. `args` 
 
 ### Requirement: Boot-Time Signature Validation
 
-Clawndom MUST validate at boot that each declared tool's implementation matches its `tool.yaml` declaration:
+Clawndom MUST validate at boot that each declared tool's `impl.py` matches its `tool.yaml` declaration. Validation MUST parse `impl.py` as text using Python's stdlib `ast` module (no module import, no top-level code execution) and extract the `invoke()` function's keyword arguments and which ones have signature defaults. Validation MUST verify:
 
-For `module.python:` tools, validation MUST parse `impl.py` as text using Python's stdlib `ast` module (no module import, no top-level code execution) and extract the `invoke()` function's keyword arguments and which ones have signature defaults. Validation MUST verify:
 - Every key in `tool.yaml`'s `args:` exists as a kwarg of `invoke()`.
-- Every entry in `tool.yaml`'s `requires:` exists as a kwarg of `invoke()`.
+- Every canonical name in `tool.yaml`'s `secrets:` exists as a kwarg of `invoke()`.
 - Every `args:` entry marked `optional: true` has a signature default in `invoke()`.
 - Every `args:` entry NOT marked `optional: true` has no signature default in `invoke()`.
-- No additional kwargs exist in `invoke()` that are not accounted for by `args:` or `requires:`.
+- Every `secrets:` entry has NO signature default in `invoke()` (credentials are always injected).
+- No additional kwargs exist in `invoke()` that are not accounted for by `args:` or `secrets:`.
 
-For `module.bash:` tools, validation MUST parse the `impl.sh` leading comment block for `# Args:`, `# Optional:`, and `# Requires-Env:` declarations and cross-check against `tool.yaml`.
+Additionally, for each `secrets:` entry, at least one of its declared aliases MUST be registered in `SECRETS_CONFIG`; otherwise boot MUST fail naming the canonical name and the alias list so the operator can add a binding.
 
 Any divergence MUST fail boot with a clear error naming the specific divergence and the path of the offending file.
+
+The Python interpreter used MAY be overridden via `CLAWNDOM_PYTHON_BINARY` (defaults to `python3` on PATH). The same interpreter is used by the executor at runtime, so signature validation and dispatch agree on what `python3` means.
 
 #### Scenario: Missing Arg In Helper Fails Boot
 - **GIVEN** A `tool.yaml` declaring `args: { text: ... }` and an `impl.py` whose `invoke()` does not take a `text` kwarg
@@ -111,7 +115,7 @@ Any divergence MUST fail boot with a clear error naming the specific divergence 
 
 ### Requirement: Credential Resolution and Confinement
 
-For each tool's declared `requires:` entries, Clawndom MUST resolve the named credential via the configured secrets strategy at job-start. Resolved credential values MUST remain in Clawndom's process address space and the subprocess address space of the executor invocation. They MUST NOT:
+For each tool's declared `secrets:` entries, Clawndom MUST resolve the credential at job-start by trying each declared alias in order against the configured secrets strategy and using the first registered binding. The resolved value is passed to `invoke()` as a kwarg using the canonical name. Resolved credential values MUST remain in Clawndom's process address space and the subprocess address space of the executor invocation. They MUST NOT:
 - Appear in the rendered system prompt or user prompt context.
 - Be injected as environment variables in the agent's runner subprocess.
 - Be present in the tool definitions registered with the Anthropic API.
@@ -119,7 +123,7 @@ For each tool's declared `requires:` entries, Clawndom MUST resolve the named cr
 - Appear unredacted in audit log records (see audit-log requirements).
 
 #### Scenario: Credentials Absent From Anthropic Registration
-- **GIVEN** A route declaring a tool with `requires: [slack_bot_token]`
+- **GIVEN** A route declaring a tool with `secrets: { bot_token: SLACK_BOT_TOKEN }`
 - **WHEN** Clawndom registers the tool with the Anthropic API at job-start
 - **THEN** The registered tool definition MUST NOT contain the bot token value anywhere; only the name, description, and input_schema are sent
 
@@ -132,18 +136,16 @@ For each tool's declared `requires:` entries, Clawndom MUST resolve the named cr
 
 When a model run for a route with declared tools emits a `tool_use` block, Clawndom MUST:
 1. Look up the corresponding tool descriptor by the `tool_use.name` field.
-2. Invoke the implementation in a subprocess:
-   - For `module.python:` tools: spawn `python3` with a wrapper that imports `<dotted-module-path>.impl` and calls `invoke(**args, **credentials)`. Args from `tool_use.input` are passed alongside resolved credentials.
-   - For `module.bash:` tools: spawn the `impl.sh` with `ARG_<NAME>` env vars for each arg and `<REQUIRES_NAME_UPPER>` env vars for each credential, scoped to the subprocess.
-3. Capture stdout as the `tool_result` content.
+2. Invoke the implementation in a Python subprocess: spawn the configured Python binary (`CLAWNDOM_PYTHON_BINARY`, default `python3`) with a wrapper that imports `<dotted-module-path>.impl` and calls `invoke(**args, **credentials)`. Args from `tool_use.input` are passed alongside resolved credentials as kwargs (NOT as environment variables).
+3. Capture stdout as the `tool_result` content (parsed as JSON).
 4. Capture stderr separately for the audit record's `error_summary` field on failure.
 5. Append the `tool_result` block to the conversation and continue the Anthropic API call.
 6. Repeat until the model returns `stop_reason: end_turn` or a configured `max_iterations` is exceeded.
 
-#### Scenario: Python Tool Dispatch Receives Args and Credentials
-- **GIVEN** A model emits `tool_use { name: "slack_post", input: { channel: "C123", text: "hi" } }` and the tool has `requires: [slack_bot_token]`
+#### Scenario: Tool Dispatch Receives Args and Credentials as Kwargs
+- **GIVEN** A model emits `tool_use { name: "slack_post", input: { channel: "C123", text: "hi" } }` and the tool has `secrets: { bot_token: [SLACK_WINSTON_BOT_TOKEN, SLACK_BOT_TOKEN] }` with `SLACK_WINSTON_BOT_TOKEN` registered
 - **WHEN** Clawndom dispatches the tool call
-- **THEN** The subprocess MUST call `invoke(channel="C123", text="hi", bot_token=<resolved-token>)`
+- **THEN** The subprocess MUST call `invoke(channel="C123", text="hi", bot_token=<resolved-token>)` — the canonical name is used as the kwarg, not the alias name
 
 #### Scenario: Tool Failure Returns Error Result
 - **GIVEN** A `tool_use` block whose corresponding `impl.py` raises an exception

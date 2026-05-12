@@ -1,3 +1,7 @@
+## Post-implementation note (SPE-2078 followups)
+
+This proposal originally shipped two tool kinds (`module.python:` and `module.bash:`). The bash kind was removed in the SPE-2078 followups (zero production users, smaller security-review surface). The route-side declaration, credential-agent pattern, audit record, and `agent_version` are unchanged. The Python interpreter is configurable via `CLAWNDOM_PYTHON_BINARY` (defaults to `python3`).
+
 ## Why
 
 Two problems collapse into one missing primitive.
