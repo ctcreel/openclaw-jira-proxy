@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
+import { createMCPTestWorkspace, driveMCPServer, type MCPTestWorkspace } from './_mcp-test-harness';
 
 /**
  * Multi-tool credential isolation — regression guard for the contract
@@ -19,32 +19,23 @@ import { join } from 'node:path';
 const TOKEN_A = 'tool-a-secret-1234567890-distinct-from-b';
 const TOKEN_B = 'tool-b-secret-zyxwvutsrqp-distinct-from-a';
 
-interface MCPResponse {
-  id?: number;
-  result?: unknown;
-  error?: unknown;
-}
-
 interface ToolsCallResult {
   content: Array<{ type: string; text: string }>;
   isError: boolean;
 }
 
-const SERVER_SCRIPT = join(__dirname, '..', '..', 'scripts', 'clawndom_mcp_server.py');
-
 describe('SPE-2078 multi-tool credential isolation', () => {
-  let workDir: string;
+  let ws: MCPTestWorkspace;
   let toolConfigPath: string;
   let auditPath: string;
-  let originalPythonPath: string | undefined;
 
   beforeEach(async () => {
-    workDir = await mkdtemp(join(tmpdir(), 'spe-2078-isolation-'));
+    ws = await createMCPTestWorkspace('spe-2078-isolation');
 
     // Two tools share the same impl file and behavior: each returns the
-    // value it was passed plus a list of OTHER kwargs it received, so we
-    // can spot any cross-contamination at the impl call boundary.
-    const pkgRoot = join(workDir, 'iso_pkg');
+    // value it was passed plus the first 8 chars + length of its token,
+    // so we can spot any cross-contamination at the impl call boundary.
+    const pkgRoot = join(ws.workDir, 'iso_pkg');
     await mkdir(pkgRoot, { recursive: true });
     await writeFile(join(pkgRoot, '__init__.py'), '');
 
@@ -64,7 +55,7 @@ describe('SPE-2078 multi-tool credential isolation', () => {
       );
     }
 
-    toolConfigPath = join(workDir, 'tool-config.json');
+    toolConfigPath = join(ws.workDir, 'tool-config.json');
     await writeFile(
       toolConfigPath,
       JSON.stringify({
@@ -99,15 +90,11 @@ describe('SPE-2078 multi-tool credential isolation', () => {
       }),
     );
 
-    auditPath = join(workDir, 'audit.log');
-    originalPythonPath = process.env['PYTHONPATH'];
-    process.env['PYTHONPATH'] = `${workDir}:${originalPythonPath ?? ''}`;
+    auditPath = join(ws.workDir, 'audit.log');
   });
 
   afterEach(async () => {
-    if (originalPythonPath === undefined) delete process.env['PYTHONPATH'];
-    else process.env['PYTHONPATH'] = originalPythonPath;
-    await rm(workDir, { recursive: true, force: true });
+    await ws.cleanup();
   });
 
   async function driveBothTools(): Promise<{
@@ -115,70 +102,43 @@ describe('SPE-2078 multi-tool credential isolation', () => {
     bResult: ToolsCallResult | undefined;
     auditContents: string;
   }> {
-    const credsFile = join(workDir, 'tool-creds.json');
-    await writeFile(
-      credsFile,
-      JSON.stringify({
+    const { responses } = await driveMCPServer({
+      toolConfigPath,
+      auditPath,
+      workDir: ws.workDir,
+      agentId: 'iso-agent',
+      routeId: 'iso-route',
+      requestId: 'req-iso-probe',
+      agentVersion: 'sha256:isotest',
+      toolCredentials: {
         iso_tool_a: { my_token: TOKEN_A },
         iso_tool_b: { my_token: TOKEN_B },
-      }),
-      { mode: 0o600 },
-    );
-    return new Promise((resolveResult, reject) => {
-      const child = spawn('python3', [SERVER_SCRIPT, toolConfigPath], {
-        env: {
-          ...process.env,
-          CLAWNDOM_AGENT_ID: 'iso-agent',
-          CLAWNDOM_ROUTE_ID: 'iso-route',
-          CLAWNDOM_REQUEST_ID: 'req-iso-probe',
-          CLAWNDOM_AGENT_VERSION: 'sha256:isotest',
-          CLAWNDOM_AUDIT_LOG: auditPath,
-          CLAWNDOM_TOOL_CREDS_FILE: credsFile,
-        },
-      });
-      let stdout = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.on('error', reject);
-      child.on('close', async () => {
-        const lines = stdout
-          .split('\n')
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as MCPResponse);
-        const aResponse = lines.find((r) => r.id === 2)?.result as ToolsCallResult | undefined;
-        const bResponse = lines.find((r) => r.id === 3)?.result as ToolsCallResult | undefined;
-        let auditContents = '';
-        try {
-          auditContents = await readFile(auditPath, 'utf-8');
-        } catch {
-          auditContents = '';
-        }
-        resolveResult({ aResult: aResponse, bResult: bResponse, auditContents });
-      });
-
-      child.stdin.write(
-        `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`,
-      );
-      child.stdin.write(
-        `${JSON.stringify({
+      },
+      frames: [
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        {
           jsonrpc: '2.0',
           id: 2,
           method: 'tools/call',
           params: { name: 'iso_tool_a', arguments: { label: 'A-invocation' } },
-        })}\n`,
-      );
-      child.stdin.write(
-        `${JSON.stringify({
+        },
+        {
           jsonrpc: '2.0',
           id: 3,
           method: 'tools/call',
           params: { name: 'iso_tool_b', arguments: { label: 'B-invocation' } },
-        })}\n`,
-      );
-      child.stdin.end();
+        },
+      ],
     });
+    const aResponse = responses.find((r) => r.id === 2)?.result as ToolsCallResult | undefined;
+    const bResponse = responses.find((r) => r.id === 3)?.result as ToolsCallResult | undefined;
+    let auditContents = '';
+    try {
+      auditContents = await readFile(auditPath, 'utf-8');
+    } catch {
+      auditContents = '';
+    }
+    return { aResult: aResponse, bResult: bResponse, auditContents };
   }
 
   it("each tool sees only its own credential — never the other tool's", async () => {

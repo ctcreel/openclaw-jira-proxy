@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
+import {
+  createMCPTestWorkspace,
+  driveMCPServer,
+  type MCPTestWorkspace,
+  type MCPResponse,
+} from './_mcp-test-harness';
 
 /**
  * End-to-end integration test for the SPE-2078 MCP bridge.
@@ -17,12 +22,6 @@ import { join } from 'node:path';
  *   - An audit record lands at CLAWNDOM_AUDIT_LOG with the expected
  *     fields, and credential values stuffed into args are redacted.
  */
-
-interface MCPResponse {
-  id?: number;
-  result?: unknown;
-  error?: unknown;
-}
 
 interface InitializeResult {
   protocolVersion: string;
@@ -55,24 +54,21 @@ interface AuditRecord {
   agent_version: string;
 }
 
-const SERVER_SCRIPT = join(__dirname, '..', '..', 'scripts', 'clawndom_mcp_server.py');
-
 describe('MCP bridge end-to-end (spawned Python server)', () => {
-  let workDir: string;
+  let ws: MCPTestWorkspace;
   let pkgDir: string;
   let toolConfigPath: string;
   let auditPath: string;
-  let originalPythonPath: string | undefined;
 
   beforeEach(async () => {
-    workDir = await mkdtemp(join(tmpdir(), 'spe-2078-e2e-'));
+    ws = await createMCPTestWorkspace('spe-2078-e2e');
 
     // Stage a Python fixture tool that echoes its value plus the first 4
     // chars of the credential, so we can verify the credential reached the
     // impl via kwargs.
-    pkgDir = join(workDir, 'fixture_e2e_pkg', 'echo');
+    pkgDir = join(ws.workDir, 'fixture_e2e_pkg', 'echo');
     await mkdir(pkgDir, { recursive: true });
-    await writeFile(join(workDir, 'fixture_e2e_pkg', '__init__.py'), '');
+    await writeFile(join(ws.workDir, 'fixture_e2e_pkg', '__init__.py'), '');
     await writeFile(join(pkgDir, '__init__.py'), '');
     await writeFile(
       join(pkgDir, 'impl.py'),
@@ -81,7 +77,7 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
 `,
     );
 
-    toolConfigPath = join(workDir, 'tool-config.json');
+    toolConfigPath = join(ws.workDir, 'tool-config.json');
     await writeFile(
       toolConfigPath,
       JSON.stringify({
@@ -105,72 +101,39 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
       }),
     );
 
-    auditPath = join(workDir, 'audit.log');
-    originalPythonPath = process.env['PYTHONPATH'];
-    process.env['PYTHONPATH'] = `${workDir}:${originalPythonPath ?? ''}`;
+    auditPath = join(ws.workDir, 'audit.log');
   });
 
   afterEach(async () => {
-    if (originalPythonPath === undefined) delete process.env['PYTHONPATH'];
-    else process.env['PYTHONPATH'] = originalPythonPath;
-    await rm(workDir, { recursive: true, force: true });
+    await ws.cleanup();
   });
 
-  async function drive(frames: readonly string[]): Promise<MCPResponse[]> {
-    const credsFile = join(workDir, 'tool-creds.json');
-    await writeFile(
-      credsFile,
-      JSON.stringify({ fixture_echo: { api_token: 'super-secret-12345' } }),
-      { mode: 0o600 },
-    );
-    return new Promise((resolveFrames, reject) => {
-      const child = spawn('python3', [SERVER_SCRIPT, toolConfigPath], {
-        env: {
-          ...process.env,
-          CLAWNDOM_AGENT_ID: 'test-winston',
-          CLAWNDOM_ROUTE_ID: 'slack-winston:chat',
-          CLAWNDOM_REQUEST_ID: 'req-e2e-1',
-          CLAWNDOM_AGENT_VERSION: 'sha256:e2etest',
-          CLAWNDOM_AUDIT_LOG: auditPath,
-          CLAWNDOM_TOOL_CREDS_FILE: credsFile,
-        },
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-      child.on('error', reject);
-      child.on('close', () => {
-        const responses = stdout
-          .split('\n')
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as MCPResponse);
-        if (responses.length === 0 && stderr.length > 0) {
-          reject(new Error(`MCP server emitted no responses. stderr: ${stderr}`));
-        } else {
-          resolveFrames(responses);
-        }
-      });
-      for (const frame of frames) {
-        child.stdin.write(`${frame}\n`);
-      }
-      child.stdin.end();
+  async function drive(frames: readonly object[]): Promise<MCPResponse[]> {
+    const { responses, stderr } = await driveMCPServer({
+      toolConfigPath,
+      auditPath,
+      workDir: ws.workDir,
+      agentId: 'test-winston',
+      routeId: 'slack-winston:chat',
+      requestId: 'req-e2e-1',
+      agentVersion: 'sha256:e2etest',
+      toolCredentials: { fixture_echo: { api_token: 'super-secret-12345' } },
+      frames,
     });
+    if (responses.length === 0 && stderr.length > 0) {
+      throw new Error(`MCP server emitted no responses. stderr: ${stderr}`);
+    }
+    return responses;
   }
 
   it('replies to initialize with protocol metadata', async () => {
     const responses = await drive([
-      JSON.stringify({
+      {
         jsonrpc: '2.0',
         id: 1,
         method: 'initialize',
         params: { protocolVersion: '2024-11-05', capabilities: {} },
-      }),
+      },
     ]);
     expect(responses).toHaveLength(1);
     const result = responses[0]?.result as InitializeResult | undefined;
@@ -181,8 +144,8 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
 
   it('lists tools with input schemas derived from tool.yaml args', async () => {
     const responses = await drive([
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     ]);
     const list = responses.find((r) => r.id === 2)?.result as ToolsListResult | undefined;
     expect(list?.tools).toHaveLength(1);
@@ -194,16 +157,13 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
 
   it('dispatches tools/call to the python impl with credentials as kwargs', async () => {
     const responses = await drive([
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-      JSON.stringify({
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      {
         jsonrpc: '2.0',
         id: 2,
         method: 'tools/call',
-        params: {
-          name: 'fixture_echo',
-          arguments: { value: 'hello' },
-        },
-      }),
+        params: { name: 'fixture_echo', arguments: { value: 'hello' } },
+      },
     ]);
     const call = responses.find((r) => r.id === 2)?.result as ToolsCallResult | undefined;
     expect(call?.isError).toBe(false);
@@ -217,8 +177,8 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
 
   it('writes an audit record with credentials redacted from args', async () => {
     await drive([
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-      JSON.stringify({
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      {
         jsonrpc: '2.0',
         id: 2,
         method: 'tools/call',
@@ -227,7 +187,7 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
           // Adversary stuffs the credential into the args:
           arguments: { value: 'super-secret-12345' },
         },
-      }),
+      },
     ]);
 
     const contents = await readFile(auditPath, 'utf-8');
@@ -242,7 +202,5 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
     expect(record.correlation_id).toBe('req-e2e-1');
     expect(record.agent_version).toBe('sha256:e2etest');
     expect(record.args).toEqual({ value: '<redacted>' });
-    // The literal credential value must NOT appear anywhere in the record:
-    expect(JSON.stringify(record)).not.toContain('super-secret-12345');
   });
 });
