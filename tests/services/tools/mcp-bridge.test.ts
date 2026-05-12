@@ -39,6 +39,28 @@ describe('buildMCPRunFiles', () => {
     };
   }
 
+  /**
+   * Set an env var for the duration of `fn`, restoring or deleting it after.
+   * The override-honoring tests (CLAWNDOM_MCP_SERVER_SCRIPT,
+   * CLAWNDOM_PYTHON_BINARY, CLAWNDOM_AUDIT_LOG) all follow the same
+   * try/finally pattern; this helper centralizes it.
+   */
+  async function withTempEnv<T>(
+    key: string,
+    value: string | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const previous = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+    try {
+      return await fn();
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  }
+
   it('writes mcp-config.json and tool-config.json with mode 0o600', async () => {
     const files = await buildMCPRunFiles(
       [makeDescriptor()],
@@ -129,9 +151,7 @@ describe('buildMCPRunFiles', () => {
   });
 
   it('uses CLAWNDOM_MCP_SERVER_SCRIPT override when set', async () => {
-    const previous = process.env['CLAWNDOM_MCP_SERVER_SCRIPT'];
-    process.env['CLAWNDOM_MCP_SERVER_SCRIPT'] = '/opt/clawndom/mcp_server.py';
-    try {
+    await withTempEnv('CLAWNDOM_MCP_SERVER_SCRIPT', '/opt/clawndom/mcp_server.py', async () => {
       const files = await buildMCPRunFiles(
         [makeDescriptor()],
         { perTool: { fixture_tool: { bot_token: 'x' } } },
@@ -142,16 +162,11 @@ describe('buildMCPRunFiles', () => {
       };
       expect(mcp.mcpServers['clawndom-tools']?.args[0]).toBe('/opt/clawndom/mcp_server.py');
       await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
-    } finally {
-      if (previous === undefined) delete process.env['CLAWNDOM_MCP_SERVER_SCRIPT'];
-      else process.env['CLAWNDOM_MCP_SERVER_SCRIPT'] = previous;
-    }
+    });
   });
 
   it('respects CLAWNDOM_PYTHON_BINARY override', async () => {
-    const previous = process.env['CLAWNDOM_PYTHON_BINARY'];
-    process.env['CLAWNDOM_PYTHON_BINARY'] = '/opt/venv/bin/python';
-    try {
+    await withTempEnv('CLAWNDOM_PYTHON_BINARY', '/opt/venv/bin/python', async () => {
       const files = await buildMCPRunFiles(
         [makeDescriptor()],
         { perTool: { fixture_tool: { bot_token: 'x' } } },
@@ -162,16 +177,11 @@ describe('buildMCPRunFiles', () => {
       };
       expect(mcp.mcpServers['clawndom-tools']?.command).toBe('/opt/venv/bin/python');
       await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
-    } finally {
-      if (previous === undefined) delete process.env['CLAWNDOM_PYTHON_BINARY'];
-      else process.env['CLAWNDOM_PYTHON_BINARY'] = previous;
-    }
+    });
   });
 
   it('propagates CLAWNDOM_AUDIT_LOG into the run env when set', async () => {
-    const previous = process.env['CLAWNDOM_AUDIT_LOG'];
-    process.env['CLAWNDOM_AUDIT_LOG'] = '/var/log/test-audit.log';
-    try {
+    await withTempEnv('CLAWNDOM_AUDIT_LOG', '/var/log/test-audit.log', async () => {
       const files = await buildMCPRunFiles(
         [makeDescriptor()],
         { perTool: { fixture_tool: { bot_token: 'x' } } },
@@ -179,16 +189,11 @@ describe('buildMCPRunFiles', () => {
       );
       expect(files.env['CLAWNDOM_AUDIT_LOG']).toBe('/var/log/test-audit.log');
       await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
-    } finally {
-      if (previous === undefined) delete process.env['CLAWNDOM_AUDIT_LOG'];
-      else process.env['CLAWNDOM_AUDIT_LOG'] = previous;
-    }
+    });
   });
 
   it('omits CLAWNDOM_AUDIT_LOG from the run env when not set', async () => {
-    const previous = process.env['CLAWNDOM_AUDIT_LOG'];
-    delete process.env['CLAWNDOM_AUDIT_LOG'];
-    try {
+    await withTempEnv('CLAWNDOM_AUDIT_LOG', undefined, async () => {
       const files = await buildMCPRunFiles(
         [makeDescriptor()],
         { perTool: { fixture_tool: { bot_token: 'x' } } },
@@ -196,8 +201,6 @@ describe('buildMCPRunFiles', () => {
       );
       expect(files.env['CLAWNDOM_AUDIT_LOG']).toBeUndefined();
       await rm(dirname(files.mcpConfigPath), { recursive: true, force: true });
-    } finally {
-      if (previous !== undefined) process.env['CLAWNDOM_AUDIT_LOG'] = previous;
-    }
+    });
   });
 });

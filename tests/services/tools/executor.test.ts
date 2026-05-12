@@ -65,6 +65,37 @@ describe('executeToolCall', () => {
     );
   }
 
+  /**
+   * Stage an impl.py, run executeToolCall with the standard test descriptor,
+   * and read back the single audit record. Used by every failure-mode test
+   * (raises, non-JSON, slow, truncation) so the test bodies stay focused on
+   * the assertion that differs.
+   */
+  async function runWithImpl(
+    implPy: string,
+    requestId: string,
+    opts: { input?: Record<string, unknown>; timeoutMs?: number } = {},
+  ): Promise<{ result: Awaited<ReturnType<typeof executeToolCall>>; record: AuditRecordShape }> {
+    await writeFile(join(pkgDir, 'impl.py'), implPy);
+    const result = await executeToolCall(
+      { name: 'test_tool', input: opts.input ?? { value: 'x' } },
+      makeDescriptor(),
+      { api_token: 't' },
+      { agentId: 'winston', routeId: 'slack-winston', requestId },
+      opts.timeoutMs,
+    );
+    const contents = await readFile(auditPath, 'utf-8');
+    const record = JSON.parse(contents.trim()) as AuditRecordShape;
+    return { result, record };
+  }
+
+  interface AuditRecordShape {
+    error_summary: string | null;
+    result_summary: unknown;
+    agent_version: string;
+    args: Record<string, unknown>;
+  }
+
   it('dispatches with credentials as kwargs (not env)', async () => {
     await writeEchoImpl();
     const result = await executeToolCall(
@@ -123,66 +154,31 @@ describe('executeToolCall', () => {
   });
 
   it('captures error_summary when the impl raises', async () => {
-    await writeFile(
-      join(pkgDir, 'impl.py'),
-      `def invoke(*, value, api_token):
-    raise RuntimeError("deliberate failure")
-`,
+    const { result, record } = await runWithImpl(
+      `def invoke(*, value, api_token):\n    raise RuntimeError("deliberate failure")\n`,
+      'req-3',
     );
-
-    const result = await executeToolCall(
-      { name: 'test_tool', input: { value: 'x' } },
-      makeDescriptor(),
-      { api_token: 't' },
-      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-3' },
-    );
-
     expect(result.isError).toBe(true);
-    const contents = await readFile(auditPath, 'utf-8');
-    const record = JSON.parse(contents.trim()) as { error_summary: string };
     expect(record.error_summary).toContain('deliberate failure');
   });
 
   it('captures non-JSON stdout as an error', async () => {
-    await writeFile(
-      join(pkgDir, 'impl.py'),
-      `def invoke(*, value, api_token):
-    import sys; sys.stdout.write("not json at all")
-    return None
-`,
+    const { result, record } = await runWithImpl(
+      `def invoke(*, value, api_token):\n    import sys; sys.stdout.write("not json at all")\n    return None\n`,
+      'req-bad-json',
     );
-
-    const result = await executeToolCall(
-      { name: 'test_tool', input: { value: 'x' } },
-      makeDescriptor(),
-      { api_token: 't' },
-      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-bad-json' },
-    );
-
     expect(result.isError).toBe(true);
-    const contents = await readFile(auditPath, 'utf-8');
-    const record = JSON.parse(contents.trim()) as { error_summary: string };
     expect(record.error_summary).toMatch(/non-JSON stdout/);
   });
 
   it('truncates very long string result_summary in the audit record', async () => {
-    await writeFile(
-      join(pkgDir, 'impl.py'),
-      `def invoke(*, value, api_token):
-    return "x" * 5000
-`,
+    const { record } = await runWithImpl(
+      `def invoke(*, value, api_token):\n    return "x" * 5000\n`,
+      'req-4',
     );
-
-    await executeToolCall(
-      { name: 'test_tool', input: { value: 'x' } },
-      makeDescriptor(),
-      { api_token: 't' },
-      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-4' },
-    );
-    const contents = await readFile(auditPath, 'utf-8');
-    const record = JSON.parse(contents.trim()) as { result_summary: string };
-    expect(record.result_summary.length).toBeLessThan(5000);
-    expect(record.result_summary).toContain('[truncated]');
+    const summary = record.result_summary as string;
+    expect(summary.length).toBeLessThan(5000);
+    expect(summary).toContain('[truncated]');
   });
 
   it('leaves structured result_summary unchanged (no truncation marker)', async () => {
@@ -214,25 +210,12 @@ describe('executeToolCall', () => {
   });
 
   it('times out a slow tool with a clear error', async () => {
-    await writeFile(
-      join(pkgDir, 'impl.py'),
-      `def invoke(*, value, api_token):
-    import time; time.sleep(5)
-    return {}
-`,
+    const { result, record } = await runWithImpl(
+      `def invoke(*, value, api_token):\n    import time; time.sleep(5)\n    return {}\n`,
+      'req-5',
+      { timeoutMs: 500 },
     );
-
-    const result = await executeToolCall(
-      { name: 'test_tool', input: { value: 'x' } },
-      makeDescriptor(),
-      { api_token: 't' },
-      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-5' },
-      500,
-    );
-
     expect(result.isError).toBe(true);
-    const contents = await readFile(auditPath, 'utf-8');
-    const record = JSON.parse(contents.trim()) as { error_summary: string };
     expect(record.error_summary).toMatch(/timed out/);
   });
 });
