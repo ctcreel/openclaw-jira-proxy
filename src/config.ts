@@ -74,6 +74,14 @@ const webhookProviderSchema = baseProviderSchema.extend({
   hmacSecret: z.string().min(1).optional(),
   signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack']),
   openclawHookUrl: z.string().url().optional(),
+  /**
+   * Optional inbound-payload envelope. `pubsub` unwraps Google Cloud
+   * Pub/Sub's `{message: {data: base64}, subscription}` wrapper after
+   * signature validation, exposing the inner JSON notification to the
+   * routing layer. Lets any agent receive Pub/Sub push notifications
+   * without a per-agent relay service.
+   */
+  envelope: z.literal('pubsub').optional(),
 });
 
 const slackSocketProviderSchema = baseProviderSchema.extend({

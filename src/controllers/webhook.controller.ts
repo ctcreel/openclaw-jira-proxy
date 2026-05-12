@@ -10,6 +10,7 @@ import type { EventBus } from '../services/event-bus.service';
 import { ingestEvent } from '../services/event-ingest.service';
 import { getSignatureStrategy } from '../strategies/signature';
 import type { SignatureStrategy } from '../strategies/signature';
+import { decodePubsubEnvelope } from '../strategies/transport/pubsub-envelope';
 import { getStringHeader } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 
@@ -166,7 +167,17 @@ export function createWebhookHandler(
     if (rawBody === null) return;
 
     const rawBodyString = rawBody.toString('utf-8');
-    const parsedPayload = tryParseJson(rawBodyString);
+    const wrappedPayload = tryParseJson(rawBodyString);
+
+    // When the provider declares `envelope: pubsub`, the inbound body is
+    // Google Cloud Pub/Sub's wrapper `{message: {data: base64}, subscription}`.
+    // Routing rules need to match on the inner payload, so we unwrap after
+    // signature validation but before ingest. Non-Pub/Sub-shaped bodies pass
+    // through unchanged.
+    const parsedPayload =
+      provider.envelope === 'pubsub'
+        ? decodePubsubEnvelope(wrappedPayload).payload
+        : wrappedPayload;
 
     if (handleSlackChallenge(parsedPayload, response, provider)) return;
 
