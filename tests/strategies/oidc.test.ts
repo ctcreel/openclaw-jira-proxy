@@ -27,7 +27,13 @@ function generateKey(kid: string = TEST_KID): KeyPair {
 
 function b64url(input: Buffer | string): string {
   const buf = typeof input === 'string' ? Buffer.from(input, 'utf-8') : input;
-  return buf.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const base = buf.toString('base64');
+  const trimmed = base.endsWith('==')
+    ? base.slice(0, -2)
+    : base.endsWith('=')
+      ? base.slice(0, -1)
+      : base;
+  return trimmed.replaceAll('+', '-').replaceAll('/', '_');
 }
 
 interface MintOptions {

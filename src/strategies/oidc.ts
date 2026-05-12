@@ -38,10 +38,8 @@ interface JwtParts {
 }
 
 function decodeBase64Url(input: string): Buffer {
-  const padded = input
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .padEnd(input.length + ((4 - (input.length % 4)) % 4), '=');
+  const swapped = input.replaceAll('-', '+').replaceAll('_', '/');
+  const padded = swapped.padEnd(swapped.length + ((4 - (swapped.length % 4)) % 4), '=');
   return Buffer.from(padded, 'base64');
 }
 
