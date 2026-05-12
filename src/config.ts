@@ -72,7 +72,7 @@ const webhookProviderSchema = baseProviderSchema.extend({
   transport: z.literal('webhook'),
   routePath: z.string().min(1),
   hmacSecret: z.string().min(1).optional(),
-  signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack']),
+  signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack', 'oidc']),
   openclawHookUrl: z.string().url().optional(),
   /**
    * Optional inbound-payload envelope. `pubsub` unwraps Google Cloud
@@ -82,6 +82,23 @@ const webhookProviderSchema = baseProviderSchema.extend({
    * without a per-agent relay service.
    */
   envelope: z.literal('pubsub').optional(),
+  /**
+   * OIDC verification config. Required when `signatureStrategy === 'oidc'`.
+   * For Google Pub/Sub push: `audience` is the absolute URL configured on
+   * the push subscription's `oidcToken.audience`. `serviceAccountEmail`
+   * pins the caller to a specific GCP service account; omit to accept any
+   * Google-signed token with a matching audience. The
+   * `signatureStrategy === 'oidc'` / `oidc` consistency check is enforced
+   * by `validateProviderInvariants` after schema parsing.
+   */
+  oidc: z
+    .object({
+      audience: z.string().min(1),
+      issuers: z.array(z.string().min(1)).min(1).optional(),
+      serviceAccountEmail: z.string().email().optional(),
+      jwksUri: z.string().url().optional(),
+    })
+    .optional(),
 });
 
 const slackSocketProviderSchema = baseProviderSchema.extend({
@@ -307,7 +324,24 @@ function parseProviders(): ProviderConfig[] {
   } catch {
     throw new Error('PROVIDERS_CONFIG is not valid JSON');
   }
-  return z.array(providerSchema).parse(parsed);
+  const providers = z.array(providerSchema).parse(parsed);
+  for (const provider of providers) {
+    validateProviderInvariants(provider);
+  }
+  return providers;
+}
+
+/**
+ * Cross-field invariants that don't fit into the schema branches cleanly
+ * (refinements on a branch break discriminatedUnion). Throws on violation.
+ */
+function validateProviderInvariants(provider: ProviderConfig): void {
+  if (provider.transport !== 'webhook') return;
+  if (provider.signatureStrategy === 'oidc' && !provider.oidc) {
+    throw new Error(
+      `Provider '${provider.name}' uses signatureStrategy 'oidc' but is missing the 'oidc' config (audience is required).`,
+    );
+  }
 }
 
 export function getSettings(): Settings {
