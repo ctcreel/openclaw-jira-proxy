@@ -41,7 +41,7 @@ export type IngestResult =
 
 // noqa: NAMING001 — `ingest` is a transitive verb; the naming script's allowlist doesn't recognize it
 export async function ingestEvent(request: IngestRequest): Promise<IngestResult> {
-  const { provider, agents, rawBodyString, parsedPayload, traceId, events } = request;
+  const { provider, agents, parsedPayload, traceId, events } = request;
 
   const context = extractWebhookContext(provider, parsedPayload);
 
@@ -96,9 +96,16 @@ export async function ingestEvent(request: IngestRequest): Promise<IngestResult>
   // pendingContext map dies with the prior process and the worker's
   // job.started fires with no context — /api/jobs/active then returns
   // context: null and the dashboard renders "?" for ticket id and status.
+  // Enqueue the parsed (and provider-envelope-unwrapped, if applicable)
+  // payload, not the raw wire body. The worker re-parses this string and
+  // routes off of it — for `envelope: pubsub` providers the wire body is
+  // the Pub/Sub `{message: {data: base64}}` wrapper, and routing rules
+  // condition on the unwrapped inner notification. Stringifying the
+  // already-decoded `parsedPayload` keeps the worker's routing aligned
+  // with the controller's "no-match" pre-check.
   const queue = getProviderQueue(provider.name);
   const envelope = JSON.stringify({
-    payload: rawBodyString,
+    payload: JSON.stringify(parsedPayload),
     attempt: 1,
     context: {
       id: context.id,
