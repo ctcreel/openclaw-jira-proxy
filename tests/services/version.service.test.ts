@@ -74,7 +74,9 @@ describe('initializeAgentVersion (sharedTools nested-repo discovery)', () => {
     await makeGitRepo(clawndomCheckout);
 
     const version = await initializeAgentVersion([agentDir], clawndomCheckout);
-    expect(version.repos.map((r) => r.name).sort()).toContain('agency-tools');
+    expect(version.repos.map((r) => r.name).sort((a, b) => a.localeCompare(b))).toContain(
+      'agency-tools',
+    );
   });
 
   it('produces a stable hash when only sharedTools SHAs are unchanged', async () => {
