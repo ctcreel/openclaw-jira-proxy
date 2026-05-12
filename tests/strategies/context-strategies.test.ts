@@ -152,32 +152,32 @@ describe('slackStrategy.extract', () => {
     expect(ctx.title).toHaveLength(80);
   });
 
-  it('maps testing channel ID to status: testing', () => {
-    const ctx = extractWebhookContext(slackProvider, {
-      event: { ts: '1.0', channel: 'C08UWMQJFBN', blocks: [] },
-    });
-    expect(ctx.status).toBe('testing');
-  });
-
-  it('maps production channel ID to status: production', () => {
-    const ctx = extractWebhookContext(slackProvider, {
-      event: { ts: '1.0', channel: 'C08UVJDJZTL', blocks: [] },
-    });
-    expect(ctx.status).toBe('production');
-  });
-
-  it('maps an unknown channel ID to status: unknown', () => {
-    const ctx = extractWebhookContext(slackProvider, {
-      event: { ts: '1.0', channel: 'C_UNKNOWN', blocks: [] },
-    });
-    expect(ctx.status).toBe('unknown');
-  });
-
-  it('handles missing channel gracefully (empty-string lookup → unknown)', () => {
-    const ctx = extractWebhookContext(slackProvider, {
-      event: { ts: '1.0', blocks: [] },
-    });
-    expect(ctx.status).toBe('unknown');
+  it.each([
+    {
+      label: 'maps testing channel ID to status: testing',
+      channel: 'C08UWMQJFBN',
+      expected: 'testing',
+    },
+    {
+      label: 'maps production channel ID to status: production',
+      channel: 'C08UVJDJZTL',
+      expected: 'production',
+    },
+    {
+      label: 'maps an unknown channel ID to status: unknown',
+      channel: 'C_UNKNOWN',
+      expected: 'unknown',
+    },
+    {
+      label: 'handles missing channel gracefully (empty-string lookup → unknown)',
+      channel: undefined,
+      expected: 'unknown',
+    },
+  ])('$label', ({ channel, expected }) => {
+    const event: Record<string, unknown> = { ts: '1.0', blocks: [] };
+    if (channel !== undefined) event['channel'] = channel;
+    const ctx = extractWebhookContext(slackProvider, { event });
+    expect(ctx.status).toBe(expected);
   });
 
   it('returns title ? when blocks list is empty', () => {

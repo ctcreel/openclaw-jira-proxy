@@ -9,28 +9,39 @@ import {
 } from '../../../src/services/tools/descriptor';
 
 describe('computeToolName', () => {
-  it('joins the parent and tool segments with underscore', () => {
-    expect(computeToolName('/abs/agency_tools/slack/post')).toBe('slack_post');
-  });
-
-  it('strips a "tools" parent segment', () => {
-    expect(computeToolName('/abs/winston_agent/tools/calendar_check')).toBe('calendar_check');
-  });
-
-  it('returns just the leaf when there is no parent', () => {
-    expect(computeToolName('/standalone')).toBe('standalone');
-  });
-
-  it('tolerates trailing slash', () => {
-    expect(computeToolName('/abs/agency_tools/slack/post/')).toBe('slack_post');
-  });
-
-  it('returns empty string for an empty directory argument', () => {
-    expect(computeToolName('')).toBe('');
-  });
-
-  it('returns empty string for just a slash', () => {
-    expect(computeToolName('/')).toBe('');
+  it.each([
+    {
+      label: 'joins the parent and tool segments with underscore',
+      input: '/abs/agency_tools/slack/post',
+      expected: 'slack_post',
+    },
+    {
+      label: 'strips a "tools" parent segment',
+      input: '/abs/winston_agent/tools/calendar_check',
+      expected: 'calendar_check',
+    },
+    {
+      label: 'returns just the leaf when there is no parent',
+      input: '/standalone',
+      expected: 'standalone',
+    },
+    {
+      label: 'tolerates trailing slash',
+      input: '/abs/agency_tools/slack/post/',
+      expected: 'slack_post',
+    },
+    {
+      label: 'returns empty string for an empty directory argument',
+      input: '',
+      expected: '',
+    },
+    {
+      label: 'returns empty string for just a slash',
+      input: '/',
+      expected: '',
+    },
+  ])('$label', ({ input, expected }) => {
+    expect(computeToolName(input)).toBe(expected);
   });
 });
 

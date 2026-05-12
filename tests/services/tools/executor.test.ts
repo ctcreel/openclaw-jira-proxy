@@ -122,47 +122,38 @@ describe('executeToolCall', () => {
     expect(record.result_summary.echoed_secret).toBe('<redacted>');
   });
 
-  it('captures error_summary when the impl raises', async () => {
-    await writeFile(
-      join(pkgDir, 'impl.py'),
-      `def invoke(*, value, api_token):
+  it.each([
+    {
+      label: 'captures error_summary when the impl raises',
+      impl: `def invoke(*, value, api_token):
     raise RuntimeError("deliberate failure")
 `,
-    );
-
-    const result = await executeToolCall(
-      { name: 'test_tool', input: { value: 'x' } },
-      makeDescriptor(),
-      { api_token: 't' },
-      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-3' },
-    );
-
-    expect(result.isError).toBe(true);
-    const contents = await readFile(auditPath, 'utf-8');
-    const record = JSON.parse(contents.trim()) as { error_summary: string };
-    expect(record.error_summary).toContain('deliberate failure');
-  });
-
-  it('captures non-JSON stdout as an error', async () => {
-    await writeFile(
-      join(pkgDir, 'impl.py'),
-      `def invoke(*, value, api_token):
+      requestId: 'req-3',
+      errorSummary: /deliberate failure/,
+    },
+    {
+      label: 'captures non-JSON stdout as an error',
+      impl: `def invoke(*, value, api_token):
     import sys; sys.stdout.write("not json at all")
     return None
 `,
-    );
+      requestId: 'req-bad-json',
+      errorSummary: /non-JSON stdout/,
+    },
+  ])('$label', async ({ impl, requestId, errorSummary }) => {
+    await writeFile(join(pkgDir, 'impl.py'), impl);
 
     const result = await executeToolCall(
       { name: 'test_tool', input: { value: 'x' } },
       makeDescriptor(),
       { api_token: 't' },
-      { agentId: 'winston', routeId: 'slack-winston', requestId: 'req-bad-json' },
+      { agentId: 'winston', routeId: 'slack-winston', requestId },
     );
 
     expect(result.isError).toBe(true);
     const contents = await readFile(auditPath, 'utf-8');
     const record = JSON.parse(contents.trim()) as { error_summary: string };
-    expect(record.error_summary).toMatch(/non-JSON stdout/);
+    expect(record.error_summary).toMatch(errorSummary);
   });
 
   it('truncates very long string result_summary in the audit record', async () => {

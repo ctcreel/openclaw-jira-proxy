@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import { resolvePythonBinary } from '../../src/services/tools/executor';
+
 /**
  * Shared harness for the three SPE-2078 MCP integration tests
  * (mcp-bridge-e2e, credential-leakage-probe, multi-tool-isolation).
@@ -178,20 +180,19 @@ export interface DriveMCPResult {
  * so the assertion that env never carries the literal value holds in tests
  * too.
  *
- * NOTE: uses `python3` from PATH. Test environments (vitest + GitHub
- * Actions ubuntu-latest + Mac dev) all provide a trusted PATH; production
- * boot resolves the interpreter via `resolvePythonBinary()` reading
- * `CLAWNDOM_PYTHON_BINARY`, which is the actual prod attack surface.
+ * Resolves the Python interpreter via the same `resolvePythonBinary()` the
+ * production executor uses — honoring `CLAWNDOM_PYTHON_BINARY` when set,
+ * falling back to `python3` (PATH lookup) for local development. This keeps
+ * the tests on the same code path that hardens the prod attack surface and
+ * avoids tripping Sonar's S4036 hotspot on a constant interpreter name.
  */
 export async function driveMCPServer(opts: DriveMCPOptions): Promise<DriveMCPResult> {
   const credsFile = join(opts.workDir, 'tool-creds.json');
   await writeFile(credsFile, JSON.stringify(opts.toolCredentials), { mode: 0o600 });
 
+  const pythonBinary = resolvePythonBinary();
   return new Promise((resolveResult, reject) => {
-    // NOSONAR(typescript:S4036): tests run under a trusted PATH (vitest
-    // + GHA + dev shells). Production resolves the python binary via
-    // resolvePythonBinary() reading CLAWNDOM_PYTHON_BINARY.
-    const child = spawn('python3', [SERVER_SCRIPT, opts.toolConfigPath], {
+    const child = spawn(pythonBinary, [SERVER_SCRIPT, opts.toolConfigPath], {
       env: {
         ...process.env,
         CLAWNDOM_AGENT_ID: opts.agentId,
