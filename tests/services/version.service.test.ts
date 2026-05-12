@@ -132,9 +132,9 @@ describe('initializeAgentVersion (sharedTools nested-repo discovery)', () => {
     const previousEnv = process.env['CLAWNDOM_ENV'];
     process.env['CLAWNDOM_ENV'] = 'production';
     try {
-      await expect(
-        initializeAgentVersion([agentDir], clawndomCheckout),
-      ).rejects.toThrow(/uncommitted changes/);
+      await expect(initializeAgentVersion([agentDir], clawndomCheckout)).rejects.toThrow(
+        /uncommitted changes/,
+      );
     } finally {
       if (previousEnv === undefined) delete process.env['CLAWNDOM_ENV'];
       else process.env['CLAWNDOM_ENV'] = previousEnv;
