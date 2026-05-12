@@ -19,6 +19,7 @@ import { listSessionKeyStrategies, sessionConfigSchema } from '../strategies/ses
 import { ruleToolsSchema, type ToolRef } from './tools/config-schemas';
 import { loadToolDescriptor } from './tools/parse';
 import { validateToolSignature } from './tools/validate';
+import { getSecretManager } from '../secrets/manager';
 
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
@@ -351,6 +352,18 @@ async function validateToolsConfig(
           throw new Error(
             `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${message}`,
           );
+        }
+        // Fail-fast on missing `requires:` entries. Resolution happens
+        // per-invocation in load-for-run.ts, but a typo in tool.yaml's
+        // requires would today surface only on the FIRST tool_use — boot
+        // is the right place to catch it.
+        const secretManager = getSecretManager();
+        for (const requirementName of descriptor.requires) {
+          if (!secretManager.hasSecret(requirementName)) {
+            throw new Error(
+              `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": tool '${descriptor.name}' requires secret '${requirementName}' but it is not declared in SECRETS_CONFIG.`,
+            );
+          }
         }
       }
     }
