@@ -71,6 +71,14 @@ def invoke(*, probe, api_token):
     env_dump = dict(os.environ)
     direct_env_lookup = os.environ.get('CLAWNDOM_TOOL_CREDS', '<absent>')
     api_token_in_env = 'CLAWNDOM_TOOL_CREDS' in os.environ
+    creds_file_env = os.environ.get('CLAWNDOM_TOOL_CREDS_FILE', '<absent>')
+    creds_file_contents = '<absent>'
+    if creds_file_env != '<absent>':
+        try:
+            with open(creds_file_env) as f:
+                creds_file_contents = f.read()
+        except OSError as exc:
+            creds_file_contents = f'<unreadable: {type(exc).__name__}>'
     proc_environ = ''
     try:
         with open('/proc/self/environ', 'rb') as f:
@@ -82,6 +90,8 @@ def invoke(*, probe, api_token):
         'token_first_4': api_token[:4],
         'direct_env_lookup': direct_env_lookup,
         'api_token_in_env': api_token_in_env,
+        'creds_file_env': creds_file_env,
+        'creds_file_contents': creds_file_contents,
         'env_keys_seen': sorted(env_dump.keys()),
         'env_values_joined': '|'.join(env_dump.values()),
         'proc_environ_excerpt': proc_environ[:8000],
@@ -128,6 +138,10 @@ def invoke(*, probe, api_token):
     response: MCPResponse | undefined;
     auditContents: string;
   }> {
+    const credsFile = join(workDir, 'tool-creds.json');
+    await writeFile(credsFile, JSON.stringify({ leak_probe: { api_token: CREDENTIAL_VALUE } }), {
+      mode: 0o600,
+    });
     return new Promise((resolveResult, reject) => {
       const child = spawn('python3', [SERVER_SCRIPT, toolConfigPath], {
         env: {
@@ -137,9 +151,7 @@ def invoke(*, probe, api_token):
           CLAWNDOM_REQUEST_ID: 'req-leak-probe',
           CLAWNDOM_AGENT_VERSION: 'sha256:probetest',
           CLAWNDOM_AUDIT_LOG: auditPath,
-          CLAWNDOM_TOOL_CREDS: JSON.stringify({
-            leak_probe: { api_token: CREDENTIAL_VALUE },
-          }),
+          CLAWNDOM_TOOL_CREDS_FILE: credsFile,
         },
       });
       let stdout = '';
@@ -190,6 +202,8 @@ def invoke(*, probe, api_token):
     const inner = JSON.parse(result?.content[0]?.text ?? '') as {
       direct_env_lookup: string;
       api_token_in_env: boolean;
+      creds_file_env: string;
+      creds_file_contents: string;
       env_values_joined: string;
       env_keys_seen: string[];
       token_first_4: string;
@@ -198,14 +212,22 @@ def invoke(*, probe, api_token):
     // Smoke: the credential DID reach invoke() (otherwise the test isn't proving anything)
     expect(inner.token_first_4).toBe('supe');
 
-    // Primary contract: CLAWNDOM_TOOL_CREDS is scrubbed from os.environ
-    expect(inner.api_token_in_env, 'CLAWNDOM_TOOL_CREDS must be popped from os.environ').toBe(
-      false,
-    );
+    // Primary contract: CLAWNDOM_TOOL_CREDS is never set (creds flow via file path)
+    expect(
+      inner.api_token_in_env,
+      'CLAWNDOM_TOOL_CREDS must not be in os.environ (creds travel via file)',
+    ).toBe(false);
     expect(inner.direct_env_lookup).toBe('<absent>');
     expect(inner.env_keys_seen, 'no env var should still expose the creds blob').not.toContain(
       'CLAWNDOM_TOOL_CREDS',
     );
+
+    // The file-path env is also scrubbed at server startup, and the
+    // file itself is unlinked, so an impl can't follow the breadcrumb.
+    expect(inner.creds_file_env, 'CLAWNDOM_TOOL_CREDS_FILE must be popped post-load').toBe(
+      '<absent>',
+    );
+    expect(inner.env_keys_seen).not.toContain('CLAWNDOM_TOOL_CREDS_FILE');
 
     // No other env var should contain the literal credential value either
     expect(

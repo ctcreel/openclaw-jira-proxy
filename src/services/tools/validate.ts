@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { ToolDescriptor } from './descriptor';
-import { pythonBinary } from './executor';
+import { resolvePythonBinary } from './executor';
 
 const execFile = promisify(execFileCallback);
 
@@ -110,7 +110,7 @@ print(json.dumps({"kwargs": kwargs}))
 `.trim();
   let stdout: string;
   try {
-    const result = await execFile(pythonBinary(), ['-c', probe]);
+    const result = await execFile(resolvePythonBinary(), ['-c', probe]);
     stdout = result.stdout;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

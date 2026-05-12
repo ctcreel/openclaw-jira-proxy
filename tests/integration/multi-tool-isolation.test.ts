@@ -115,6 +115,15 @@ describe('SPE-2078 multi-tool credential isolation', () => {
     bResult: ToolsCallResult | undefined;
     auditContents: string;
   }> {
+    const credsFile = join(workDir, 'tool-creds.json');
+    await writeFile(
+      credsFile,
+      JSON.stringify({
+        iso_tool_a: { my_token: TOKEN_A },
+        iso_tool_b: { my_token: TOKEN_B },
+      }),
+      { mode: 0o600 },
+    );
     return new Promise((resolveResult, reject) => {
       const child = spawn('python3', [SERVER_SCRIPT, toolConfigPath], {
         env: {
@@ -124,10 +133,7 @@ describe('SPE-2078 multi-tool credential isolation', () => {
           CLAWNDOM_REQUEST_ID: 'req-iso-probe',
           CLAWNDOM_AGENT_VERSION: 'sha256:isotest',
           CLAWNDOM_AUDIT_LOG: auditPath,
-          CLAWNDOM_TOOL_CREDS: JSON.stringify({
-            iso_tool_a: { my_token: TOKEN_A },
-            iso_tool_b: { my_token: TOKEN_B },
-          }),
+          CLAWNDOM_TOOL_CREDS_FILE: credsFile,
         },
       });
       let stdout = '';
@@ -175,7 +181,7 @@ describe('SPE-2078 multi-tool credential isolation', () => {
     });
   }
 
-  it('each tool sees only its own credential — never the other tool\'s', async () => {
+  it("each tool sees only its own credential — never the other tool's", async () => {
     const { aResult, bResult } = await driveBothTools();
     expect(aResult, 'tool A must return a result').toBeDefined();
     expect(bResult, 'tool B must return a result').toBeDefined();
@@ -207,7 +213,7 @@ describe('SPE-2078 multi-tool credential isolation', () => {
     expect(a.token_first_8).not.toBe(b.token_first_8);
   });
 
-  it('audit log redacts each tool\'s credential value independently', async () => {
+  it("audit log redacts each tool's credential value independently", async () => {
     const { auditContents } = await driveBothTools();
     const lines = auditContents.split('\n').filter(Boolean);
     expect(lines).toHaveLength(2);

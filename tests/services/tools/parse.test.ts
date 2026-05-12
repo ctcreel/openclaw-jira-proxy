@@ -83,9 +83,7 @@ secrets:
       { 'module.python': 'fixture_parse_pkg_shorthand.tool' },
       workDir,
     );
-    expect(descriptor.secrets).toEqual([
-      { canonical: 'api_token', aliases: ['ONE_TRUE_KEY'] },
-    ]);
+    expect(descriptor.secrets).toEqual([{ canonical: 'api_token', aliases: ['ONE_TRUE_KEY'] }]);
   });
 
   it('uses an explicit name override when provided', async () => {
@@ -135,10 +133,7 @@ name: explicit_override_name
     await writeFile(join(pkgDir, '__init__.py'), '');
 
     await expect(
-      loadToolDescriptor(
-        { 'module.python': 'fixture_parse_pkg_partial.does_not_exist' },
-        workDir,
-      ),
+      loadToolDescriptor({ 'module.python': 'fixture_parse_pkg_partial.does_not_exist' }, workDir),
     ).rejects.toThrow(/Python tool directory not found/);
   });
 });

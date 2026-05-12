@@ -95,18 +95,19 @@ secrets:
   });
 
   it('resolves credentials by canonical name from the first matching alias', async () => {
-    const bundle = await buildMCPBundle(
-      [{ 'module.python': 'fixture_lfr_pkg.mytool' }],
-      workDir,
-      {
-        agentId: 'a',
-        routeId: 'r',
-        requestId: 'req-load',
-      },
-    );
+    const bundle = await buildMCPBundle([{ 'module.python': 'fixture_lfr_pkg.mytool' }], workDir, {
+      agentId: 'a',
+      routeId: 'r',
+      requestId: 'req-load',
+    });
     expect(bundle).toBeDefined();
     expect(bundle?.mcpConfigPath).toMatch(/mcp-config\.json$/);
-    const creds = JSON.parse(bundle?.env['CLAWNDOM_TOOL_CREDS'] ?? '{}') as Record<
+    // Credentials travel through a mode-600 file, not an env value
+    // (keeps the literal credential out of /proc/<pid>/environ on Linux).
+    expect(bundle?.env['CLAWNDOM_TOOL_CREDS']).toBeUndefined();
+    const credsPath = bundle?.env['CLAWNDOM_TOOL_CREDS_FILE'];
+    expect(credsPath).toBeDefined();
+    const creds = JSON.parse(await readFile(credsPath ?? '', 'utf-8')) as Record<
       string,
       Record<string, string>
     >;
@@ -126,15 +127,11 @@ secrets:
   });
 
   it('cleanupMCPBundle removes the temp directory', async () => {
-    const bundle = await buildMCPBundle(
-      [{ 'module.python': 'fixture_lfr_pkg.mytool' }],
-      workDir,
-      {
-        agentId: 'a',
-        routeId: 'r',
-        requestId: 'req-cleanup',
-      },
-    );
+    const bundle = await buildMCPBundle([{ 'module.python': 'fixture_lfr_pkg.mytool' }], workDir, {
+      agentId: 'a',
+      routeId: 'r',
+      requestId: 'req-cleanup',
+    });
     const tempRoot = dirname(bundle?.mcpConfigPath ?? '');
     await cleanupMCPBundle(bundle);
     await expect(readFile(bundle?.mcpConfigPath ?? '', 'utf-8')).rejects.toThrow();

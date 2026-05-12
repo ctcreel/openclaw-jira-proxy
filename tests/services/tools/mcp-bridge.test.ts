@@ -77,7 +77,7 @@ describe('buildMCPRunFiles', () => {
     ]);
   });
 
-  it('env contains credentials JSON, identifiers, and agent_version', async () => {
+  it('env carries identifiers and a credentials FILE path (never the literal value)', async () => {
     const files = await buildMCPRunFiles(
       [makeDescriptor()],
       { perTool: { fixture_tool: { bot_token: 'xoxb-actual' } } },
@@ -93,7 +93,12 @@ describe('buildMCPRunFiles', () => {
     expect(files.env['CLAWNDOM_REQUEST_ID']).toBe('req-abc');
     expect(files.env['CLAWNDOM_CORRELATION_ID']).toBe('corr-xyz');
     expect(files.env['CLAWNDOM_AGENT_VERSION']).toMatch(/^sha256:/);
-    expect(JSON.parse(files.env['CLAWNDOM_TOOL_CREDS'] ?? '{}')).toEqual({
+    // The credential value MUST NOT travel through env (env gets
+    // snapshotted into /proc/<pid>/environ at execve()).
+    expect(files.env['CLAWNDOM_TOOL_CREDS']).toBeUndefined();
+    const credsPath = files.env['CLAWNDOM_TOOL_CREDS_FILE'];
+    expect(credsPath).toBeDefined();
+    expect(JSON.parse(await readFile(credsPath ?? '', 'utf-8'))).toEqual({
       fixture_tool: { bot_token: 'xoxb-actual' },
     });
   });

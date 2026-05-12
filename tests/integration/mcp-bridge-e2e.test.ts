@@ -92,9 +92,7 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
             args: {
               value: { type: 'string', description: 'value to echo' },
             },
-            secrets: [
-              { canonical: 'api_token', aliases: ['API_TOKEN'] },
-            ],
+            secrets: [{ canonical: 'api_token', aliases: ['API_TOKEN'] }],
             reference: 'fixture_e2e_pkg.echo',
             directory: pkgDir,
             inputSchema: {
@@ -119,6 +117,12 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
   });
 
   async function drive(frames: readonly string[]): Promise<MCPResponse[]> {
+    const credsFile = join(workDir, 'tool-creds.json');
+    await writeFile(
+      credsFile,
+      JSON.stringify({ fixture_echo: { api_token: 'super-secret-12345' } }),
+      { mode: 0o600 },
+    );
     return new Promise((resolveFrames, reject) => {
       const child = spawn('python3', [SERVER_SCRIPT, toolConfigPath], {
         env: {
@@ -128,9 +132,7 @@ describe('MCP bridge end-to-end (spawned Python server)', () => {
           CLAWNDOM_REQUEST_ID: 'req-e2e-1',
           CLAWNDOM_AGENT_VERSION: 'sha256:e2etest',
           CLAWNDOM_AUDIT_LOG: auditPath,
-          CLAWNDOM_TOOL_CREDS: JSON.stringify({
-            fixture_echo: { api_token: 'super-secret-12345' },
-          }),
+          CLAWNDOM_TOOL_CREDS_FILE: credsFile,
         },
       });
       let stdout = '';

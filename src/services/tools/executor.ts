@@ -121,7 +121,7 @@ print(json.dumps(result))
 
   const payload = { ...toolUse.input, ...credentials };
   return runSubprocess(
-    pythonBinary(),
+    resolvePythonBinary(),
     ['-c', wrapper],
     JSON.stringify(payload),
     timeoutMs,
@@ -135,7 +135,7 @@ print(json.dumps(result))
  * non-standard location set `CLAWNDOM_PYTHON_BINARY` to point at it.
  * Defaults to `python3` (PATH lookup) for local development.
  */
-export function pythonBinary(): string {
+export function resolvePythonBinary(): string {
   const override = process.env['CLAWNDOM_PYTHON_BINARY'];
   return override !== undefined && override !== '' ? override : 'python3';
 }
