@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { writeFile, mkdtemp, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -27,15 +28,48 @@ import { getAgentVersion } from '../version.service';
 
 const SERVER_NAME = 'clawndom-tools';
 
-const MODULE_FILE = fileURLToPath(import.meta.url);
-const MCP_SERVER_SCRIPT = resolve(
-  dirname(MODULE_FILE),
-  '..',
-  '..',
-  '..',
-  'scripts',
-  'clawndom_mcp_server.py',
-);
+/**
+ * Resolve the path to scripts/clawndom_mcp_server.py at runtime.
+ *
+ * In dev (tsx), `import.meta.url` points at src/services/tools/mcp-bridge.ts
+ * so walking up three directories lands at the project root + `scripts/`.
+ * In prod (tsup bundle), `import.meta.url` points at dist/server.js — three
+ * `..`s overshoot the project root entirely, which was a real production
+ * bug discovered during the SPE-2078 EC2 deploy.
+ *
+ * Resolution order:
+ *   1. `CLAWNDOM_MCP_SERVER_SCRIPT` env override — operators set this in
+ *      `clawndom.env` to point at the on-disk script path. Always wins.
+ *   2. `<project-root>/scripts/clawndom_mcp_server.py` from dev-mode source
+ *      layout (works under tsx).
+ *   3. `<cwd>/scripts/clawndom_mcp_server.py` — works in prod when systemd
+ *      sets `WorkingDirectory=/home/ubuntu/clawndom-winston`.
+ *
+ * Throws if none of the candidates exists; caller surfaces a clear error
+ * at first MCP invocation.
+ */
+function resolveMCPServerScript(): string {
+  const override = process.env['CLAWNDOM_MCP_SERVER_SCRIPT'];
+  if (override !== undefined && override.length > 0) return override;
+
+  const sourceLayoutGuess = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    'scripts',
+    'clawndom_mcp_server.py',
+  );
+  if (existsSync(sourceLayoutGuess)) return sourceLayoutGuess;
+
+  const cwdGuess = resolve(process.cwd(), 'scripts', 'clawndom_mcp_server.py');
+  if (existsSync(cwdGuess)) return cwdGuess;
+
+  throw new Error(
+    `Cannot locate clawndom_mcp_server.py. Set CLAWNDOM_MCP_SERVER_SCRIPT to the absolute path. ` +
+      `Tried: ${sourceLayoutGuess}, ${cwdGuess}.`,
+  );
+}
 
 export interface ResolvedCredentials {
   /** Map of tool name → {credential name → resolved value}. */
@@ -90,7 +124,7 @@ export async function buildMCPRunFiles(
     mcpServers: {
       [SERVER_NAME]: {
         command: 'python3',
-        args: [MCP_SERVER_SCRIPT, toolConfigPath],
+        args: [resolveMCPServerScript(), toolConfigPath],
       },
     },
   };

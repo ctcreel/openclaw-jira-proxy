@@ -117,21 +117,33 @@ async function findRepoRoot(start: string): Promise<string | undefined> {
 }
 
 async function findSiblingRepos(agentDir: string, seen: Map<string, RepoInput>): Promise<void> {
-  // Climb to the agent's repo root, then list its parent — sibling
-  // directories that themselves contain `.git` are independent tool repos
-  // (e.g. agency-tools cloned alongside winston-agency).
+  // Two scan locations cover the sharedTools placements clawndom uses:
+  //
+  //   1. **Inside** the agent's repo root — clawndom's `clonePinned` places
+  //      sharedTools at `<cloneDir>/<sharedTools.path>/`, where cloneDir IS
+  //      the agent's repo. So agency-tools lives at e.g.
+  //      `winston-agency/agency-tools/`. Walk one level down.
+  //   2. **Beside** the agent's repo root — for layouts where the operator
+  //      clones sharedTools as a sibling rather than nested.
+  //
+  // Both scans dedupe via `seen`, so a repo found by both passes only counts
+  // once. Limiting to depth 1 keeps the scan O(direct entries).
   const repoRoot = await findRepoRoot(agentDir);
   if (repoRoot === undefined) return;
-  const parent = dirname(repoRoot);
+  await findNestedGitDirs(repoRoot, seen);
+  await findNestedGitDirs(dirname(repoRoot), seen);
+}
+
+async function findNestedGitDirs(parentDir: string, seen: Map<string, RepoInput>): Promise<void> {
   let entries: string[];
   try {
-    entries = await readdir(parent);
+    entries = await readdir(parentDir);
   } catch {
     return;
   }
   for (const entry of entries) {
-    const candidate = join(parent, entry);
-    if (candidate === repoRoot) continue;
+    const candidate = join(parentDir, entry);
+    if (seen.has(candidate)) continue;
     try {
       const s = await stat(candidate);
       if (!s.isDirectory()) continue;
@@ -139,9 +151,7 @@ async function findSiblingRepos(agentDir: string, seen: Map<string, RepoInput>):
       continue;
     }
     if (existsSync(join(candidate, '.git'))) {
-      if (!seen.has(candidate)) {
-        seen.set(candidate, { name: computeRepoName(candidate), path: candidate });
-      }
+      seen.set(candidate, { name: computeRepoName(candidate), path: candidate });
     }
   }
 }
