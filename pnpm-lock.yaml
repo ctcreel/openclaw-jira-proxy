@@ -14,6 +14,9 @@ importers:
       bullmq:
         specifier: ^5.30.0
         version: 5.71.1
+      cron-parser:
+        specifier: ^5.5.0
+        version: 5.5.0
       express:
         specifier: ^4.21.0
         version: 4.22.1
@@ -2528,6 +2531,10 @@ packages:
   cron-parser@4.9.0:
     resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
     engines: {node: '>=12.0.0'}
+
+  cron-parser@5.5.0:
+    resolution: {integrity: sha512-oML4lKUXxizYswqmxuOCpgFS8BNUJpIu6k/2HVHyaL8Ynnf3wdf9tkns0yRdJLSIjkJ+b0DXHMZEHGpMwjnPww==}
+    engines: {node: '>=18'}
 
   croner@10.0.1:
     resolution: {integrity: sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g==}
@@ -7849,6 +7856,10 @@ snapshots:
       vary: 1.1.2
 
   cron-parser@4.9.0:
+    dependencies:
+      luxon: 3.7.2
+
+  cron-parser@5.5.0:
     dependencies:
       luxon: 3.7.2
 

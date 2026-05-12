@@ -94,7 +94,7 @@ export interface ScheduledTasksDependencies {
   /**
    * Resolves a recurring task's next-fire wall-clock from its cron pattern
    * and timezone. Tests inject a deterministic stub; production wraps
-   * `cron-parser` (already a transitive dep via BullMQ).
+   * `cron-parser` (declared as a direct dependency).
    */
   readonly nextFireFromCron?: (
     cron: string,
@@ -670,7 +670,7 @@ export function getScheduledTasksService(): ScheduledTasksService {
     redis: dedicatedRedis,
     eventBus: getEventBus(),
     getQueue: getTaskQueue,
-    nextFireFromCron: defaultNextFireFromCron,
+    nextFireFromCron: resolveNextFireFromCron,
     caps: {
       maxPerTrace: settings.scheduledTasksMaxPerTrace,
       maxFutureWindowMs: settings.scheduledTasksMaxFutureWindowMs,
@@ -704,21 +704,26 @@ export function setScheduledTasksServiceForTests(stub: ScheduledTasksService): v
  */
 const requireCronParser = createRequire(import.meta.url);
 
-interface CronParserModule {
-  parseExpression: (
-    expression: string,
-    options: { currentDate: number; tz?: string },
-  ) => { next: () => { getTime: () => number } };
+interface CronParserV5Module {
+  CronExpressionParser: {
+    parse: (
+      expression: string,
+      options: { currentDate: number; tz?: string },
+    ) => { next: () => { getTime: () => number } };
+  };
 }
 
-// noqa: NAMING001
-function defaultNextFireFromCron(
+// Exported so the dependency contract — "this module resolves a usable
+// `cron-parser`" — has a regression guard. The boot logs surfaced a
+// missing-module warning when `cron-parser` was assumed transitive but
+// no longer ships through BullMQ; the test below covers that gap.
+export function resolveNextFireFromCron(
   cron: string,
   timezone: string | undefined,
   fromMs: number,
 ): number {
-  const cronParser = requireCronParser('cron-parser') as CronParserModule;
-  const interval = cronParser.parseExpression(cron, {
+  const { CronExpressionParser } = requireCronParser('cron-parser') as CronParserV5Module;
+  const interval = CronExpressionParser.parse(cron, {
     currentDate: fromMs,
     ...(timezone ? { tz: timezone } : {}),
   });
