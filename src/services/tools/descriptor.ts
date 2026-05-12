@@ -44,7 +44,7 @@ export type ToolYaml = z.infer<typeof toolYamlSchema>;
  * of binding keys (env names registered with SECRETS_CONFIG) operators may
  * use to provide the value. `aliases` is non-empty by construction.
  */
-export interface SecretSpec {
+export interface SecretSpecification {
   /** Kwarg name `invoke()` receives at dispatch time. */
   readonly canonical: string;
   /**
@@ -70,7 +70,7 @@ export interface ToolDescriptor {
   readonly name: string;
   readonly description: string;
   readonly args: Record<string, ArgumentDef>;
-  readonly secrets: readonly SecretSpec[];
+  readonly secrets: readonly SecretSpecification[];
 }
 
 /**
@@ -96,11 +96,11 @@ export function computeToolName(directory: string): string {
 }
 
 /**
- * Normalize a `tool.yaml` `secrets:` map into an ordered list of SecretSpec.
+ * Normalize a `tool.yaml` `secrets:` map into an ordered list of SecretSpecification.
  * The YAML map's iteration order is preserved (js-yaml uses insertion order),
  * so authors who care about canonical-name ordering control it via the YAML.
  */
-export function normalizeSecrets(raw: Record<string, string | string[]>): SecretSpec[] {
+export function normalizeSecrets(raw: Record<string, string | string[]>): SecretSpecification[] {
   return Object.entries(raw).map(([canonical, aliasOrAliases]) => ({
     canonical,
     aliases: typeof aliasOrAliases === 'string' ? [aliasOrAliases] : [...aliasOrAliases],

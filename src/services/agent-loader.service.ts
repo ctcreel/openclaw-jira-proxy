@@ -359,11 +359,11 @@ async function validateToolsConfig(
         // right place to catch it. For each secret, at least one declared
         // alias MUST be registered in SECRETS_CONFIG.
         const secretManager = getSecretManager();
-        for (const secretSpec of descriptor.secrets) {
-          const resolvable = secretSpec.aliases.some((a) => secretManager.hasSecret(a));
+        for (const secretSpecification of descriptor.secrets) {
+          const resolvable = secretSpecification.aliases.some((a) => secretManager.hasSecret(a));
           if (!resolvable) {
             throw new Error(
-              `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": tool '${descriptor.name}' needs secret '${secretSpec.canonical}' but none of its aliases [${secretSpec.aliases.join(', ')}] are registered in SECRETS_CONFIG.`,
+              `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": tool '${descriptor.name}' needs secret '${secretSpecification.canonical}' but none of its aliases [${secretSpecification.aliases.join(', ')}] are registered in SECRETS_CONFIG.`,
             );
           }
         }

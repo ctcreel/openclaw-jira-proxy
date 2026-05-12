@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { getLogger } from '../../lib/logging';
 import { getSecretManager, type SecretManager } from '../../secrets/manager';
 import type { RuleTools } from './config-schemas';
-import type { SecretSpec, ToolDescriptor } from './descriptor';
+import type { SecretSpecification, ToolDescriptor } from './descriptor';
 import { loadToolDescriptor } from './parse';
 import {
   buildMCPRunFiles,
@@ -43,8 +43,12 @@ export async function buildMCPBundle(
   const secretManager = getSecretManager();
   for (const desc of descriptors) {
     const creds: Record<string, string> = {};
-    for (const spec of desc.secrets) {
-      creds[spec.canonical] = resolveSecretFromAliases(spec, secretManager, desc.name);
+    for (const specification of desc.secrets) {
+      creds[specification.canonical] = resolveSecretFromAliases(
+        specification,
+        secretManager,
+        desc.name,
+      );
     }
     perTool[desc.name] = creds;
   }
@@ -73,18 +77,18 @@ export async function buildMCPBundle(
  * Keeping the runtime guard means a key removed mid-run still fails loudly.
  */
 export function resolveSecretFromAliases(
-  spec: SecretSpec,
+  specification: SecretSpecification,
   secretManager: SecretManager,
   toolName: string,
 ): string {
-  for (const alias of spec.aliases) {
+  for (const alias of specification.aliases) {
     if (secretManager.hasSecret(alias)) {
       return secretManager.getSecret(alias);
     }
   }
   throw new Error(
-    `Tool '${toolName}' needs secret '${spec.canonical}' but none of its declared ` +
-      `aliases [${spec.aliases.join(', ')}] are registered in SECRETS_CONFIG.`,
+    `Tool '${toolName}' needs secret '${specification.canonical}' but none of its declared ` +
+      `aliases [${specification.aliases.join(', ')}] are registered in SECRETS_CONFIG.`,
   );
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { validateToolSignature } from '../../../src/services/tools/validate';
-import type { SecretSpec, ToolDescriptor } from '../../../src/services/tools/descriptor';
+import type { SecretSpecification, ToolDescriptor } from '../../../src/services/tools/descriptor';
 
 describe('validateToolSignature', () => {
   let workDir: string;
@@ -17,13 +17,13 @@ describe('validateToolSignature', () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  function secret(canonical: string, ...aliases: string[]): SecretSpec {
+  function secret(canonical: string, ...aliases: string[]): SecretSpecification {
     return { canonical, aliases: aliases.length > 0 ? aliases : [canonical.toUpperCase()] };
   }
 
   function makeDescriptor(
     args: ToolDescriptor['args'],
-    secrets: readonly SecretSpec[],
+    secrets: readonly SecretSpecification[],
   ): ToolDescriptor {
     return {
       directory: workDir,

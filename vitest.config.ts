@@ -10,11 +10,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      // Threshold ratchet (SPE-2078 followups):
-      //   statements 87 → 95
-      //   branches   87 → 88   (see note below)
-      //   functions  93 → 95
-      //   lines      87 → 95
+      // Threshold ratchet (SPE-2078 followups): statements/functions/lines
+      // at 95, branches at 88. Current measured: 95.1 / 88.13 / 95.43 / 95.1.
       //
       // Why branches lands at 88, not 95: the remaining gap is in files
       // whose uncovered branches are documented-unreachable defensive
@@ -22,14 +19,9 @@ export default defineConfig({
       // undefined) throw 'unreachable'` in embedding/null.ts, the
       // `multiplier === undefined` branch in lib/duration.ts, the
       // `error instanceof Error ? ... : String(error)` ternaries on
-      // `try { exec }` blocks). Forcing the 95% branch number would
-      // require either fake tests of unreachable code or deleting the
-      // TypeScript narrows — both make the code worse, not better.
-      // Reachable error paths are covered.
-      //
-      // To genuinely push branches higher: remove `noUncheckedIndexedAccess`
-      // from tsconfig (drops a real safety net), or refactor to runtime
-      // shape-validation primitives (large change, separate scope).
+      // `try { exec }` blocks). Forcing 95% on branches would require
+      // either fake tests of unreachable code or deleting the TypeScript
+      // narrows — both make the code worse.
       thresholds: {
         statements: 95,
         branches: 88,

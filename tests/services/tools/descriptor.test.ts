@@ -146,7 +146,7 @@ describe('normalizeSecrets', () => {
     ]);
   });
 
-  it('copies an array form into the SecretSpec aliases', () => {
+  it('copies an array form into the SecretSpecification aliases', () => {
     expect(
       normalizeSecrets({
         bot_token: ['SLACK_WINSTON_BOT_TOKEN', 'SLACK_BOT_TOKEN'],
