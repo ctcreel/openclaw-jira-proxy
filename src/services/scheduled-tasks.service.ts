@@ -670,7 +670,7 @@ export function getScheduledTasksService(): ScheduledTasksService {
     redis: dedicatedRedis,
     eventBus: getEventBus(),
     getQueue: getTaskQueue,
-    nextFireFromCron: defaultNextFireFromCron,
+    nextFireFromCron: resolveNextFireFromCron,
     caps: {
       maxPerTrace: settings.scheduledTasksMaxPerTrace,
       maxFutureWindowMs: settings.scheduledTasksMaxFutureWindowMs,
@@ -713,12 +713,11 @@ interface CronParserV5Module {
   };
 }
 
-// noqa: NAMING001
 // Exported so the dependency contract — "this module resolves a usable
 // `cron-parser`" — has a regression guard. The boot logs surfaced a
 // missing-module warning when `cron-parser` was assumed transitive but
 // no longer ships through BullMQ; the test below covers that gap.
-export function defaultNextFireFromCron(
+export function resolveNextFireFromCron(
   cron: string,
   timezone: string | undefined,
   fromMs: number,
