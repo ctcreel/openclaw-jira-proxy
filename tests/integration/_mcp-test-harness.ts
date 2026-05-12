@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -52,6 +52,97 @@ export async function createMCPTestWorkspace(prefix: string): Promise<MCPTestWor
       else process.env['PYTHONPATH'] = originalPythonPath;
       await rm(workDir, { recursive: true, force: true });
     },
+  };
+}
+
+export interface ArgumentSpec {
+  readonly type: string;
+  readonly description: string;
+  readonly optional?: boolean;
+}
+
+export interface SecretSpec {
+  readonly canonical: string;
+  readonly aliases: readonly string[];
+}
+
+export interface ToolFixture {
+  /** Subdirectory inside the parent package (e.g. 'echo', 'leak', 'tool_a'). */
+  readonly toolSegment: string;
+  /** API-facing tool name surfaced to the model (e.g. 'fixture_echo'). */
+  readonly apiName: string;
+  readonly description: string;
+  readonly args: Record<string, ArgumentSpec>;
+  readonly secrets: readonly SecretSpec[];
+  /** Verbatim Python source for the tool's impl.py. */
+  readonly implPy: string;
+}
+
+export interface StagedMCPFixtures {
+  /** Last-staged tool's package dir (single-tool tests use this directly). */
+  readonly pkgDir: string;
+  /** Path to the materialized tool-config.json the server reads on startup. */
+  readonly toolConfigPath: string;
+  /** Path where the server should write its audit NDJSON. */
+  readonly auditPath: string;
+}
+
+/**
+ * Stage one or more Python tools inside the workspace and write the
+ * tool-config.json the MCP server consumes at startup. Encapsulates the
+ * `mkdir + __init__.py + impl.py + tool-config.json` pattern that every
+ * SPE-2078 integration test needs. Tests provide ToolFixture specs only.
+ */
+export async function stageMCPFixtures(
+  workDir: string,
+  packageName: string,
+  tools: readonly ToolFixture[],
+): Promise<StagedMCPFixtures> {
+  const pkgRoot = join(workDir, packageName);
+  await mkdir(pkgRoot, { recursive: true });
+  await writeFile(join(pkgRoot, '__init__.py'), '');
+
+  let lastPkgDir = pkgRoot;
+  for (const tool of tools) {
+    const toolDir = join(pkgRoot, tool.toolSegment);
+    await mkdir(toolDir, { recursive: true });
+    await writeFile(join(toolDir, '__init__.py'), '');
+    await writeFile(join(toolDir, 'impl.py'), tool.implPy);
+    lastPkgDir = toolDir;
+  }
+
+  const toolConfigPath = join(workDir, 'tool-config.json');
+  await writeFile(
+    toolConfigPath,
+    JSON.stringify({
+      tools: tools.map((tool) => {
+        const directory = join(pkgRoot, tool.toolSegment);
+        const inputProperties: Record<string, { type: string; description: string }> = {};
+        const required: string[] = [];
+        for (const [argName, spec] of Object.entries(tool.args)) {
+          inputProperties[argName] = { type: spec.type, description: spec.description };
+          if (!spec.optional) required.push(argName);
+        }
+        return {
+          name: tool.apiName,
+          description: tool.description,
+          args: tool.args,
+          secrets: tool.secrets.map((s) => ({
+            canonical: s.canonical,
+            aliases: [...s.aliases],
+          })),
+          reference: `${packageName}.${tool.toolSegment}`,
+          directory,
+          inputSchema: { type: 'object', properties: inputProperties, required },
+        };
+      }),
+    }),
+  );
+
+  return {
+    pkgDir: lastPkgDir,
+    toolConfigPath,
+    auditPath: join(workDir, 'audit.log'),
   };
 }
 

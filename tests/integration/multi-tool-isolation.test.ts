@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
-import { createMCPTestWorkspace, driveMCPServer, type MCPTestWorkspace } from './_mcp-test-harness';
+import {
+  createMCPTestWorkspace,
+  driveMCPServer,
+  stageMCPFixtures,
+  type MCPTestWorkspace,
+} from './_mcp-test-harness';
 
 /**
  * Multi-tool credential isolation — regression guard for the contract
@@ -24,6 +28,14 @@ interface ToolsCallResult {
   isError: boolean;
 }
 
+const ISO_IMPL = `def invoke(*, label, my_token):
+    return {
+        'label': label,
+        'token_first_8': my_token[:8],
+        'token_length': len(my_token),
+    }
+`;
+
 describe('SPE-2078 multi-tool credential isolation', () => {
   let ws: MCPTestWorkspace;
   let toolConfigPath: string;
@@ -31,66 +43,24 @@ describe('SPE-2078 multi-tool credential isolation', () => {
 
   beforeEach(async () => {
     ws = await createMCPTestWorkspace('spe-2078-isolation');
-
-    // Two tools share the same impl file and behavior: each returns the
-    // value it was passed plus the first 8 chars + length of its token,
-    // so we can spot any cross-contamination at the impl call boundary.
-    const pkgRoot = join(ws.workDir, 'iso_pkg');
-    await mkdir(pkgRoot, { recursive: true });
-    await writeFile(join(pkgRoot, '__init__.py'), '');
-
-    for (const toolName of ['tool_a', 'tool_b']) {
-      const toolDir = join(pkgRoot, toolName);
-      await mkdir(toolDir, { recursive: true });
-      await writeFile(join(toolDir, '__init__.py'), '');
-      await writeFile(
-        join(toolDir, 'impl.py'),
-        `def invoke(*, label, my_token):
-    return {
-        'label': label,
-        'token_first_8': my_token[:8],
-        'token_length': len(my_token),
-    }
-`,
-      );
-    }
-
-    toolConfigPath = join(ws.workDir, 'tool-config.json');
-    await writeFile(
-      toolConfigPath,
-      JSON.stringify({
-        tools: [
-          {
-            name: 'iso_tool_a',
-            description: 'Tool A — should only see TOKEN_A',
-            args: { label: { type: 'string', description: 'Echoed back' } },
-            secrets: [{ canonical: 'my_token', aliases: ['ISO_TOKEN_A'] }],
-            reference: 'iso_pkg.tool_a',
-            directory: join(pkgRoot, 'tool_a'),
-            inputSchema: {
-              type: 'object',
-              properties: { label: { type: 'string', description: 'Echoed back' } },
-              required: ['label'],
-            },
-          },
-          {
-            name: 'iso_tool_b',
-            description: 'Tool B — should only see TOKEN_B',
-            args: { label: { type: 'string', description: 'Echoed back' } },
-            secrets: [{ canonical: 'my_token', aliases: ['ISO_TOKEN_B'] }],
-            reference: 'iso_pkg.tool_b',
-            directory: join(pkgRoot, 'tool_b'),
-            inputSchema: {
-              type: 'object',
-              properties: { label: { type: 'string', description: 'Echoed back' } },
-              required: ['label'],
-            },
-          },
-        ],
-      }),
-    );
-
-    auditPath = join(ws.workDir, 'audit.log');
+    ({ toolConfigPath, auditPath } = await stageMCPFixtures(ws.workDir, 'iso_pkg', [
+      {
+        toolSegment: 'tool_a',
+        apiName: 'iso_tool_a',
+        description: 'Tool A — should only see TOKEN_A',
+        args: { label: { type: 'string', description: 'Echoed back' } },
+        secrets: [{ canonical: 'my_token', aliases: ['ISO_TOKEN_A'] }],
+        implPy: ISO_IMPL,
+      },
+      {
+        toolSegment: 'tool_b',
+        apiName: 'iso_tool_b',
+        description: 'Tool B — should only see TOKEN_B',
+        args: { label: { type: 'string', description: 'Echoed back' } },
+        secrets: [{ canonical: 'my_token', aliases: ['ISO_TOKEN_B'] }],
+        implPy: ISO_IMPL,
+      },
+    ]));
   });
 
   afterEach(async () => {

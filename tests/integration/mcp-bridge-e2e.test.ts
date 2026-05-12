@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import {
   createMCPTestWorkspace,
   driveMCPServer,
+  stageMCPFixtures,
   type MCPTestWorkspace,
   type MCPResponse,
 } from './_mcp-test-harness';
@@ -56,52 +56,23 @@ interface AuditRecord {
 
 describe('MCP bridge end-to-end (spawned Python server)', () => {
   let ws: MCPTestWorkspace;
-  let pkgDir: string;
   let toolConfigPath: string;
   let auditPath: string;
 
   beforeEach(async () => {
     ws = await createMCPTestWorkspace('spe-2078-e2e');
-
-    // Stage a Python fixture tool that echoes its value plus the first 4
-    // chars of the credential, so we can verify the credential reached the
-    // impl via kwargs.
-    pkgDir = join(ws.workDir, 'fixture_e2e_pkg', 'echo');
-    await mkdir(pkgDir, { recursive: true });
-    await writeFile(join(ws.workDir, 'fixture_e2e_pkg', '__init__.py'), '');
-    await writeFile(join(pkgDir, '__init__.py'), '');
-    await writeFile(
-      join(pkgDir, 'impl.py'),
-      `def invoke(*, value, api_token):
+    ({ toolConfigPath, auditPath } = await stageMCPFixtures(ws.workDir, 'fixture_e2e_pkg', [
+      {
+        toolSegment: 'echo',
+        apiName: 'fixture_echo',
+        description: 'Echo a value and the first 4 chars of api_token',
+        args: { value: { type: 'string', description: 'value to echo' } },
+        secrets: [{ canonical: 'api_token', aliases: ['API_TOKEN'] }],
+        implPy: `def invoke(*, value, api_token):
     return {"echoed": value, "token_head": api_token[:4]}
 `,
-    );
-
-    toolConfigPath = join(ws.workDir, 'tool-config.json');
-    await writeFile(
-      toolConfigPath,
-      JSON.stringify({
-        tools: [
-          {
-            name: 'fixture_echo',
-            description: 'Echo a value and the first 4 chars of api_token',
-            args: {
-              value: { type: 'string', description: 'value to echo' },
-            },
-            secrets: [{ canonical: 'api_token', aliases: ['API_TOKEN'] }],
-            reference: 'fixture_e2e_pkg.echo',
-            directory: pkgDir,
-            inputSchema: {
-              type: 'object',
-              properties: { value: { type: 'string', description: 'value to echo' } },
-              required: ['value'],
-            },
-          },
-        ],
-      }),
-    );
-
-    auditPath = join(ws.workDir, 'audit.log');
+      },
+    ]));
   });
 
   afterEach(async () => {
