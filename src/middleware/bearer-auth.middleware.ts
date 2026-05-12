@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 
 import { getSettings } from '../config';
+import { getStringHeader } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('bearer-auth');
@@ -25,8 +26,8 @@ export function requireAgentBearer(request: Request, response: Response, next: N
     response.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  const header = request.headers.authorization;
-  if (typeof header !== 'string' || !header.startsWith(BEARER_PREFIX)) {
+  const header = getStringHeader(request, 'authorization');
+  if (header === undefined || !header.startsWith(BEARER_PREFIX)) {
     response.status(401).json({ error: 'Unauthorized' });
     return;
   }

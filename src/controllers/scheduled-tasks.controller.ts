@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
+import { getStringParameter, getStringQuery } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import {
@@ -67,8 +68,8 @@ export async function listScheduledTasks(request: Request, response: Response): 
     createdByTraceId?: string;
   } = {};
 
-  const createdByRaw = request.query['createdBy'];
-  if (typeof createdByRaw === 'string') {
+  const createdByRaw = getStringQuery(request, 'createdBy');
+  if (createdByRaw !== undefined) {
     const parsed = createdBySchema.safeParse(createdByRaw);
     if (!parsed.success) {
       response
@@ -79,18 +80,14 @@ export async function listScheduledTasks(request: Request, response: Response): 
     filters.createdBy = parsed.data;
   }
 
-  const agentIdRaw = request.query['agentId'];
-  if (typeof agentIdRaw === 'string' && agentIdRaw.length > 0) {
-    filters.agentId = agentIdRaw;
-  }
+  const agentIdRaw = getStringQuery(request, 'agentId');
+  if (agentIdRaw !== undefined) filters.agentId = agentIdRaw;
 
-  const traceRaw = request.query['createdByTraceId'];
-  if (typeof traceRaw === 'string' && traceRaw.length > 0) {
-    filters.createdByTraceId = traceRaw;
-  }
+  const traceRaw = getStringQuery(request, 'createdByTraceId');
+  if (traceRaw !== undefined) filters.createdByTraceId = traceRaw;
 
-  const limit = parseLimit(request.query['limit']);
-  const cursor = typeof request.query['cursor'] === 'string' ? request.query['cursor'] : undefined;
+  const limit = parseLimit(getStringQuery(request, 'limit'));
+  const cursor = getStringQuery(request, 'cursor');
 
   try {
     const page = await registry.list(filters, {
@@ -264,19 +261,15 @@ export async function deleteScheduledTask(request: Request, response: Response):
 }
 
 function readIdParameter(request: Request): string | null {
-  const raw = request.params['id'];
-  if (typeof raw !== 'string' || raw.length === 0) return null;
-  return raw;
+  return getStringParameter(request, 'id') ?? null;
 }
 
 function readAgentIdQuery(request: Request): string | undefined {
-  const raw = request.query['agentId'];
-  if (typeof raw !== 'string' || raw.length === 0) return undefined;
-  return raw;
+  return getStringQuery(request, 'agentId');
 }
 
-function parseLimit(raw: unknown): number | undefined {
-  if (typeof raw !== 'string') return undefined;
+function parseLimit(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
   return Math.min(parsed, MAX_LIMIT);

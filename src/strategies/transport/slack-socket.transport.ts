@@ -7,6 +7,7 @@ import type { ResolvedAgent } from '../../services/agent-loader.service';
 import { getEventBus } from '../../services/event-bus.service';
 import type { EventBus } from '../../services/event-bus.service';
 import { ingestEvent } from '../../services/event-ingest.service';
+import { readString, isPlainObject } from '../../lib/extract';
 import { getLogger } from '../../lib/logging';
 
 import { mapSocketModeEnvelopeToWebhookPayload } from './event-mapper';
@@ -96,8 +97,8 @@ export class SlackSocketTransport implements Transport {
 
     this.handleSlackEvent = (...args: unknown[]): void => {
       const argument = args[0];
-      if (argument && typeof argument === 'object') {
-        void this.dispatchSlackEvent(argument as SlackEventListenerArgs);
+      if (isPlainObject(argument)) {
+        void this.dispatchSlackEvent(argument as unknown as SlackEventListenerArgs);
       }
     };
     this.handleConnected = (): void => {
@@ -111,7 +112,7 @@ export class SlackSocketTransport implements Transport {
       logger.info({ provider: this.provider.name }, 'Slack socket connected');
     };
     this.handleDisconnected = (...args: unknown[]): void => {
-      const reason = typeof args[0] === 'string' ? args[0] : 'unknown';
+      const reason = readString(args[0]) ?? 'unknown';
       this.events.publish({
         type: 'socket.disconnected',
         timestamp: Date.now(),
@@ -227,10 +228,10 @@ export class SlackSocketTransport implements Transport {
   }
 
   private async dispatchSlackEvent(args: SlackEventListenerArgs): Promise<void> {
-    const eventType = typeof args.type === 'string' ? args.type : null;
+    const eventType = readString(args.type);
     // Only `events_api` envelopes drive agent runs. Slash commands and
     // interactive components are out of scope for this ticket.
-    if (eventType !== null && eventType !== 'events_api') {
+    if (eventType !== undefined && eventType !== 'events_api') {
       try {
         await args.ack();
       } catch (error: unknown) {

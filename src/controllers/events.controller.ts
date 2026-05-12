@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 
+import { getStringQuery } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 import { getEventBus } from '../services/event-bus.service';
 import type { StampedEvent } from '../services/event-bus.service';
@@ -80,10 +81,8 @@ function readSinceId(request: Request): number {
   if (header) {
     return parseId(header);
   }
-  const since = request.query['since'];
-  if (typeof since === 'string') {
-    return parseId(since);
-  }
+  const since = getStringQuery(request, 'since');
+  if (since !== undefined) return parseId(since);
   return 0;
 }
 

@@ -16,15 +16,12 @@
  * to confirm a webhook URL); Socket Mode authenticates at the socket
  * handshake instead. So this mapper does not handle that case.
  */
+import { isPlainObject } from '../../lib/extract';
+
 export function mapSocketModeEnvelopeToWebhookPayload(envelope: unknown): unknown {
-  if (!envelope || typeof envelope !== 'object') {
-    return envelope;
-  }
-  const candidate = envelope as Record<string, unknown>;
-  const payload = candidate['payload'];
-  if (payload && typeof payload === 'object') {
-    return payload;
-  }
+  if (!isPlainObject(envelope)) return envelope;
+  const payload = envelope['payload'];
+  if (isPlainObject(payload)) return payload;
   // `events_api` envelopes always carry a payload; other envelope types
   // (slash_commands, interactive) are out of scope for this ticket.
   // Returning the raw envelope keeps the contract: routing will see the

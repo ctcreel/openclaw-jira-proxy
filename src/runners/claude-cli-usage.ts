@@ -17,6 +17,7 @@
  * when missing/non-numeric — matches Anthropic's documented behavior
  * where omitted fields imply zero rather than "unknown."
  */
+import { isPlainObject } from '../lib/extract';
 import type { StreamEvent } from './claude-cli-stream-parser';
 
 export interface UsageStats {
@@ -54,11 +55,8 @@ function readNumber(record: Record<string, unknown>, key: string): number {
 export function extractUsageFromResultEvent(event: StreamEvent): UsageStats | null {
   if (event.type !== 'result') return null;
   const raw = event as Record<string, unknown>;
-  const usage = raw['usage'];
-  if (usage === null || usage === undefined || typeof usage !== 'object') {
-    return null;
-  }
-  const usageRecord = usage as Record<string, unknown>;
+  const usageRecord = raw['usage'];
+  if (!isPlainObject(usageRecord)) return null;
   const inputTokens = readNumber(usageRecord, 'input_tokens');
   const cacheReadTokens = readNumber(usageRecord, 'cache_read_input_tokens');
   const cacheCreationTokens = readNumber(usageRecord, 'cache_creation_input_tokens');
