@@ -54,7 +54,7 @@ describe('initializeAgentVersion (sharedTools nested-repo discovery)', () => {
     await makeGitRepo(clawndomCheckout);
 
     const version = await initializeAgentVersion([agentDir], clawndomCheckout);
-    const repoNames = version.repos.map((r) => r.name).sort();
+    const repoNames = version.repos.map((r) => r.name).sort((a, b) => a.localeCompare(b));
 
     expect(repoNames).toContain('agency-tools');
     expect(repoNames).toContain('winston-agency');
