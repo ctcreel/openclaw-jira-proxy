@@ -8,6 +8,7 @@
     "build": "tsup",
     "build:tsc": "tsc",
     "start": "node dist/server.js",
+    "audit-agent": "tsx src/audit/cli.ts",
     "lint": "eslint --ext .ts src/",
     "lint:fix": "eslint --fix --ext .ts src/",
     "typecheck": "tsc --noEmit",
@@ -21,6 +22,9 @@
     "skip-comments": "tsx scripts/check-skip-comments.ts",
     "naming:all": "pnpm run naming && pnpm run abbreviations && pnpm run skip-comments",
     "prepare": "husky"
+  },
+  "bin": {
+    "clawndom-audit": "dist/audit/cli.js"
   },
   "dependencies": {
     "@slack/socket-mode": "^2.0.4",
