@@ -40,15 +40,26 @@ export function makeFakeGit(fakeRemotes: string): GitClient {
 
 /**
  * Writes a minimal agent repo (clawndom.yaml) under fakeRemotes/<slug>.
+ *
+ * The optional `templates` map seeds template files referenced by the
+ * yamlBody. The boot-time audit refuses to start an agent whose routes
+ * declare templates that don't exist on disk; tests that exercise a real
+ * `clawndom.yaml` must satisfy that contract.
  */
 export async function writeAgentRepo(
   fakeRemotes: string,
   slug: string,
   yamlBody: string,
+  templates: Record<string, string> = {},
 ): Promise<void> {
   const repoRoot = join(fakeRemotes, slug);
   await mkdir(repoRoot, { recursive: true });
   await writeFile(join(repoRoot, 'clawndom.yaml'), yamlBody, 'utf-8');
+  for (const [relativePath, body] of Object.entries(templates)) {
+    const fullPath = join(repoRoot, relativePath);
+    await mkdir(join(fullPath, '..'), { recursive: true });
+    await writeFile(fullPath, body, 'utf-8');
+  }
 }
 
 /**

@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
 
+import { auditAgent } from '../audit';
 import { modelRuleSchema } from '../config';
 import type { AgentEntry, SharedToolsConfig } from '../config';
 import { getLogger } from '../lib/logging';
@@ -206,12 +207,57 @@ export async function loadAgents(
     validateMemoryConfig(entry.name, config);
     validateSessionConfig(entry.name, config);
     await validateToolsConfig(entry.name, config, agentDir);
+    await runWorkspaceAudit(entry.name, agentDir);
 
     resolved.push({ name: entry.name, dir: agentDir, config });
   }
 
   validateMemoryNamespaceUniqueness(resolved);
   return resolved;
+}
+
+/**
+ * Boot-time workspace audit. Runs the same checks `clawndom-audit` runs at
+ * CI time, but against the just-cloned workspace on the operator's machine.
+ * Refuses to start an agent whose workspace fails any error-level rule —
+ * a broken workspace will produce nothing but failed jobs, so failing fast
+ * is strictly better than handing the agent to BullMQ.
+ *
+ * Warnings (legacy patterns, undeclared scopes) are logged but don't block
+ * startup — they're nudges, not crashes.
+ */
+async function runWorkspaceAudit(agentName: string, agentDir: string): Promise<void> {
+  const report = await auditAgent(agentDir);
+  const errors = report.findings.filter((finding) => finding.severity === 'error');
+  const warnings = report.findings.filter((finding) => finding.severity === 'warning');
+
+  for (const warning of warnings) {
+    const location =
+      warning.path !== undefined
+        ? warning.line !== undefined
+          ? ` (${warning.path}:${warning.line})`
+          : ` (${warning.path})`
+        : '';
+    logger.warn(
+      { agent: agentName, rule: warning.rule },
+      `Workspace audit warning${location}: ${warning.message}`,
+    );
+  }
+
+  if (errors.length === 0) return;
+
+  const lines = errors.map((error) => {
+    const location =
+      error.path !== undefined
+        ? error.line !== undefined
+          ? `${error.path}:${error.line}`
+          : error.path
+        : '<unknown>';
+    return `  - [${error.rule}] ${location}: ${error.message}`;
+  });
+  throw new Error(
+    `Agent ${agentName}: workspace audit failed with ${errors.length} error(s):\n${lines.join('\n')}`,
+  );
 }
 
 /**
