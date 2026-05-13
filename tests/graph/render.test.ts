@@ -2,15 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import { renderGraphFromDisk } from '../../src/graph/render';
 
-import { buildAuditFixture, registerAuditFixtureHooks } from '../agent-fixture';
+import { materializeWorkspace, registerWorkspaceCleanup } from '../agent-fixture';
 
 const fixture = async (files: Record<string, string>): Promise<string> => {
-  const { agentDir } = await buildAuditFixture('graph-test', files);
+  const { agentDir } = await materializeWorkspace(files);
   return agentDir;
 };
 
 describe('renderGraphFromDisk', () => {
-  registerAuditFixtureHooks();
+  registerWorkspaceCleanup();
   it('emits a Mermaid flowchart wrapped in a code fence', async () => {
     const dir = await fixture({
       'clawndom.yaml': `
