@@ -33,7 +33,11 @@ afterEach(async () => {
 });
 
 async function makeFixture(files: Record<string, string>): Promise<Fixture> {
-  const fixture = await buildFixture(files);
+  // Every fixture gets a parseable identity statement by default; tests
+  // that exercise the identity check itself pass their own
+  // `identity/IDENTITY.md` to override.
+  const merged = { 'identity/IDENTITY.md': MINIMAL_IDENTITY, ...files };
+  const fixture = await buildFixture(merged);
   fixtures.push(fixture);
   return fixture;
 }
@@ -46,6 +50,17 @@ routing:
         messageTemplate: templates/smoke.md
         tools: []
 `.trimStart();
+
+// Every workspace fixture needs a parseable identity statement; the audit
+// flags a missing or unparseable one as an error. Tests that exercise the
+// identity-statement check itself override this fixture with the shape
+// they want.
+const MINIMAL_IDENTITY = `---
+runs_as: test-agent@example.com
+---
+
+# Test Agent
+`;
 
 describe('auditAgent — happy path', () => {
   it('returns no findings when every reference resolves', async () => {
@@ -116,8 +131,9 @@ describe('checkInjectionTargets', () => {
       'clawndom.yaml': MINIMAL_CONFIG,
       'templates/smoke.md':
         '{{system-doc:identity/IDENTITY.md}}\n{{system-doc:shared/team.json}}\n',
-      'identity/IDENTITY.md': 'me',
       'shared/team.json': '{}',
+      // identity/IDENTITY.md is provided by the default fixture and itself
+      // contains parseable front-matter — the injection target resolves.
     });
     const report = await auditAgent(agentDir);
     expect(report.findings).toEqual([]);

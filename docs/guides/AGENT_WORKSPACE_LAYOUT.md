@@ -37,8 +37,34 @@ A flat `docs/` lumps two different kinds of content together. Identity (`IDENTIT
 | File | Purpose |
 |---|---|
 | `clawndom.yaml` | Routing rules: schedule (cron), webhook (per-provider rules with conditions), internal (`taskType → template`), plus `modelRules` and per-route `tools:` declarations. Memory namespaces declared at the top. |
-| `identity/IDENTITY.md` | Who the agent is: name, role, who they work with, what mailboxes/channels they touch. Injected into every template via `{{system-doc:identity/IDENTITY.md}}`. |
+| `identity/IDENTITY.md` | Who the agent is + the security statement. YAML front-matter declares the trust boundary (`runs_as`, `impersonation_subjects`, `external_recipients`, `memory_namespaces`, `tool_scopes`); prose below describes the agent. Injected into every template via `{{system-doc:identity/IDENTITY.md}}`. |
 | `identity/SOUL.md` | Engineering / voice / interaction principles. Sets behavior, not capability. |
+
+### IDENTITY.md security statement
+
+The YAML front-matter on `identity/IDENTITY.md` is a machine-checkable trust-boundary attestation. `clawndom-audit` validates it offline; future boot-time validation will refuse to start an agent whose declared subjects don't match what its routes' tools would actually use.
+
+| Field | Required? | Purpose |
+|---|---|---|
+| `runs_as` | yes | The canonical authoring identity — service-account email, Atlassian accountId, or whatever uniquely names "who this agent ships work as." |
+| `impersonation_subjects` | optional | DWD subjects the agent may pass as the `subject:` argument to any tool. Any concrete email-shaped `subject:` literal in a template that isn't in this list is a `undeclared-impersonation-subject` error. |
+| `external_recipients` | optional | Outside-domain recipients (escalation CCs, Slack channels) the agent is permitted to contact. Empty list = internal-only. |
+| `memory_namespaces` | optional | Namespaces the agent reads or writes. Must align 1:1 with `memory.namespaces` declared in `clawndom.yaml`. |
+| `tool_scopes` | optional | Per-tool entries `{ tool: <name>, notes: <intent> }`. Every tool declared on a route should have an entry; audit warns on the gap. Future iterations narrow acceptable parameter ranges. |
+
+Minimum-viable example:
+
+```
+---
+runs_as: agent@example-project.iam.gserviceaccount.com
+impersonation_subjects: []
+external_recipients: []
+memory_namespaces: []
+tool_scopes: []
+---
+
+# Agent prose follows...
+```
 
 ## Optional layout variants
 

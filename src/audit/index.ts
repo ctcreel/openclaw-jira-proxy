@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { checkIdentityStatement } from './checks/identity-statement';
 import { checkInjectionTargets } from './checks/injection-targets';
 import { checkLegacyPatterns } from './checks/legacy-patterns';
 import { checkNoLiteralMustache } from './checks/no-literal-mustache';
@@ -48,6 +49,7 @@ export async function auditAgent(
   findings.push(...(await checkInjectionTargets(agentDir, config, context)));
   findings.push(...(await checkNoLiteralMustache(agentDir, config, context)));
   findings.push(...(await checkToolUseDeclared(agentDir, config)));
+  findings.push(...(await checkIdentityStatement(agentDir, config)));
   findings.push(...(await checkLegacyPatterns(agentDir, config)));
 
   findings.sort((a, b) => {
