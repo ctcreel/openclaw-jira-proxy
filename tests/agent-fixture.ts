@@ -38,7 +38,7 @@ export function useAuditHarness(): AuditHarness {
     }
   });
   return {
-    async audit(files) {
+    async audit(files: Record<string, string>): Promise<AuditReport> {
       const agentDir = await materialize(files);
       return auditAgent(agentDir);
     },

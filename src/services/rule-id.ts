@@ -16,6 +16,8 @@
  */
 
 const NON_SLUG_RUN = /[^a-z0-9]+/g;
+const LEADING_DASHES = /^-+/;
+const TRAILING_DASHES = /-+$/;
 const LEADING_NON_LETTER = /^[^a-z]+/;
 
 interface RuleIdInputs {
@@ -36,6 +38,7 @@ export function formatAsKebab(input: string): string {
   return input
     .toLowerCase()
     .replace(NON_SLUG_RUN, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(LEADING_DASHES, '')
+    .replace(TRAILING_DASHES, '')
     .replace(LEADING_NON_LETTER, '');
 }
