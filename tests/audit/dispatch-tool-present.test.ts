@@ -1,17 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { auditAgent } from '../../src/audit';
-
-import { buildAuditFixture, registerAuditFixtureHooks } from '../agent-fixture';
-
-const makeFixture = (files: Record<string, string>): Promise<{ agentDir: string }> =>
-  buildAuditFixture('dispatch-tool-test', files);
+import { useAuditHarness } from '../agent-fixture';
 
 describe('checkDispatchToolPresent', () => {
-  registerAuditFixtureHooks();
+  const harness = useAuditHarness();
 
   it('warns when a rule declares dispatches but lacks the dispatch_task tool', async () => {
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   webhook:
@@ -33,7 +28,6 @@ routing:
       'templates/triage.md': 'noop',
       'templates/handle.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
     const finding = report.findings.find((f) => f.rule === 'dispatch-tool-missing');
     expect(finding).toBeDefined();
     expect(finding?.severity).toBe('warning');
@@ -42,7 +36,7 @@ routing:
   });
 
   it('passes when the rule lists dispatch_task on tools', async () => {
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   webhook:
@@ -65,14 +59,11 @@ routing:
       'templates/triage.md': 'noop',
       'templates/handle.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
-    const finding = report.findings.find((f) => f.rule === 'dispatch-tool-missing');
-    expect(finding).toBeUndefined();
+    expect(report.findings.find((f) => f.rule === 'dispatch-tool-missing')).toBeUndefined();
   });
 
   it('does not warn on rules with empty dispatches', async () => {
-    // A rule with no internal-task dispatch doesn't need the tool.
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   schedule:
@@ -85,16 +76,14 @@ routing:
 `.trimStart(),
       'templates/tick.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
-    const finding = report.findings.find((f) => f.rule === 'dispatch-tool-missing');
-    expect(finding).toBeUndefined();
+    expect(report.findings.find((f) => f.rule === 'dispatch-tool-missing')).toBeUndefined();
   });
 
   it('handles a missing tools field and an unnamed rule', async () => {
     // Both rule.name and rule.tools are optional in the audit schema.
     // Exercise both undefined paths in one fixture so the fall-throughs
     // (`rule.name ?? '<unnamed>'`, `tools ?? []`) are covered.
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   webhook:
@@ -111,7 +100,6 @@ routing:
       'templates/t.md': 'noop',
       'templates/h.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
     const finding = report.findings.find((f) => f.rule === 'dispatch-tool-missing');
     expect(finding).toBeDefined();
     expect(finding?.message).toContain('<unnamed>');
