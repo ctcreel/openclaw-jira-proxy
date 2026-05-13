@@ -10,6 +10,7 @@ import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
 import { listRecentSkippedWebhooks } from '../controllers/skipped-webhooks.controller';
 import { handleQueueSnapshot } from '../controllers/queue-snapshot.controller';
+import { listAgentTools, listToolCatalog } from '../controllers/tool-catalog.controller';
 import {
   createTaskHandler,
   getTaskStatusHandler,
@@ -33,6 +34,9 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/jobs/active', listActiveJobs);
   app.get('/api/webhooks/skipped/recent', listRecentSkippedWebhooks);
   app.get('/api/queue/snapshot', handleQueueSnapshot);
+
+  app.get('/api/tools/catalog', listToolCatalog);
+  app.get('/api/agents/:agent/tools', listAgentTools);
 
   app.post(
     '/api/tasks',

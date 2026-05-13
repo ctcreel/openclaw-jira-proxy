@@ -20,6 +20,7 @@ import { listSessionKeyStrategies, sessionConfigSchema } from '../strategies/ses
 import { ruleToolsSchema, type ToolRef } from './tools/config-schemas';
 import { loadToolDescriptor } from './tools/parse';
 import { validateToolSignature } from './tools/validate';
+import { getToolCatalog } from './tool-catalog.service';
 import { getSecretManager } from '../secrets/manager';
 
 const execFile = promisify(execFileCallback);
@@ -452,6 +453,7 @@ async function validateToolsConfig(
           );
         }
         seenNames.add(descriptor.name);
+        getToolCatalog().register(agentName, descriptor);
         try {
           await validateToolSignature(descriptor);
         } catch (error) {
