@@ -122,13 +122,13 @@ function scanLine(file: FileToScan, findings: AuditFinding[]): void {
     // the [^}]* class can't actually backtrack catastrophically.
     let cursor = 0;
     for (;;) {
-      const openIdx = line.indexOf('{{', cursor);
-      if (openIdx === -1) break;
-      const closeIdx = line.indexOf('}}', openIdx + 2);
-      if (closeIdx === -1) break;
-      const token = line.slice(openIdx, closeIdx + 2);
+      const openIndex = line.indexOf('{{', cursor);
+      if (openIndex === -1) break;
+      const closeIndex = line.indexOf('}}', openIndex + 2);
+      if (closeIndex === -1) break;
+      const token = line.slice(openIndex, closeIndex + 2);
       const verdict = classify(token, file.tier);
-      cursor = closeIdx + 2;
+      cursor = closeIndex + 2;
       if (verdict === 'ok') continue;
       findings.push({
         severity: 'error',
