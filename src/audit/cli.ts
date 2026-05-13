@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { argv, cwd, exit, stdout } from 'node:process';
 
 import { auditAgent } from './index';
-import { countBySeverity } from './types';
+import { getCountsBySeverity } from './types';
 import type { AuditFinding } from './types';
 
 interface ParsedArgs {
@@ -16,13 +16,13 @@ function parseArgs(rawArgv: readonly string[]): ParsedArgs | { error: string } {
   const positional: string[] = [];
   const flags: Record<string, string | boolean> = {};
   for (let i = 0; i < rawArgv.length; i += 1) {
-    const arg = rawArgv[i];
-    if (arg === undefined) continue;
-    if (arg === '--json') {
+    const argument = rawArgv[i];
+    if (argument === undefined) continue;
+    if (argument === '--json') {
       flags['json'] = true;
       continue;
     }
-    if (arg === '--shared-dir') {
+    if (argument === '--shared-dir') {
       const value = rawArgv[i + 1];
       if (value === undefined) {
         return { error: '--shared-dir requires a path argument.' };
@@ -31,18 +31,18 @@ function parseArgs(rawArgv: readonly string[]): ParsedArgs | { error: string } {
       i += 1;
       continue;
     }
-    if (arg.startsWith('--shared-dir=')) {
-      flags['sharedDir'] = arg.slice('--shared-dir='.length);
+    if (argument.startsWith('--shared-dir=')) {
+      flags['sharedDir'] = argument.slice('--shared-dir='.length);
       continue;
     }
-    if (arg === '-h' || arg === '--help') {
+    if (argument === '-h' || argument === '--help') {
       flags['help'] = true;
       continue;
     }
-    if (arg.startsWith('-')) {
-      return { error: `Unknown flag: ${arg}` };
+    if (argument.startsWith('-')) {
+      return { error: `Unknown flag: ${argument}` };
     }
-    positional.push(arg);
+    positional.push(argument);
   }
   if (flags['help']) {
     return { error: 'help' };
@@ -78,7 +78,7 @@ Options:
 Exit code is 0 when no errors are found (warnings allowed), 1 otherwise.
 `;
 
-async function main(): Promise<number> {
+async function runCli(): Promise<number> {
   const parsed = parseArgs(argv.slice(2));
   if ('error' in parsed) {
     if (parsed.error === 'help') {
@@ -97,7 +97,7 @@ async function main(): Promise<number> {
     stdout.write(renderHumanReport(parsed.agentDir, report.findings));
   }
 
-  const counts = countBySeverity(report.findings);
+  const counts = getCountsBySeverity(report.findings);
   return counts.error > 0 ? 1 : 0;
 }
 
@@ -115,12 +115,12 @@ function renderHumanReport(agentDir: string, findings: readonly AuditFinding[]):
       lines.push(`  hint: ${f.hint}`);
     }
   }
-  const counts = countBySeverity(findings);
+  const counts = getCountsBySeverity(findings);
   lines.push('', `summary: ${counts.error} error(s), ${counts.warning} warning(s).`);
   return `${lines.join('\n')}\n`;
 }
 
-main()
+runCli()
   .then((code) => exit(code))
   .catch((err) => {
     process.stderr.write(`audit failed: ${(err as Error).message}\n`);

@@ -36,7 +36,9 @@ export interface AuditReport {
   readonly findings: readonly AuditFinding[];
 }
 
-export function countBySeverity(findings: readonly AuditFinding[]): Record<AuditSeverity, number> {
+export function getCountsBySeverity(
+  findings: readonly AuditFinding[],
+): Record<AuditSeverity, number> {
   return findings.reduce(
     (acc, finding) => {
       acc[finding.severity] += 1;

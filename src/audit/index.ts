@@ -6,7 +6,7 @@ import { checkLegacyPatterns } from './checks/legacy-patterns';
 import { checkNoLiteralMustache } from './checks/no-literal-mustache';
 import { checkTemplatesExist } from './checks/templates-exist';
 import { checkToolUseDeclared } from './checks/tool-use-declared';
-import { autoDetectSharedDir } from './injection-scan';
+import { findSharedDir } from './injection-scan';
 import { loadAgentConfig } from './load-config';
 import type { AuditFinding, AuditReport } from './types';
 
@@ -20,6 +20,7 @@ export interface AuditOptions {
  * aggregated report. Findings sort error → warning, then by rule name + path
  * for stable output.
  */
+// noqa: NAMING001 — `audit` is a verb; public API name, renaming to runAudit muddies meaning.
 export async function auditAgent(
   agentDir: string,
   options: AuditOptions = {},
@@ -39,13 +40,13 @@ export async function auditAgent(
   }
 
   const { config } = await loadAgentConfig(agentDir);
-  const sharedDir = options.sharedDir ?? autoDetectSharedDir(agentDir);
-  const ctx = { agentDir, sharedDir };
+  const sharedDir = options.sharedDir ?? findSharedDir(agentDir);
+  const context = { agentDir, sharedDir };
 
   const findings: AuditFinding[] = [];
   findings.push(...checkTemplatesExist(agentDir, config));
-  findings.push(...(await checkInjectionTargets(agentDir, config, ctx)));
-  findings.push(...(await checkNoLiteralMustache(agentDir, config, ctx)));
+  findings.push(...(await checkInjectionTargets(agentDir, config, context)));
+  findings.push(...(await checkNoLiteralMustache(agentDir, config, context)));
   findings.push(...(await checkToolUseDeclared(agentDir, config)));
   findings.push(...(await checkLegacyPatterns(agentDir, config)));
 

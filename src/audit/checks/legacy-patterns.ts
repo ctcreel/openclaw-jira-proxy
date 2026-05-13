@@ -71,14 +71,14 @@ export async function checkLegacyPatterns(
       } catch {
         continue;
       }
-      scanFile(rule.messageTemplate, source, findings);
+      checkFile(rule.messageTemplate, source, findings);
     }
   }
 
   return findings;
 }
 
-function scanFile(displayPath: string, source: string, findings: AuditFinding[]): void {
+function checkFile(displayPath: string, source: string, findings: AuditFinding[]): void {
   const lines = source.split('\n');
   for (const pattern of PATTERNS) {
     for (let i = 0; i < lines.length; i += 1) {

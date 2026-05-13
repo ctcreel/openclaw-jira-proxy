@@ -21,7 +21,7 @@ import type { AuditFinding } from '../types';
 export async function checkInjectionTargets(
   agentDir: string,
   config: AuditConfig,
-  ctx: ResolveContext,
+  context: ResolveContext,
 ): Promise<AuditFinding[]> {
   const findings: AuditFinding[] = [];
   const visited = new Set<string>();
@@ -51,7 +51,7 @@ export async function checkInjectionTargets(
         }
       }
 
-      const resolution = resolveInjection(ref, ctx);
+      const resolution = resolveInjection(ref, context);
       if (!resolution.exists) {
         findings.push({
           severity: 'error',

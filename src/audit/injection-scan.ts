@@ -61,9 +61,9 @@ export interface ResolveContext {
   readonly sharedDir?: string;
 }
 
-export function resolveInjection(ref: InjectionRef, ctx: ResolveContext): InjectionResolution {
+export function resolveInjection(ref: InjectionRef, context: ResolveContext): InjectionResolution {
   const baseDir =
-    ref.kind === 'shared' || ref.kind === 'system-shared' ? ctx.sharedDir : ctx.agentDir;
+    ref.kind === 'shared' || ref.kind === 'system-shared' ? context.sharedDir : context.agentDir;
   if (baseDir === undefined) {
     return {
       absolutePath: ref.target,
@@ -72,7 +72,7 @@ export function resolveInjection(ref: InjectionRef, ctx: ResolveContext): Inject
     };
   }
   const absolutePath = resolve(baseDir, ref.target);
-  const displayPath = relative(ctx.agentDir, absolutePath) || ref.target;
+  const displayPath = relative(context.agentDir, absolutePath) || ref.target;
   return {
     absolutePath,
     displayPath,
@@ -85,9 +85,10 @@ export function resolveInjection(ref: InjectionRef, ctx: ResolveContext): Inject
  * resolved files. Cycles are broken by tracking visited absolute paths. Used by
  * the literal-`{{` check, which must read every doc that ends up rendered.
  */
+// noqa: NAMING001 — `walk` is a verb; not in the CORE_VERBS allowlist.
 export async function walkInjections(
   rootSource: string,
-  ctx: ResolveContext,
+  context: ResolveContext,
 ): Promise<{ path: string; source: string; injection: InjectionRef }[]> {
   const visited = new Set<string>();
   const results: { path: string; source: string; injection: InjectionRef }[] = [];
@@ -95,7 +96,7 @@ export async function walkInjections(
   async function recurse(source: string): Promise<void> {
     const refs = findInjections(source);
     for (const ref of refs) {
-      const resolution = resolveInjection(ref, ctx);
+      const resolution = resolveInjection(ref, context);
       if (!resolution.exists) continue;
       if (visited.has(resolution.absolutePath)) continue;
       visited.add(resolution.absolutePath);
@@ -109,7 +110,7 @@ export async function walkInjections(
   return results;
 }
 
-export function autoDetectSharedDir(agentDir: string): string | undefined {
+export function findSharedDir(agentDir: string): string | undefined {
   // Multi-agent layout: <repoRoot>/workspaces/<agent>/ → sibling shared/
   const sharedCandidate = resolve(dirname(agentDir), 'shared');
   if (existsSync(sharedCandidate)) {

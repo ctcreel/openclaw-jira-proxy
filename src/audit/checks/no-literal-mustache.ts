@@ -54,7 +54,7 @@ interface FileToScan {
 export async function checkNoLiteralMustache(
   agentDir: string,
   config: AuditConfig,
-  ctx: ResolveContext,
+  context: ResolveContext,
 ): Promise<AuditFinding[]> {
   const findings: AuditFinding[] = [];
 
@@ -73,7 +73,7 @@ export async function checkNoLiteralMustache(
         continue;
       }
 
-      const files = await collectReachable(rule.messageTemplate, source, ctx);
+      const files = await collectReachable(rule.messageTemplate, source, context);
       for (const file of files) {
         scanLine(file, findings);
       }
@@ -92,14 +92,14 @@ export async function checkNoLiteralMustache(
 async function collectReachable(
   rootPath: string,
   rootSource: string,
-  ctx: ResolveContext,
+  context: ResolveContext,
 ): Promise<FileToScan[]> {
   const visited = new Set<string>();
   const out: FileToScan[] = [{ displayPath: rootPath, source: rootSource, tier: 'template' }];
 
   async function recurse(source: string): Promise<void> {
     for (const ref of findInjections(source)) {
-      const resolution = resolveInjection(ref, ctx);
+      const resolution = resolveInjection(ref, context);
       if (!resolution.exists) continue;
       if (visited.has(resolution.absolutePath)) continue;
       visited.add(resolution.absolutePath);
