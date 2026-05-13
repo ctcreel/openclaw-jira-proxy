@@ -4,7 +4,8 @@ import { auditAgent } from '../../src/audit';
 
 import { buildAuditFixture, registerAuditFixtureHooks } from '../agent-fixture';
 
-const makeFixture = (files: Record<string, string>) => buildAuditFixture('dispatch-test', files);
+const makeFixture = (files: Record<string, string>): Promise<{ agentDir: string }> =>
+  buildAuditFixture('dispatch-test', files);
 
 describe('checkDispatchDeclaration', () => {
   registerAuditFixtureHooks();
