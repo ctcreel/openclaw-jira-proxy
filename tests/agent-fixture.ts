@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { dump as dumpYaml } from 'js-yaml';
 import { afterEach, beforeEach } from 'vitest';
 
 import { auditAgent, type AuditReport } from '../src/audit';
@@ -13,17 +14,37 @@ const FIXTURE_DEFAULTS: Record<string, string> = {
 const trackedDirs: string[] = [];
 
 /**
- * Audit-test harness bound to a describe block. Each test calls
- * `audit(files)` with the per-test fixture content; the helper writes
- * the file tree to a tmpdir, invokes `auditAgent`, and the suite's
- * afterEach cleans the tmpdir up.
+ * JS-object form of an agent config used by audit tests. `providers` is
+ * the routing map (provider name → rules); `templates` maps the file
+ * basename under templates/ to its body. `buildAgent` serializes the
+ * structure to the on-disk file map the audit consumes.
  *
- * The per-test-file boilerplate this replaced (an import of
- * `buildAuditFixture` + a local `makeFixture` wrapper that bound the
- * prefix) was Sonar-flagged as duplicated tokens across every audit
- * check's test file. Consolidating the wiring here removes the source
- * of that duplication.
+ * Tests pass typed object literals rather than inline YAML strings.
+ * That keeps each test's input UNIQUE at the token level — Sonar's
+ * cross-file CPD was flagging the routing/rules/messageTemplate YAML
+ * scaffolding as duplication, and its PR new-code-density metric
+ * ignores sonar.cpd.exclusions, so the only durable fix is to stop
+ * emitting the duplicated tokens in the first place.
  */
+export interface AgentBuilderInputs {
+  providers?: Record<string, ReadonlyArray<Record<string, unknown>>>;
+  templates?: Record<string, string>;
+}
+
+export function buildAgent(config: AgentBuilderInputs): Record<string, string> {
+  const routing: Record<string, { rules: ReadonlyArray<Record<string, unknown>> }> = {};
+  for (const [provider, rules] of Object.entries(config.providers ?? {})) {
+    routing[provider] = { rules };
+  }
+  const files: Record<string, string> = {
+    'clawndom.yaml': dumpYaml({ routing }, { lineWidth: 200 }),
+  };
+  for (const [name, body] of Object.entries(config.templates ?? {})) {
+    files[`templates/${name}`] = body;
+  }
+  return files;
+}
+
 export interface AuditHarness {
   audit(files: Record<string, string>): Promise<AuditReport>;
 }
