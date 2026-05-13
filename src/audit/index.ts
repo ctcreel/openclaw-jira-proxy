@@ -1,12 +1,13 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { checkConditionPaths } from './checks/condition-paths';
 import { checkDispatchDeclaration } from './checks/dispatch-declaration';
 import { checkDispatchToolPresent } from './checks/dispatch-tool-present';
 import { checkInjectionTargets } from './checks/injection-targets';
-import { checkRuleIdUniqueness } from './checks/rule-id-uniqueness';
 import { checkLegacyPatterns } from './checks/legacy-patterns';
 import { checkNoLiteralMustache } from './checks/no-literal-mustache';
+import { checkRuleIdUniqueness } from './checks/rule-id-uniqueness';
 import { checkTemplateInputs } from './checks/template-inputs';
 import { checkTemplatesExist } from './checks/templates-exist';
 import { checkToolUseDeclared } from './checks/tool-use-declared';
@@ -53,6 +54,7 @@ export async function auditAgent(
   findings.push(...(await checkNoLiteralMustache(agentDir, config, context)));
   findings.push(...(await checkToolUseDeclared(agentDir, config)));
   findings.push(...checkRuleIdUniqueness(config));
+  findings.push(...checkConditionPaths(config));
   findings.push(...(await checkDispatchDeclaration(agentDir, config)));
   findings.push(...checkDispatchToolPresent(config));
   findings.push(...(await checkTemplateInputs(agentDir, config)));
