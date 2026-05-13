@@ -57,7 +57,7 @@ describe('GET /api/agents/:agent/context-schemas', () => {
       providers: Record<string, { type?: string }>;
     };
     expect(body.agent).toBe('winston');
-    expect(Object.keys(body.providers).sort()).toEqual([
+    expect(Object.keys(body.providers).sort((a, b) => a.localeCompare(b))).toEqual([
       'gmail-pubsub',
       'internal',
       'slack-winston',
