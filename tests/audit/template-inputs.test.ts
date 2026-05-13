@@ -1,43 +1,13 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { auditAgent } from '../../src/audit';
 
-interface Fixture {
-  readonly agentDir: string;
-}
+import { buildAuditFixture, registerAuditFixtureHooks } from '../agent-fixture';
 
-let fixtures: Fixture[] = [];
-
-async function makeFixture(files: Record<string, string>): Promise<Fixture> {
-  const root = await mkdtemp(join(tmpdir(), 'clawndom-inputs-test-'));
-  const defaults: Record<string, string> = {
-    'identity/IDENTITY.md': '# T\n',
-  };
-  const merged = { ...defaults, ...files };
-  for (const [relativePath, body] of Object.entries(merged)) {
-    const fullPath = join(root, relativePath);
-    await mkdir(join(fullPath, '..'), { recursive: true });
-    await writeFile(fullPath, body, 'utf-8');
-  }
-  fixtures.push({ agentDir: root });
-  return { agentDir: root };
-}
-
-beforeEach(() => {
-  fixtures = [];
-});
-
-afterEach(async () => {
-  for (const fixture of fixtures) {
-    await rm(fixture.agentDir, { recursive: true, force: true });
-  }
-});
+const makeFixture = (files: Record<string, string>) => buildAuditFixture('inputs-test', files);
 
 describe('checkTemplateInputs', () => {
+  registerAuditFixtureHooks();
   it('warns when a template uses a {{ var }} not declared in inputs', async () => {
     const { agentDir } = await makeFixture({
       'clawndom.yaml': `

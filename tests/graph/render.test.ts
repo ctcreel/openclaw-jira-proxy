@@ -1,36 +1,16 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { renderGraphFromDisk } from '../../src/graph/render';
 
-let agentDirs: string[] = [];
+import { buildAuditFixture, registerAuditFixtureHooks } from '../agent-fixture';
 
-async function fixture(files: Record<string, string>): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'clawndom-graph-test-'));
-  const defaults: Record<string, string> = { 'identity/IDENTITY.md': '# T\n' };
-  for (const [relativePath, body] of Object.entries({ ...defaults, ...files })) {
-    const fullPath = join(root, relativePath);
-    await mkdir(join(fullPath, '..'), { recursive: true });
-    await writeFile(fullPath, body, 'utf-8');
-  }
-  agentDirs.push(root);
-  return root;
-}
-
-beforeEach(() => {
-  agentDirs = [];
-});
-
-afterEach(async () => {
-  for (const root of agentDirs) {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+const fixture = async (files: Record<string, string>): Promise<string> => {
+  const { agentDir } = await buildAuditFixture('graph-test', files);
+  return agentDir;
+};
 
 describe('renderGraphFromDisk', () => {
+  registerAuditFixtureHooks();
   it('emits a Mermaid flowchart wrapped in a code fence', async () => {
     const dir = await fixture({
       'clawndom.yaml': `
