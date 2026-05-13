@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { collectCaptures, collectInternalTaskTargets } from '../config-helpers';
 import type { AuditConfig } from '../load-config';
 import type { AuditFinding } from '../types';
 
@@ -36,7 +37,7 @@ export async function checkDispatchDeclaration(
 ): Promise<AuditFinding[]> {
   const findings: AuditFinding[] = [];
 
-  const internalTargets = collectInternalTargets(config);
+  const internalTargets = collectInternalTaskTargets(config, () => true);
 
   for (const [providerName, routing] of Object.entries(config.routing)) {
     for (const rule of routing.rules) {
@@ -51,7 +52,7 @@ export async function checkDispatchDeclaration(
       }
 
       const declared = new Set(rule.dispatches);
-      const referenced = collectDispatchedTaskTypes(source);
+      const referenced = collectCaptures(source, TASK_TYPE_LITERAL);
 
       for (const [taskType, line] of referenced) {
         if (!declared.has(taskType)) {
@@ -81,40 +82,4 @@ export async function checkDispatchDeclaration(
   }
 
   return findings;
-}
-
-function collectInternalTargets(config: AuditConfig): Set<string> {
-  const targets = new Set<string>();
-  const internal = config.routing['internal'];
-  if (internal === undefined) return targets;
-  for (const rule of internal.rules) {
-    const taskType = extractEqualsValue(rule.condition, 'taskType');
-    if (taskType !== undefined) targets.add(taskType);
-  }
-  return targets;
-}
-
-function extractEqualsValue(condition: unknown, field: string): string | undefined {
-  const equals = (condition as { equals?: { field: string; value: string } } | undefined)?.equals;
-  if (equals === undefined || equals.field !== field) return undefined;
-  return equals.value;
-}
-
-function collectDispatchedTaskTypes(source: string): Array<readonly [string, number]> {
-  const out: Array<readonly [string, number]> = [];
-  const seen = new Set<string>();
-  const lines = source.split('\n');
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] as string;
-    TASK_TYPE_LITERAL.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = TASK_TYPE_LITERAL.exec(line)) !== null) {
-      const taskType = match[1] as string;
-      const key = `${taskType}:${i + 1}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push([taskType, i + 1] as const);
-    }
-  }
-  return out;
 }

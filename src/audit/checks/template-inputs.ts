@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { collectCaptures } from '../config-helpers';
 import type { AuditConfig } from '../load-config';
 import type { AuditFinding } from '../types';
 
@@ -85,7 +86,7 @@ export async function checkTemplateInputs(
       }
 
       const declared = new Set(rule.inputs);
-      const referenced = collectBareIdentifiers(source);
+      const referenced = collectCaptures(source, NUNJUCKS_BARE_IDENT);
       const ruleLabel = rule.name ?? '<unnamed>';
 
       for (const [ident, line] of referenced) {
@@ -105,23 +106,4 @@ export async function checkTemplateInputs(
   }
 
   return findings;
-}
-
-function collectBareIdentifiers(source: string): Array<readonly [string, number]> {
-  const out: Array<readonly [string, number]> = [];
-  const seen = new Set<string>();
-  const lines = source.split('\n');
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] as string;
-    NUNJUCKS_BARE_IDENT.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = NUNJUCKS_BARE_IDENT.exec(line)) !== null) {
-      const ident = match[1] as string;
-      const key = `${ident}:${i + 1}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push([ident, i + 1] as const);
-    }
-  }
-  return out;
 }

@@ -1,3 +1,4 @@
+import { collectInternalTaskTargets, extractEqualsValue } from '../audit/config-helpers';
 import type { AuditConfig, AuditRule } from '../audit/load-config';
 import { loadAgentConfig } from '../audit/load-config';
 
@@ -48,7 +49,9 @@ export async function renderGraph(
   }
 
   // Internal-task targets: rule-name → taskType so dispatch edges can find them.
-  const internalRuleByTaskType = collectInternalRules(config);
+  const internalRuleByTaskType = collectInternalTaskTargets(config, (rule, i) =>
+    makeRuleNodeId('internal', rule, i),
+  );
 
   for (const [providerName, routing] of Object.entries(config.routing)) {
     if (routing.rules.length === 0) continue;
@@ -114,26 +117,6 @@ export async function renderGraph(
   }
   lines.push('```');
   return `${lines.join('\n')}\n`;
-}
-
-function collectInternalRules(config: AuditConfig): Map<string, string> {
-  const out = new Map<string, string>();
-  const internal = config.routing['internal'];
-  if (internal === undefined) return out;
-  for (let i = 0; i < internal.rules.length; i += 1) {
-    const rule = internal.rules[i]!;
-    const taskType = extractEqualsValue(rule.condition, 'taskType');
-    if (taskType !== undefined) {
-      out.set(taskType, makeRuleNodeId('internal', rule, i));
-    }
-  }
-  return out;
-}
-
-function extractEqualsValue(condition: unknown, field: string): string | undefined {
-  const equals = (condition as { equals?: { field: string; value: string } } | undefined)?.equals;
-  if (equals === undefined || equals.field !== field) return undefined;
-  return equals.value;
 }
 
 function formatTriggerHint(providerName: string, rule: AuditRule): string | undefined {
