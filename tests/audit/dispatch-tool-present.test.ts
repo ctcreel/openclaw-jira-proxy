@@ -89,4 +89,31 @@ routing:
     const finding = report.findings.find((f) => f.rule === 'dispatch-tool-missing');
     expect(finding).toBeUndefined();
   });
+
+  it('handles a missing tools field and an unnamed rule', async () => {
+    // Both rule.name and rule.tools are optional in the audit schema.
+    // Exercise both undefined paths in one fixture so the fall-throughs
+    // (`rule.name ?? '<unnamed>'`, `tools ?? []`) are covered.
+    const { agentDir } = await makeFixture({
+      'clawndom.yaml': `
+routing:
+  webhook:
+    rules:
+      - messageTemplate: templates/t.md
+        dispatches:
+          - handle-x
+  internal:
+    rules:
+      - condition:
+          equals: { field: taskType, value: handle-x }
+        messageTemplate: templates/h.md
+`.trimStart(),
+      'templates/t.md': 'noop',
+      'templates/h.md': 'noop',
+    });
+    const report = await auditAgent(agentDir);
+    const finding = report.findings.find((f) => f.rule === 'dispatch-tool-missing');
+    expect(finding).toBeDefined();
+    expect(finding?.message).toContain('<unnamed>');
+  });
 });
