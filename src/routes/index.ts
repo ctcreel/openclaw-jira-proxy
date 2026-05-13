@@ -8,6 +8,7 @@ import { createVersionRoutes } from './version.routes';
 import { getSettings, isWebhookProvider } from '../config';
 import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
+import { createContextSchemasHandler } from '../controllers/context-schemas.controller';
 import { listRecentSkippedWebhooks } from '../controllers/skipped-webhooks.controller';
 import { handleQueueSnapshot } from '../controllers/queue-snapshot.controller';
 import {
@@ -33,6 +34,8 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/jobs/active', listActiveJobs);
   app.get('/api/webhooks/skipped/recent', listRecentSkippedWebhooks);
   app.get('/api/queue/snapshot', handleQueueSnapshot);
+
+  app.get('/api/agents/:agent/context-schemas', createContextSchemasHandler(agents));
 
   app.post(
     '/api/tasks',
