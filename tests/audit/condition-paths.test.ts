@@ -1,17 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { auditAgent } from '../../src/audit';
-
-import { buildAuditFixture, registerAuditFixtureHooks } from '../agent-fixture';
-
-const makeFixture = (files: Record<string, string>): Promise<{ agentDir: string }> =>
-  buildAuditFixture('condition-paths', files);
+import { useAuditHarness } from '../agent-fixture';
 
 describe('checkConditionPaths', () => {
-  registerAuditFixtureHooks();
+  const harness = useAuditHarness();
 
   it('warns on a typo in a jira condition field path', async () => {
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   jira:
@@ -26,7 +21,6 @@ routing:
 `.trimStart(),
       'templates/t.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
     const finding = report.findings.find((f) => f.rule === 'condition-path-unknown');
     expect(finding).toBeDefined();
     expect(finding?.severity).toBe('warning');
@@ -34,7 +28,7 @@ routing:
   });
 
   it('passes when every condition path resolves in the provider schema', async () => {
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   jira:
@@ -55,12 +49,11 @@ routing:
 `.trimStart(),
       'templates/t.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
     expect(report.findings.find((f) => f.rule === 'condition-path-unknown')).toBeUndefined();
   });
 
   it('descends array item schemas inside any_item.where', async () => {
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   jira:
@@ -78,14 +71,13 @@ routing:
 `.trimStart(),
       'templates/t.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
     const finding = report.findings.find((f) => f.rule === 'condition-path-unknown');
     expect(finding).toBeDefined();
     expect(finding?.message).toContain('notARealField');
   });
 
   it('does not warn for providers with no registered payload schema', async () => {
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   zapier:
@@ -100,12 +92,11 @@ routing:
 `.trimStart(),
       'templates/t.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
     expect(report.findings.find((f) => f.rule === 'condition-path-unknown')).toBeUndefined();
   });
 
   it('accepts paths into the slack event subtree for slack-named providers', async () => {
-    const { agentDir } = await makeFixture({
+    const report = await harness.audit({
       'clawndom.yaml': `
 routing:
   slack-winston:
@@ -120,7 +111,6 @@ routing:
 `.trimStart(),
       'templates/t.md': 'noop',
     });
-    const report = await auditAgent(agentDir);
     expect(report.findings.find((f) => f.rule === 'condition-path-unknown')).toBeUndefined();
   });
 });
