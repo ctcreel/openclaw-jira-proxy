@@ -31,6 +31,8 @@ const auditRuleSchema = z.object({
   session: sessionConfigSchema.optional(),
   maxTurns: z.number().int().positive().optional(),
   tools: ruleToolsSchema.optional(),
+  dispatches: z.array(z.string().min(1)).default([]),
+  inputs: z.array(z.string().min(1)).default([]),
 });
 
 const auditRoutingSchema = z.object({

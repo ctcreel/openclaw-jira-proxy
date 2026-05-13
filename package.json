@@ -9,6 +9,7 @@
     "build:tsc": "tsc",
     "start": "node dist/server.js",
     "audit-agent": "tsx src/audit/cli.ts",
+    "graph-agent": "tsx src/graph/cli.ts",
     "lint": "eslint --ext .ts src/",
     "lint:fix": "eslint --fix --ext .ts src/",
     "typecheck": "tsc --noEmit",
@@ -24,7 +25,8 @@
     "prepare": "husky"
   },
   "bin": {
-    "clawndom-audit": "dist/audit/cli.js"
+    "clawndom-audit": "dist/audit/cli.js",
+    "clawndom-graph": "dist/graph/cli.js"
   },
   "dependencies": {
     "@slack/socket-mode": "^2.0.4",
