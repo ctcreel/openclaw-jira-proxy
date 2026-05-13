@@ -225,7 +225,9 @@ export async function processJob(
   let systemPrompt = '';
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
-    const rendered = await renderTemplate(templateContent, parsedPayload, agentDir);
+    const rendered = await renderTemplate(templateContent, parsedPayload, agentDir, {
+      identity: resolved.rule.identity,
+    });
     systemPrompt = rendered.systemPrompt;
     // Memory recall fragments are per-event (queryField → embed → search),
     // so they wrap the rendered BODY, not the cacheable system prompt.

@@ -25,6 +25,19 @@ import { getSecretManager } from '../secrets/manager';
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
 
+// Per-rule control over which identity-tier docs get auto-injected into
+// the system slot. Both default to true; an opt-out shape lets mechanical
+// routes (cron health checks, etc.) skip SOUL when the voice/principles
+// guidance would just be cache pollution. Anything that's NOT a rule
+// definition (e.g. a one-shot scheduled health check that needs neither)
+// can set both to false.
+const identityInjectionSchema = z
+  .object({
+    identity: z.boolean().default(true),
+    soul: z.boolean().default(true),
+  })
+  .default({ identity: true, soul: true });
+
 // Rules are shared across providers, but `routing.schedule` rules carry
 // extra fields (cron + timezone + catchUp + context) and don't need a
 // `condition`. Validating the per-provider invariants — schedule rules
@@ -71,6 +84,22 @@ const agentRuleSchema = z.object({
    * Implemented per SPE-2078; supersedes the reverted SPE-2070 design.
    */
   tools: ruleToolsSchema.optional(),
+  /**
+   * Auto-injection of agent-identity docs into the system slot. By default,
+   * every rule prepends `{{system-doc:identity/IDENTITY.md}}` and
+   * `{{system-doc:identity/SOUL.md}}` to the template body before render —
+   * so authors don't have to repeat those two lines on every template, and
+   * the rule config is the single place that controls which routes need
+   * identity/soul context.
+   *
+   *   identity: { identity: false }   — skip IDENTITY.md (rare).
+   *   identity: { soul: false }       — skip SOUL.md (mechanical routes
+   *                                     like cron-fired health checks).
+   *   identity: { identity: false, soul: false } — bare prompt; the
+   *                                     template's full content is what
+   *                                     the model sees.
+   */
+  identity: identityInjectionSchema.optional().default({}),
 });
 
 const agentRoutingSchema = z.object({
