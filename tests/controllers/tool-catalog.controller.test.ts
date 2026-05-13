@@ -56,7 +56,7 @@ describe('tool-catalog controller', () => {
       const response = await fetch(`${baseUrl}/api/tools/catalog`);
       expect(response.status).toBe(200);
       const body = (await response.json()) as { tools: Array<{ reference: string }> };
-      expect(body.tools.map((t) => t.reference).sort()).toEqual([
+      expect(body.tools.map((t) => t.reference).sort((a, b) => a.localeCompare(b))).toEqual([
         'agency_tools.google.gmail_send',
         'agency_tools.jira.add_comment',
       ]);
@@ -83,7 +83,7 @@ describe('tool-catalog controller', () => {
         tools: Array<{ reference: string }>;
       };
       expect(body.agent).toBe('winston');
-      expect(body.tools.map((t) => t.reference).sort()).toEqual([
+      expect(body.tools.map((t) => t.reference).sort((a, b) => a.localeCompare(b))).toEqual([
         'agency_tools.google.gmail_label',
         'agency_tools.google.gmail_send',
       ]);
