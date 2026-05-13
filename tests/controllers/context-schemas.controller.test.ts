@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 import { createServer } from 'node:http';
