@@ -46,6 +46,7 @@ describe('loadAgents — session config validation', () => {
         '          idleTimeout: 30m',
         '',
       ].join('\n'),
+      { 'templates/chat.md': 'noop' },
     );
     const resolved = await loadAgents(entries, configDir, makeFakeGit(fakeRemotes));
     const rule = resolved[0]!.config.routing['slack-winston']!.rules[0]!;
@@ -146,6 +147,7 @@ describe('loadAgents — session config validation', () => {
         '        messageTemplate: templates/chat.md',
         '',
       ].join('\n'),
+      { 'templates/chat.md': 'noop' },
     );
     const resolved = await loadAgents(entries, configDir, makeFakeGit(fakeRemotes));
     const rule = resolved[0]!.config.routing['slack-winston']!.rules[0]!;

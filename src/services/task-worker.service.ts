@@ -417,7 +417,9 @@ export async function resolveRunnerAndPrompt(
   let systemPrompt = '';
   if (rule.messageTemplate) {
     const templateContent = await readFile(join(agent.dir, rule.messageTemplate), 'utf-8');
-    const rendered = await renderTemplate(templateContent, payload, agent.dir);
+    const rendered = await renderTemplate(templateContent, payload, agent.dir, {
+      identity: rule.identity,
+    });
     prompt = rendered.body;
     systemPrompt = rendered.systemPrompt;
   } else {

@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
 
+import { auditAgent } from '../audit';
 import { modelRuleSchema } from '../config';
 import type { AgentEntry, SharedToolsConfig } from '../config';
 import { getLogger } from '../lib/logging';
@@ -23,6 +24,19 @@ import { getSecretManager } from '../secrets/manager';
 
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
+
+// Per-rule control over which identity-tier docs get auto-injected into
+// the system slot. Both default to true; an opt-out shape lets mechanical
+// routes (cron health checks, etc.) skip SOUL when the voice/principles
+// guidance would just be cache pollution. Anything that's NOT a rule
+// definition (e.g. a one-shot scheduled health check that needs neither)
+// can set both to false.
+const identityInjectionSchema = z
+  .object({
+    identity: z.boolean().default(true),
+    soul: z.boolean().default(true),
+  })
+  .default({ identity: true, soul: true });
 
 // Rules are shared across providers, but `routing.schedule` rules carry
 // extra fields (cron + timezone + catchUp + context) and don't need a
@@ -70,6 +84,22 @@ const agentRuleSchema = z.object({
    * Implemented per SPE-2078; supersedes the reverted SPE-2070 design.
    */
   tools: ruleToolsSchema.optional(),
+  /**
+   * Auto-injection of agent-identity docs into the system slot. By default,
+   * every rule prepends `{{system-doc:identity/IDENTITY.md}}` and
+   * `{{system-doc:identity/SOUL.md}}` to the template body before render —
+   * so authors don't have to repeat those two lines on every template, and
+   * the rule config is the single place that controls which routes need
+   * identity/soul context.
+   *
+   *   identity: { identity: false }   — skip IDENTITY.md (rare).
+   *   identity: { soul: false }       — skip SOUL.md (mechanical routes
+   *                                     like cron-fired health checks).
+   *   identity: { identity: false, soul: false } — bare prompt; the
+   *                                     template's full content is what
+   *                                     the model sees.
+   */
+  identity: identityInjectionSchema.optional().default({}),
 });
 
 const agentRoutingSchema = z.object({
@@ -206,12 +236,57 @@ export async function loadAgents(
     validateMemoryConfig(entry.name, config);
     validateSessionConfig(entry.name, config);
     await validateToolsConfig(entry.name, config, agentDir);
+    await runWorkspaceAudit(entry.name, agentDir);
 
     resolved.push({ name: entry.name, dir: agentDir, config });
   }
 
   validateMemoryNamespaceUniqueness(resolved);
   return resolved;
+}
+
+/**
+ * Boot-time workspace audit. Runs the same checks `clawndom-audit` runs at
+ * CI time, but against the just-cloned workspace on the operator's machine.
+ * Refuses to start an agent whose workspace fails any error-level rule —
+ * a broken workspace will produce nothing but failed jobs, so failing fast
+ * is strictly better than handing the agent to BullMQ.
+ *
+ * Warnings (legacy patterns, undeclared scopes) are logged but don't block
+ * startup — they're nudges, not crashes.
+ */
+async function runWorkspaceAudit(agentName: string, agentDir: string): Promise<void> {
+  const report = await auditAgent(agentDir);
+  const errors = report.findings.filter((finding) => finding.severity === 'error');
+  const warnings = report.findings.filter((finding) => finding.severity === 'warning');
+
+  for (const warning of warnings) {
+    const location =
+      warning.path !== undefined
+        ? warning.line !== undefined
+          ? ` (${warning.path}:${warning.line})`
+          : ` (${warning.path})`
+        : '';
+    logger.warn(
+      { agent: agentName, rule: warning.rule },
+      `Workspace audit warning${location}: ${warning.message}`,
+    );
+  }
+
+  if (errors.length === 0) return;
+
+  const lines = errors.map((error) => {
+    const location =
+      error.path !== undefined
+        ? error.line !== undefined
+          ? `${error.path}:${error.line}`
+          : error.path
+        : '<unknown>';
+    return `  - [${error.rule}] ${location}: ${error.message}`;
+  });
+  throw new Error(
+    `Agent ${agentName}: workspace audit failed with ${errors.length} error(s):\n${lines.join('\n')}`,
+  );
 }
 
 /**
