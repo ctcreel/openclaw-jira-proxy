@@ -2,6 +2,8 @@
 
 Canonical directory shape for an agent workspace consumed by Clawndom. New agents start from this skeleton; existing agents are expected to match it.
 
+**Skip the manual setup** — use the [`SC0RED/agent-workspace-template`](https://github.com/SC0RED/agent-workspace-template) template repo (`gh repo create my-agent --template SC0RED/agent-workspace-template`). It ships the skeleton below plus a working audit workflow. For a new agency-tools package, the equivalent is [`SC0RED/agency-tool-template`](https://github.com/SC0RED/agency-tool-template). **Heads-up:** GitHub template repos don't propagate updates — when you create from a template, you get a snapshot. Audit rules (which live in clawndom and are pulled live by the workflow) update automatically; the static skeleton (file structure, README scaffolding) does not.
+
 ## Required skeleton
 
 ```
