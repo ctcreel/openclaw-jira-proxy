@@ -63,9 +63,11 @@ export async function renderGraph(
       const ruleId = makeRuleNodeId(providerName, rule, i);
       const ruleLabel = rule.name ?? `rule[${i}]`;
       const triggerHint = formatTriggerHint(providerName, rule);
-      const label = triggerHint
-        ? `${ruleLabel}<br/><i>${encodeMermaid(triggerHint)}</i>`
-        : ruleLabel;
+      // GitHub's Mermaid renderer fails silently on mixed HTML in labels
+      // (`<br/>` + `<i>` together would parse on mermaid.live but produce
+      // an empty render on github.com). Use plain text with a thin-space
+      // separator — readable, and stable across renderers.
+      const label = triggerHint ? `${ruleLabel} · ${encodeMermaid(triggerHint)}` : ruleLabel;
       lines.push(`    ${ruleId}["${label}"]`);
     }
     lines.push('  end');
