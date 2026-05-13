@@ -138,7 +138,7 @@ function formatProviderLabel(providerName: string): string {
 
 function makeRuleNodeId(providerName: string, rule: AuditRule, index: number): string {
   const ruleId = resolveRuleId(rule, index);
-  return `${sanitizeId(providerName)}__${ruleId.replace(/-/g, '_')}`;
+  return `${sanitizeId(providerName)}__${ruleId.replaceAll('-', '_')}`;
 }
 
 function makeTemplateNodeId(path: string): string {
