@@ -203,36 +203,31 @@ routing:
 });
 
 describe('checkLegacyPatterns', () => {
-  it('warns on the legacy mcp__claude_ai_ prefix', async () => {
-    const { agentDir } = await makeFixture({
-      'clawndom.yaml': MINIMAL_CONFIG,
-      'templates/smoke.md': 'Use mcp__claude_ai_Atlassian__getJiraIssue here.\n',
-    });
-    const report = await auditAgent(agentDir);
-    const finding = report.findings.find((f) => f.rule === 'legacy-mcp-claude-ai-prefix');
-    expect(finding).toBeDefined();
-    expect(finding?.severity).toBe('warning');
-  });
+  const cases: Array<{ rule: string; templateBody: string; extraFiles?: Record<string, string> }> =
+    [
+      {
+        rule: 'legacy-mcp-claude-ai-prefix',
+        templateBody: 'Use mcp__claude_ai_Atlassian__getJiraIssue here.\n',
+      },
+      {
+        rule: 'legacy-memory-file-write',
+        templateBody: 'Append a line to memory/smoke-log.md after each run.\n',
+      },
+      {
+        rule: 'legacy-tools-md-injection',
+        templateBody: '{{system-doc:docs/TOOLS.md}}\n',
+        extraFiles: { 'docs/TOOLS.md': 'host tool inventory' },
+      },
+    ];
 
-  it('warns on legacy memory/<file>.md log-write instructions', async () => {
+  it.each(cases)('warns on $rule', async ({ rule, templateBody, extraFiles }) => {
     const { agentDir } = await makeFixture({
       'clawndom.yaml': MINIMAL_CONFIG,
-      'templates/smoke.md': 'Append a line to memory/smoke-log.md after each run.\n',
+      'templates/smoke.md': templateBody,
+      ...(extraFiles ?? {}),
     });
     const report = await auditAgent(agentDir);
-    const finding = report.findings.find((f) => f.rule === 'legacy-memory-file-write');
-    expect(finding).toBeDefined();
-    expect(finding?.severity).toBe('warning');
-  });
-
-  it('warns on the legacy {{system-doc:docs/TOOLS.md}} injection', async () => {
-    const { agentDir } = await makeFixture({
-      'clawndom.yaml': MINIMAL_CONFIG,
-      'templates/smoke.md': '{{system-doc:docs/TOOLS.md}}\n',
-      'docs/TOOLS.md': 'host tool inventory',
-    });
-    const report = await auditAgent(agentDir);
-    const finding = report.findings.find((f) => f.rule === 'legacy-tools-md-injection');
+    const finding = report.findings.find((f) => f.rule === rule);
     expect(finding).toBeDefined();
     expect(finding?.severity).toBe('warning');
   });
