@@ -115,14 +115,20 @@ async function collectReachable(
 
 function scanLine(file: FileToScan, findings: AuditFinding[]): void {
   const lines = file.source.split('\n');
-  const candidateRegex = /\{\{[^}]*\}\}/g;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
-    candidateRegex.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = candidateRegex.exec(line)) !== null) {
-      const token = match[0];
+    // Linear scan for `{{...}}` tokens — preferred over a regex like
+    // /\{\{[^}]*\}\}/g, which Sonar flags as ReDoS-vulnerable even though
+    // the [^}]* class can't actually backtrack catastrophically.
+    let cursor = 0;
+    for (;;) {
+      const openIdx = line.indexOf('{{', cursor);
+      if (openIdx === -1) break;
+      const closeIdx = line.indexOf('}}', openIdx + 2);
+      if (closeIdx === -1) break;
+      const token = line.slice(openIdx, closeIdx + 2);
       const verdict = classify(token, file.tier);
+      cursor = closeIdx + 2;
       if (verdict === 'ok') continue;
       findings.push({
         severity: 'error',
