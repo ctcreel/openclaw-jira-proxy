@@ -35,6 +35,8 @@ export default defineConfig({
         'src/types.ts',
         'src/types/**',
         'src/server.ts',
+        'src/audit/cli.ts',
+        'src/graph/cli.ts',
         'src/services/worker.service.ts',
         'src/services/worker-failure-handler.ts',
         'src/services/task-worker.service.ts',

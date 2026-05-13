@@ -100,6 +100,38 @@ const agentRuleSchema = z.object({
    *                                     the model sees.
    */
   identity: identityInjectionSchema.optional().default({}),
+  /**
+   * Internal task types this rule's template dispatches via POST /api/tasks.
+   * Makes the cross-rule edge explicit instead of buried in template prose.
+   *
+   *   dispatches:
+   *     - handle-cancellation
+   *     - draft-response
+   *
+   * The audit verifies that the template's curl-to-/api/tasks calls only
+   * reference task types in this list, and that each entry corresponds to a
+   * `routing.internal` rule somewhere in the configured agents. Empty/omitted
+   * = this rule dispatches no internal tasks.
+   */
+  dispatches: z.array(z.string().min(1)).default([]),
+  /**
+   * Names of the per-event variables this rule's template expects to receive.
+   * For webhook rules these come from the provider's context-extraction
+   * strategy; for `routing.internal` rules they come from the dispatch
+   * payload posted by the upstream rule. Declared here so the audit can
+   * enforce the producer/consumer contract — `{{ messageId }}` in a template
+   * with no `messageId` in `inputs:` is a warning.
+   *
+   *   inputs:
+   *     - messageId
+   *     - threadId
+   *     - from
+   *
+   * Empty/omitted = the rule doesn't declare its inputs. The audit reports
+   * undeclared `{{ var }}` references as informational findings; tightening
+   * to errors happens once every rule has declared its inputs.
+   */
+  inputs: z.array(z.string().min(1)).default([]),
 });
 
 const agentRoutingSchema = z.object({

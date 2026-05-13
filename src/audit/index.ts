@@ -1,9 +1,11 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { checkDispatchDeclaration } from './checks/dispatch-declaration';
 import { checkInjectionTargets } from './checks/injection-targets';
 import { checkLegacyPatterns } from './checks/legacy-patterns';
 import { checkNoLiteralMustache } from './checks/no-literal-mustache';
+import { checkTemplateInputs } from './checks/template-inputs';
 import { checkTemplatesExist } from './checks/templates-exist';
 import { checkToolUseDeclared } from './checks/tool-use-declared';
 import { findSharedDir } from './injection-scan';
@@ -48,6 +50,8 @@ export async function auditAgent(
   findings.push(...(await checkInjectionTargets(agentDir, config, context)));
   findings.push(...(await checkNoLiteralMustache(agentDir, config, context)));
   findings.push(...(await checkToolUseDeclared(agentDir, config)));
+  findings.push(...(await checkDispatchDeclaration(agentDir, config)));
+  findings.push(...(await checkTemplateInputs(agentDir, config)));
   findings.push(...(await checkLegacyPatterns(agentDir, config)));
 
   findings.sort((a, b) => {
