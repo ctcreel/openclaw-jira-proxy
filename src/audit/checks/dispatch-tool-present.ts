@@ -44,9 +44,8 @@ export function checkDispatchToolPresent(config: AuditConfig): AuditFinding[] {
 }
 
 function hasDispatchTool(tools: ReadonlyArray<unknown> | undefined): boolean {
-  if (tools === undefined) return false;
-  for (const ref of tools) {
-    const module = (ref as { 'module.python'?: unknown })['module.python'];
+  for (const ref of tools ?? []) {
+    const module = (ref as { 'module.python': string })['module.python'];
     if (module === DISPATCH_TOOL_MODULE) return true;
   }
   return false;
