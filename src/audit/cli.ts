@@ -1,65 +1,10 @@
 #!/usr/bin/env node
-import { resolve } from 'node:path';
-import { argv, cwd, exit, stdout } from 'node:process';
+import { argv, exit, stdout } from 'node:process';
 
+import { parseAuditArgs } from './cli-args';
 import { auditAgent } from './index';
 import { getCountsBySeverity } from './types';
 import type { AuditFinding } from './types';
-
-interface ParsedArgs {
-  readonly agentDir: string;
-  readonly sharedDir?: string;
-  readonly json: boolean;
-}
-
-function parseArgs(rawArgv: readonly string[]): ParsedArgs | { error: string } {
-  const positional: string[] = [];
-  const flags: Record<string, string | boolean> = {};
-  for (let i = 0; i < rawArgv.length; i += 1) {
-    const argument = rawArgv[i];
-    if (argument === undefined) continue;
-    if (argument === '--json') {
-      flags['json'] = true;
-      continue;
-    }
-    if (argument === '--shared-dir') {
-      const value = rawArgv[i + 1];
-      if (value === undefined) {
-        return { error: '--shared-dir requires a path argument.' };
-      }
-      flags['sharedDir'] = value;
-      i += 1;
-      continue;
-    }
-    if (argument.startsWith('--shared-dir=')) {
-      flags['sharedDir'] = argument.slice('--shared-dir='.length);
-      continue;
-    }
-    if (argument === '-h' || argument === '--help') {
-      flags['help'] = true;
-      continue;
-    }
-    if (argument.startsWith('-')) {
-      return { error: `Unknown flag: ${argument}` };
-    }
-    positional.push(argument);
-  }
-  if (flags['help']) {
-    return { error: 'help' };
-  }
-  if (positional.length === 0) {
-    return { error: 'Missing required <agent-dir> argument.' };
-  }
-  if (positional.length > 1) {
-    return { error: `Unexpected extra arguments: ${positional.slice(1).join(' ')}` };
-  }
-  return {
-    agentDir: resolve(cwd(), positional[0]!),
-    sharedDir:
-      typeof flags['sharedDir'] === 'string' ? resolve(cwd(), flags['sharedDir']) : undefined,
-    json: flags['json'] === true,
-  };
-}
 
 const HELP = `clawndom audit — validate an agent workspace against the canonical layout.
 
@@ -79,7 +24,7 @@ Exit code is 0 when no errors are found (warnings allowed), 1 otherwise.
 `;
 
 async function runCli(): Promise<number> {
-  const parsed = parseArgs(argv.slice(2));
+  const parsed = parseAuditArgs(argv.slice(2));
   if ('error' in parsed) {
     if (parsed.error === 'help') {
       stdout.write(HELP);

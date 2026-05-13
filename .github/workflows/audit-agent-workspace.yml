@@ -1,0 +1,105 @@
+name: Audit Agent Workspace
+
+# Reusable workflow that an agent repo invokes on every PR + push-to-main to
+# run `clawndom-audit` against each of its workspaces. The workflow checks
+# out the calling agent repo plus clawndom itself, builds the audit CLI from
+# clawndom's source, and runs it against the workspace path(s) the caller
+# provides. Errors fail the build; warnings don't.
+#
+# Calling repo's .github/workflows/audit.yml:
+#
+#   name: Audit
+#   on:
+#     pull_request:
+#     push:
+#       branches: [main]
+#   jobs:
+#     audit:
+#       uses: SC0RED/clawndom/.github/workflows/audit-agent-workspace.yml@main
+#       with:
+#         workspaces: |
+#           workspaces/winston
+
+on:
+  workflow_call:
+    inputs:
+      workspaces:
+        description: |
+          Newline-separated list of agent workspace paths to audit, relative to the
+          calling repo's root. Each path is the directory containing clawndom.yaml
+          (e.g. `workspaces/winston`, or `workspaces/patch workspaces/scarlett` for
+          multi-agent repos).
+        required: true
+        type: string
+      shared_dir:
+        description: |
+          Optional path to workspaces/shared/ for multi-agent repos. When set,
+          passed to `clawndom-audit --shared-dir` for every workspace.
+        required: false
+        type: string
+        default: ''
+      clawndom_ref:
+        description: |
+          The `clawndom` git ref to check out for the audit binary. Defaults to
+          main; pin to a tag if you want CI to gate on a specific clawndom
+          version's audit rules.
+        required: false
+        type: string
+        default: main
+
+jobs:
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the calling repo
+        uses: actions/checkout@v4
+        with:
+          path: agent-repo
+
+      - name: Check out clawndom for the audit CLI
+        uses: actions/checkout@v4
+        with:
+          repository: SC0RED/clawndom
+          ref: ${{ inputs.clawndom_ref }}
+          path: clawndom
+
+      - name: Set up Node + pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: clawndom/pnpm-lock.yaml
+
+      - name: Install clawndom dependencies
+        working-directory: clawndom
+        run: pnpm install --frozen-lockfile
+
+      - name: Run audit on each workspace
+        working-directory: clawndom
+        env:
+          WORKSPACES: ${{ inputs.workspaces }}
+          SHARED_DIR: ${{ inputs.shared_dir }}
+        run: |
+          set -e
+          failed=0
+          while IFS= read -r workspace; do
+            [ -z "${workspace}" ] && continue
+            target="${GITHUB_WORKSPACE}/agent-repo/${workspace}"
+            echo ""
+            echo "▶ clawndom-audit ${workspace}"
+            if [ -n "${SHARED_DIR}" ]; then
+              shared="${GITHUB_WORKSPACE}/agent-repo/${SHARED_DIR}"
+              pnpm exec tsx src/audit/cli.ts "${target}" --shared-dir "${shared}" || failed=1
+            else
+              pnpm exec tsx src/audit/cli.ts "${target}" || failed=1
+            fi
+          done <<< "${WORKSPACES}"
+          if [ "${failed}" -ne 0 ]; then
+            echo ""
+            echo "::error::One or more workspaces failed the audit."
+            exit 1
+          fi
