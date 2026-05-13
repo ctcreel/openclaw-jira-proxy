@@ -19,6 +19,12 @@ import { runnerConfigSchema } from '../runners/types';
  * registry checks happen at runtime, the audit's job is structural integrity.
  */
 const auditRuleSchema = z.object({
+  id: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]*$/, {
+      message: 'id must be lowercase kebab-case (letters, digits, hyphens)',
+    })
+    .optional(),
   name: z.string().optional(),
   condition: conditionSchema.optional(),
   messageTemplate: z.string().optional(),

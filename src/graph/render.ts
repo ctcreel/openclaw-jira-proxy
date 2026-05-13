@@ -1,6 +1,7 @@
 import { collectInternalTaskTargets, extractEqualsValue } from '../audit/config-helpers';
 import type { AuditConfig, AuditRule } from '../audit/load-config';
 import { loadAgentConfig } from '../audit/load-config';
+import { resolveRuleId } from '../services/rule-id';
 
 /**
  * Render an agent workspace's clawndom.yaml as a Mermaid flowchart.
@@ -136,8 +137,8 @@ function formatProviderLabel(providerName: string): string {
 }
 
 function makeRuleNodeId(providerName: string, rule: AuditRule, index: number): string {
-  const ruleSlug = (rule.name ?? `rule_${index}`).replace(/[^A-Za-z0-9_]/g, '_');
-  return `${sanitizeId(providerName)}__${ruleSlug}`;
+  const ruleId = resolveRuleId(rule, index);
+  return `${sanitizeId(providerName)}__${ruleId.replaceAll('-', '_')}`;
 }
 
 function makeTemplateNodeId(path: string): string {

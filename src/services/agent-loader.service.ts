@@ -50,7 +50,20 @@ const identityInjectionSchema = z
 // other providers ignore it. A non-schedule rule with `runner` set parses
 // successfully but has no runtime effect — acceptable v1 trade-off
 // against splitting the schema per provider.
+// Identity slug pattern: starts with a letter, then letters/digits/hyphens
+// only. This is the stable identifier that survives `name:` renames and
+// keys the sidecar layout file (clawndom.layout.yaml). When omitted, the
+// loader defaults it to `kebab-case(name)`. See `resolveRuleId`.
+const ruleIdPattern = /^[a-z][a-z0-9-]*$/;
+
 const agentRuleSchema = z.object({
+  /** Stable identifier that survives renames. Defaults to a kebab-slug of
+   * `name:` when omitted. Editor write-back / sidecar layout / audit
+   * cross-references all use this. */
+  id: z
+    .string()
+    .regex(ruleIdPattern, { message: 'id must be lowercase kebab-case (letters, digits, hyphens)' })
+    .optional(),
   name: z.string().optional(),
   condition: conditionSchema.optional(),
   messageTemplate: z.string().optional(),
