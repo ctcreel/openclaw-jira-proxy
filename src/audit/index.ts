@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { checkDispatchDeclaration } from './checks/dispatch-declaration';
+import { checkDispatchToolPresent } from './checks/dispatch-tool-present';
 import { checkInjectionTargets } from './checks/injection-targets';
 import { checkLegacyPatterns } from './checks/legacy-patterns';
 import { checkNoLiteralMustache } from './checks/no-literal-mustache';
@@ -51,6 +52,7 @@ export async function auditAgent(
   findings.push(...(await checkNoLiteralMustache(agentDir, config, context)));
   findings.push(...(await checkToolUseDeclared(agentDir, config)));
   findings.push(...(await checkDispatchDeclaration(agentDir, config)));
+  findings.push(...checkDispatchToolPresent(config));
   findings.push(...(await checkTemplateInputs(agentDir, config)));
   findings.push(...(await checkLegacyPatterns(agentDir, config)));
 
