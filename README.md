@@ -73,8 +73,9 @@ At boot, clawndom clones each `repo` at `main` (or the pinned `ref`) under `CLAW
 
 - `clawndom.yaml` — routing rules + per-rule tools + memory namespace declarations
 - `templates/` — Nunjucks templates (one per route)
-- `docs/` — `IDENTITY.md`, `SOUL.md`, and any policy / identity docs the templates inject
-- `team.json` (Winston) or `workspaces/shared/docs/` (the-agency) — shared identity / reference data
+- `docs/` — `IDENTITY.md`, `SOUL.md`, structured data files (e.g. `team.json`), and any policy / reference docs the templates inject
+
+Two repo-level layout variants are supported: **single-agent** repos (e.g. winston-agency, paired with a separately-versioned `agency-tools` library via `sharedTools`) and **multi-agent** repos (e.g. the-agency, with an in-tree `workspaces/shared/` for prose docs shared across the agents). Both variants land at the same per-agent skeleton above. The full layout contract — required files, optional variants, what NOT to put in a workspace, and how to migrate non-canonical layouts — lives in [`docs/guides/AGENT_WORKSPACE_LAYOUT.md`](docs/guides/AGENT_WORKSPACE_LAYOUT.md).
 
 A 5-minute systemd timer (`clawndom-sync-agents.timer` on the Patches box) `git pull`s each agent repo; pushes to `main` reach the agent without a clawndom restart. Winston's box doesn't run the timer — Winston restarts manually on config changes.
 
