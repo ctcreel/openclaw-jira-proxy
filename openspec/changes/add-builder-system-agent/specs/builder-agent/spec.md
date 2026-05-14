@@ -2,7 +2,7 @@
 
 ### Requirement: Builder Scope — Dispatching Agent's Directory Only
 
-Builder MUST handle only add / change / delete requests scoped to **the dispatching agent's directory** within its repo. The dispatching agent is identified by `agent_name` in the dispatch payload; Builder's runner MUST resolve the agent's repo and `path` from `AGENTS_CONFIG`. Builder's modifications MUST be limited to files under that `path`.
+Builder MUST handle only add / change / delete requests scoped to **the dispatching agent's directory** within its repo. The dispatching agent is identified by `agentName` in the dispatch payload; Builder's runner MUST resolve the agent's repo and `path` from `AGENTS_CONFIG`. Builder's modifications MUST be limited to files under that `path`.
 
 Builder MUST NOT:
 
@@ -61,39 +61,39 @@ Builder's agent definition MUST live at `clawndom/src/system-agents/builder/` as
 clawndom MUST expose `POST /webhooks/system/builder` that:
 
 - Validates the internal-bearer token using the strategy defined in the `system-agents` capability
-- Validates the dispatch payload against a Zod schema requiring `{agent_name: string, request: string, reply_context: object, sender_identity: string}` and optionally `{resume: {branch: string, answer: string}}`
-- Resolves the dispatching agent from `AGENTS_CONFIG` by `agent_name` (returns 404 if unknown)
-- Re-verifies `sender_identity` against the dispatching agent's operator allowlist (returns 403 if not allowed)
+- Validates the dispatch payload against a Zod schema requiring `{agentName: string, request: string, replyContext: object, senderEmail: string}` and optionally `{resume: {branch: string, answer: string}}`
+- Resolves the dispatching agent from `AGENTS_CONFIG` by `agentName` (returns 404 if unknown)
+- Re-verifies `senderEmail` against the dispatching agent's operator allowlist (returns 403 if not allowed)
 - Enqueues a Builder job to her dedicated BullMQ queue with the dispatching agent's context preserved
 - Returns 202 immediately on success, before Builder begins execution
 
 #### Scenario: Valid dispatch
 
-- **WHEN** a POST arrives with valid bearer, valid payload, known `agent_name`, and an allowlisted `sender_identity` for that agent
+- **WHEN** a POST arrives with valid bearer, valid payload, known `agentName`, and an allowlisted `senderEmail` for that agent
 - **THEN** the route MUST enqueue a Builder job
 - **AND** the route MUST respond 202
 
 #### Scenario: Unknown agent
 
-- **WHEN** a dispatch arrives with an `agent_name` not present in `AGENTS_CONFIG`
+- **WHEN** a dispatch arrives with an `agentName` not present in `AGENTS_CONFIG`
 - **THEN** the route MUST respond 404
 - **AND** no Builder job MUST be enqueued
 
 #### Scenario: Invalid payload
 
-- **WHEN** a dispatch arrives missing the `reply_context` field
+- **WHEN** a dispatch arrives missing the `replyContext` field
 - **THEN** the route MUST respond 400 with a Zod-driven RFC 7807 error body
 - **AND** no Builder job MUST be enqueued
 
 #### Scenario: Sender not allowlisted for agent
 
-- **WHEN** a dispatch arrives with valid bearer and known `agent_name` but a `sender_identity` not on that agent's allowlist
+- **WHEN** a dispatch arrives with valid bearer and known `agentName` but a `senderEmail` not on that agent's allowlist
 - **THEN** the route MUST respond 403
 - **AND** no Builder job MUST be enqueued
 
 ### Requirement: Builder Queue and Runner
 
-Builder MUST run on her own dedicated BullMQ queue with her own runner registration in `src/services/` and `src/runners/`. The runner MUST process Builder's queue under the existing completion-aware serialization gate. At job-pickup time, the runner MUST resolve the dispatching agent's context (repo, `path`, Builder bot credentials reference for that repo, branch-naming convention, `testable_mechanism`, operator allowlist) and fail closed via a `failed` callback if any required configuration or credential cannot be fetched.
+Builder MUST run on her own dedicated BullMQ queue with her own runner registration in `src/services/` and `src/runners/`. The runner MUST process Builder's queue under the existing completion-aware serialization gate. At job-pickup time, the runner MUST resolve the dispatching agent's context (repo, `path`, Builder bot credentials reference for that repo, branch-naming convention, `testableMechanism`, operator allowlist) and fail closed via a `failed` callback if any required configuration or credential cannot be fetched.
 
 #### Scenario: Dedicated queue
 
@@ -103,7 +103,7 @@ Builder MUST run on her own dedicated BullMQ queue with her own runner registrat
 
 #### Scenario: Dispatching-agent context resolved at job pickup
 
-- **WHEN** Builder's runner picks up a job with `agent_name = A`
+- **WHEN** Builder's runner picks up a job with `agentName = A`
 - **THEN** the runner MUST fetch `A`'s entry from `AGENTS_CONFIG`
 - **AND** if `A` is missing or has not been onboarded to Builder, the runner MUST emit a `failed` callback whose reason names the missing context
 
@@ -112,40 +112,40 @@ Builder MUST run on her own dedicated BullMQ queue with her own runner registrat
 Builder's job execution MUST emit callbacks for the following states and only these states:
 
 - `working` — emitted immediately on job pickup
-- `question_pending` — emitted when Builder needs operator input; the job ends and the callback carries `{question: string, branch: string, plan_path: string}`
-- `testable` — emitted when the resulting change is live for the dispatching agent per that agent's declared `testable_mechanism`; the callback carries `{pr_url: string, test_url?: string}`
+- `question_pending` — emitted when Builder needs operator input; the job ends and the callback carries `{question: string, branch: string, planPath: string}`
+- `testable` — emitted when the resulting change is live for the dispatching agent per that agent's declared `testableMechanism`; the callback carries `{prUrl: string, testUrl?: string}`
 - `failed` — emitted when Builder cannot proceed; the callback carries `{reason: string}`
 
-Each transition MUST be a POST to `/webhooks/builder-callback` with `event_id` of the form `<job_id>:<state_name>`.
+Each transition MUST be a POST to `/webhooks/builder-callback` with `eventId` of the form `<jobId>:<state_name>`.
 
 #### Scenario: Working callback on pickup
 
 - **WHEN** Builder's runner picks up a dispatched job
-- **THEN** the runner MUST POST a callback with `state: "working"` and `event_id: "<job_id>:working"` before beginning work
+- **THEN** the runner MUST POST a callback with `state: "working"` and `eventId: "<jobId>:working"` before beginning work
 
 #### Scenario: Question-pending callback
 
 - **WHEN** Builder determines she needs operator clarification
 - **THEN** Builder MUST commit the current plan markdown to her working branch
-- **AND** the job MUST end with a callback carrying `state: "question_pending"` and `{question, branch, plan_path}`
+- **AND** the job MUST end with a callback carrying `state: "question_pending"` and `{question, branch, planPath}`
 
 #### Scenario: Testable via deploy webhook
 
-- **GIVEN** the dispatching agent's `testable_mechanism` is `deploy_webhook`
-- **WHEN** the supervisor has restarted clawndom after Builder's PR merge and posts to the deploy-complete webhook with the affected `job_id`
+- **GIVEN** the dispatching agent's `testableMechanism` is `deploy_webhook`
+- **WHEN** the supervisor has restarted clawndom after Builder's PR merge and posts to the deploy-complete webhook with the affected `jobId`
 - **THEN** Builder's callback handler MUST emit `testable` to the dispatching agent
 
 #### Scenario: Testable via cache refresh
 
-- **GIVEN** the dispatching agent's `testable_mechanism` is `cache_refresh`
+- **GIVEN** the dispatching agent's `testableMechanism` is `cache_refresh`
 - **WHEN** Builder's PR is merged
 - **THEN** a callback MUST be emitted with `state: "testable"`
 
 #### Scenario: Testable via PR preview
 
-- **GIVEN** the dispatching agent's `testable_mechanism` is `pr_preview`
+- **GIVEN** the dispatching agent's `testableMechanism` is `pr_preview`
 - **WHEN** the preview environment for Builder's PR is ready
-- **THEN** a callback MUST be emitted with `state: "testable"` carrying the preview URL as `test_url`
+- **THEN** a callback MUST be emitted with `state: "testable"` carrying the preview URL as `testUrl`
 
 #### Scenario: Failed callback on irrecoverable error
 
@@ -161,26 +161,26 @@ Each transition MUST be a POST to `/webhooks/builder-callback` with `event_id` o
 
 ### Requirement: Restart-Driven Testable via Deploy Webhook
 
-For agents whose `testable_mechanism` is `deploy_webhook` (the v1 default for clawndom-resident agents), clawndom MUST expose `POST /webhooks/builder-deploy-complete` that:
+For agents whose `testableMechanism` is `deploy_webhook` (the v1 default for clawndom-resident agents), clawndom MUST expose `POST /webhooks/builder-deploy-complete` that:
 
 - Validates an internal-bearer token (the same strategy used for dispatch)
-- Validates the payload against a Zod schema requiring `{job_id: string, status: "ok"|"failed"}`
-- Looks up the original job by `job_id`
+- Validates the payload against a Zod schema requiring `{jobId: string, status: "ok"|"failed"}`
+- Looks up the original job by `jobId`
 - Emits a `testable` callback (or `failed`, if `status: "failed"`) to the dispatching agent
 - Returns 202
 
-The external supervisor (PM2 / systemd / k8s) MUST be configured to POST to this endpoint after a successful clawndom restart, supplying the `job_id` from the most recently merged Builder PR. The supervisor's configuration is outside clawndom; this requirement specifies only the endpoint contract.
+The external supervisor (PM2 / systemd / k8s) MUST be configured to POST to this endpoint after a successful clawndom restart, supplying the `jobId` from the most recently merged Builder PR. The supervisor's configuration is outside clawndom; this requirement specifies only the endpoint contract.
 
 #### Scenario: Successful deploy emits testable
 
-- **GIVEN** Builder's PR for `job_id = J` was merged and clawndom restarted successfully
-- **WHEN** the supervisor POSTs `{job_id: J, status: "ok"}` to the deploy-complete webhook
+- **GIVEN** Builder's PR for `jobId = J` was merged and clawndom restarted successfully
+- **WHEN** the supervisor POSTs `{jobId: J, status: "ok"}` to the deploy-complete webhook
 - **THEN** clawndom MUST emit a `testable` callback for job `J` to the dispatching agent
 
 #### Scenario: Failed deploy emits failed
 
-- **GIVEN** Builder's PR for `job_id = J` was merged but clawndom failed to restart
-- **WHEN** the supervisor POSTs `{job_id: J, status: "failed"}` to the deploy-complete webhook
+- **GIVEN** Builder's PR for `jobId = J` was merged but clawndom failed to restart
+- **WHEN** the supervisor POSTs `{jobId: J, status: "failed"}` to the deploy-complete webhook
 - **THEN** clawndom MUST emit a `failed` callback for job `J` whose reason names the restart failure
 
 ### Requirement: Builder Callback Route
@@ -188,61 +188,61 @@ The external supervisor (PM2 / systemd / k8s) MUST be configured to POST to this
 clawndom MUST expose `POST /webhooks/builder-callback` that:
 
 - Validates the internal-bearer token
-- Validates the callback payload against a Zod schema requiring `{event_id: string, state: "working"|"question_pending"|"testable"|"failed", reply_context: object, ...state-specific fields}`
-- Dedupes by `event_id` against a Redis-backed store with a TTL of at least 24 hours
+- Validates the callback payload against a Zod schema requiring `{eventId: string, state: "working"|"question_pending"|"testable"|"failed", replyContext: object, ...state-specific fields}`
+- Dedupes by `eventId` against a Redis-backed store with a TTL of at least 24 hours
 - Hands the callback to a handler that triggers the operator-reply via the dispatching agent's outbound channel
 - Returns 202 in all dedupe-and-validation success cases, including duplicate deliveries
 
 #### Scenario: Duplicate callback delivery
 
-- **GIVEN** a callback with `event_id E` has already been processed and recorded in Redis
-- **WHEN** a second callback arrives with the same `event_id E`
+- **GIVEN** a callback with `eventId E` has already been processed and recorded in Redis
+- **WHEN** a second callback arrives with the same `eventId E`
 - **THEN** the route MUST return 202
 - **AND** no second operator-facing reply MUST be triggered
 
 #### Scenario: Callback for unknown job
 
-- **WHEN** a callback arrives whose `event_id` does not match any known Builder job
+- **WHEN** a callback arrives whose `eventId` does not match any known Builder job
 - **THEN** the route MUST log a warning
 - **AND** MUST still return 202
 
 ### Requirement: Reply-Context Envelope Passthrough
 
-The `reply_context` field of a Builder dispatch payload MUST be treated as opaque by Builder. Builder MUST NOT inspect, alter, or log (beyond a hash or identifier) the envelope's contents. Every callback Builder emits MUST include the envelope byte-identical to the value received in the original dispatch (or, on resume, in the resume dispatch).
+The `replyContext` field of a Builder dispatch payload MUST be treated as opaque by Builder. Builder MUST NOT inspect, alter, or log (beyond a hash or identifier) the envelope's contents. Every callback Builder emits MUST include the envelope byte-identical to the value received in the original dispatch (or, on resume, in the resume dispatch).
 
 The envelope's schema MUST contain at minimum:
 
 - `channel` — `"slack"` | `"email"` | other extensible value
-- `thread_or_message_id` — channel-specific reference
-- `sender_id` — operator identity
-- `original_request_text` — the user's original message
+- `threadOrMessageId` — channel-specific reference
+- `senderEmail` — operator identity
+- `originalRequestText` — the user's original message
 
 #### Scenario: Envelope passthrough
 
-- **GIVEN** a dispatch payload with `reply_context = X`
+- **GIVEN** a dispatch payload with `replyContext = X`
 - **WHEN** Builder emits any callback for that job
-- **THEN** the callback's `reply_context` MUST equal `X` byte-identical
+- **THEN** the callback's `replyContext` MUST equal `X` byte-identical
 
 #### Scenario: Envelope not exposed in logs
 
 - **WHEN** Builder's structured logs are inspected for any invocation
-- **THEN** the logs MUST NOT contain the contents of `reply_context` beyond a hash or identifier
+- **THEN** the logs MUST NOT contain the contents of `replyContext` beyond a hash or identifier
 
 ### Requirement: Git-Native Pause and Resume
 
 When Builder emits `question_pending`, she MUST persist her in-progress plan as a markdown file committed to her working branch (default path: `.builder/plan.md` under the dispatching agent's `path`). The plan MUST be sufficient for a future Builder invocation to continue from where she paused without external state.
 
-A resume dispatch MUST carry only `{agent_name, request, reply_context, sender_identity, resume: {branch: string, answer: string}}`. Builder MUST re-hydrate by checking out the named branch and reading the plan file.
+A resume dispatch MUST carry only `{agentName, request, replyContext, senderEmail, resume: {branch: string, answer: string}}`. Builder MUST re-hydrate by checking out the named branch and reading the plan file.
 
 #### Scenario: Pause commits plan
 
 - **WHEN** Builder emits `question_pending`
-- **THEN** the named branch MUST contain a committed `.builder/plan.md` at the path reported in `plan_path`
+- **THEN** the named branch MUST contain a committed `.builder/plan.md` at the path reported in `planPath`
 
 #### Scenario: Resume re-hydrates from branch
 
 - **GIVEN** Builder previously paused on branch `B` for dispatching agent `A` with plan at `.builder/plan.md`
-- **WHEN** a resume dispatch arrives carrying `{agent_name: A, resume: {branch: B, answer: ANS}}`
+- **WHEN** a resume dispatch arrives carrying `{agentName: A, resume: {branch: B, answer: ANS}}`
 - **THEN** Builder MUST check out `B` in `A`'s repo
 - **AND** Builder MUST read the plan from `.builder/plan.md`
 - **AND** Builder MUST continue execution using `ANS` as the answer to the pending question
@@ -360,4 +360,4 @@ Builder MUST NOT have Slack, Gmail, or any other outbound user-facing tool. All 
 #### Scenario: All user replies via dispatching agent
 
 - **WHEN** the dispatching agent processes a callback from Builder
-- **THEN** that agent (using the echoed `reply_context`) MUST be the one that actually sends the reply to the operator's original channel
+- **THEN** that agent (using the echoed `replyContext`) MUST be the one that actually sends the reply to the operator's original channel

@@ -65,7 +65,7 @@ This is an **allowlist, not an exclusion rule**. Adding Builder MUST NOT remove 
 
 After each clawndom restart that includes a merged Builder PR, the supervisor MUST POST to:
 
-```
+```http
 POST https://<clawndom>/webhooks/builder-deploy-complete
 Authorization: Bearer <BUILDER_INTERNAL_BEARER>
 Content-Type: application/json

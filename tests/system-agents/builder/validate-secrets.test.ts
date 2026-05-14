@@ -1,26 +1,25 @@
 import { describe, it, expect } from 'vitest';
 
 import type { AgentEntry } from '../../../src/config';
-import type { SecretManager } from '../../../src/secrets/manager';
-import { validateBuilderAgentSecrets } from '../../../src/system-agents/builder/validate-secrets';
+import {
+  type BuilderSecretLookup,
+  validateBuilderAgentSecrets,
+} from '../../../src/system-agents/builder/validate-secrets';
 
-function makeSecretManager(knownKeys: readonly string[]): SecretManager {
+function makeSecretLookup(knownKeys: readonly string[]): BuilderSecretLookup {
   const known = new Set(knownKeys);
-  return { hasSecret: (key: string) => known.has(key) } as unknown as SecretManager;
+  return { hasSecret: (key: string): boolean => known.has(key) };
 }
 
-function makeAgent(overrides: Partial<AgentEntry>): AgentEntry {
-  return {
-    name: overrides.name ?? 'agent',
-    repo: overrides.repo ?? 'git@github.com:org/the-agency.git',
-    ...overrides,
-  } as AgentEntry;
+function makeAgent(overrides: Partial<AgentEntry> & { name?: string }): AgentEntry {
+  const { name = 'agent', repo = 'git@github.com:org/the-agency.git', ...rest } = overrides;
+  return { name, repo, ...rest };
 }
 
 describe('validateBuilderAgentSecrets', () => {
   it('passes when no agents are opted in', () => {
     const agents = [makeAgent({ name: 'patch' }), makeAgent({ name: 'scarlett' })];
-    const secrets = makeSecretManager([]);
+    const secrets = makeSecretLookup([]);
     expect(() => validateBuilderAgentSecrets(agents, secrets)).not.toThrow();
   });
 
@@ -33,7 +32,7 @@ describe('validateBuilderAgentSecrets', () => {
         testableMechanism: { type: 'cache_refresh' },
       }),
     ];
-    const secrets = makeSecretManager(['builder_bot_the_agency']);
+    const secrets = makeSecretLookup(['builder_bot_the_agency']);
     expect(() => validateBuilderAgentSecrets(agents, secrets)).not.toThrow();
   });
 
@@ -46,7 +45,7 @@ describe('validateBuilderAgentSecrets', () => {
         testableMechanism: { type: 'cache_refresh' },
       }),
     ];
-    const secrets = makeSecretManager([]);
+    const secrets = makeSecretLookup([]);
     expect(() => validateBuilderAgentSecrets(agents, secrets)).toThrow(/winston:missing_key/);
   });
 
@@ -65,7 +64,7 @@ describe('validateBuilderAgentSecrets', () => {
         testableMechanism: { type: 'cache_refresh' },
       }),
     ];
-    const secrets = makeSecretManager([]);
+    const secrets = makeSecretLookup([]);
     expect(() => validateBuilderAgentSecrets(agents, secrets)).toThrow(
       /winston:missing_a.*heather-helper:missing_b/,
     );
@@ -79,7 +78,7 @@ describe('validateBuilderAgentSecrets', () => {
         testableMechanism: { type: 'cache_refresh' },
       }),
     ];
-    const secrets = makeSecretManager(['k']);
+    const secrets = makeSecretLookup(['k']);
     expect(() => validateBuilderAgentSecrets(agents, secrets)).toThrow(/operatorAllowlist/);
   });
 
@@ -91,7 +90,7 @@ describe('validateBuilderAgentSecrets', () => {
         operatorAllowlist: [],
       }),
     ];
-    const secrets = makeSecretManager(['k']);
+    const secrets = makeSecretLookup(['k']);
     expect(() => validateBuilderAgentSecrets(agents, secrets)).toThrow(/testableMechanism/);
   });
 });

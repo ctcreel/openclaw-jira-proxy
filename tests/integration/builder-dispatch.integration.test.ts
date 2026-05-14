@@ -18,36 +18,17 @@ import request from 'supertest';
 
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
-import { registerRunner, resetRunners } from '../../src/runners/registry';
-import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
+import { resetRunners } from '../../src/runners/registry';
 import type * as SecretsManagerModule from '../../src/secrets/manager';
+import {
+  getDeliveriesMatching,
+  installCapturingRunner,
+  nextTestMarker,
+  sleep,
+  waitForDeliveries,
+} from './helpers/builder-test-harness';
 
 const VALID_TOKEN = 'integration-bearer-token-builder-dispatch';
-
-interface DeliveredPayload {
-  prompt: string;
-  agentId: string;
-  receivedAt: string;
-}
-
-const allDeliveries: DeliveredPayload[] = [];
-
-class CapturingRunner implements AgentRunner {
-  readonly name = 'openclaw';
-
-  async run(options: RunOptions): Promise<RunResult> {
-    allDeliveries.push({
-      prompt: options.prompt,
-      agentId: options.agentId,
-      receivedAt: new Date().toISOString(),
-    });
-    return {
-      status: 'ok',
-      runId: `mock-builder-run-${Date.now()}`,
-      renderedPrompt: options.prompt,
-    };
-  }
-}
 
 interface FakeSecretManager {
   hasSecret: (key: string) => boolean;
@@ -70,36 +51,11 @@ vi.mock('../../src/secrets/manager', async () => {
   };
 });
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-let currentTestId = '';
-let testCounter = 0;
-function nextTestId(): string {
-  return `dispatch-test-${Date.now()}-${++testCounter}`;
-}
-
-function deliveriesForCurrentTest(): DeliveredPayload[] {
-  return allDeliveries.filter((delivery) => delivery.prompt.includes(currentTestId));
-}
-
-async function waitForDeliveries(count: number, timeoutMs = 8000): Promise<DeliveredPayload[]> {
-  const start = Date.now();
-  while (Date.now() - start <= timeoutMs) {
-    const matched = deliveriesForCurrentTest();
-    if (matched.length >= count) return matched;
-    await sleep(50);
-  }
-  const finalMatched = deliveriesForCurrentTest();
-  if (finalMatched.length >= count) return finalMatched;
-  throw new Error(`Timed out waiting for ${count} deliveries (got ${finalMatched.length})`);
-}
-
 describe('Builder dispatch integration', () => {
   let app: Express;
   let workers: BullMQWorker[] = [];
   let queueNames: string[] = [];
+  let currentMarker = '';
 
   beforeAll(async () => {
     process.env.BULLMQ_QUEUE_PREFIX = `test-builder-${Date.now()}`;
@@ -114,9 +70,7 @@ describe('Builder dispatch integration', () => {
     ]);
     resetSettings();
     resetQueues();
-
-    resetRunners();
-    registerRunner(new CapturingRunner());
+    installCapturingRunner();
 
     const { loadSystemAgents } = await import('../../src/system-agents/loader');
     const systemAgents = await loadSystemAgents();
@@ -135,11 +89,8 @@ describe('Builder dispatch integration', () => {
   }, 30_000);
 
   beforeEach(() => {
-    currentTestId = nextTestId();
-    // Global setup.ts runs resetRunners() in its own beforeEach, so we
-    // have to re-register the capturing runner before each test.
-    resetRunners();
-    registerRunner(new CapturingRunner());
+    currentMarker = nextTestMarker('dispatch-test');
+    installCapturingRunner();
   });
 
   afterAll(async () => {
@@ -167,15 +118,15 @@ describe('Builder dispatch integration', () => {
   it('accepts a valid dispatch (202) and delivers a rendered prompt to the runner', async () => {
     const payload = {
       agentName: 'winston',
-      request: `Please add an onboarding helper for ${currentTestId}`,
+      request: `Please add an onboarding helper for ${currentMarker}`,
       replyContext: {
         channel: 'slack',
         threadTs: '1700000000.000100',
         channelId: 'C0123456',
-        senderId: 'heather@example.com',
+        senderEmail: 'heather@example.com',
         originalRequestText: 'Help with onboarding',
       },
-      senderIdentity: 'heather@example.com',
+      senderEmail: 'heather@example.com',
     };
 
     const response = await request(app)
@@ -187,12 +138,12 @@ describe('Builder dispatch integration', () => {
     expect(response.status).toBe(202);
     expect(response.body.accepted).toBe(true);
 
-    const deliveries = await waitForDeliveries(1);
+    const deliveries = await waitForDeliveries(currentMarker, 1);
     expect(deliveries).toHaveLength(1);
     const [delivery] = deliveries;
     expect(delivery!.agentId).toBe('builder');
     expect(delivery!.prompt).toContain('winston');
-    expect(delivery!.prompt).toContain(`add an onboarding helper for ${currentTestId}`);
+    expect(delivery!.prompt).toContain(`add an onboarding helper for ${currentMarker}`);
     expect(delivery!.prompt).toContain('heather@example.com');
   }, 15_000);
 
@@ -201,36 +152,36 @@ describe('Builder dispatch integration', () => {
       .post('/webhooks/system/builder')
       .set('Authorization', 'Bearer wrong-token')
       .set('Content-Type', 'application/json')
-      .send({ marker: currentTestId });
+      .send({ marker: currentMarker });
 
     expect(response.status).toBe(401);
     await sleep(200);
-    expect(deliveriesForCurrentTest()).toHaveLength(0);
+    expect(getDeliveriesMatching(currentMarker)).toHaveLength(0);
   }, 10_000);
 
   it('rejects a dispatch with no Authorization header (401)', async () => {
     const response = await request(app)
       .post('/webhooks/system/builder')
       .set('Content-Type', 'application/json')
-      .send({ marker: currentTestId });
+      .send({ marker: currentMarker });
 
     expect(response.status).toBe(401);
     await sleep(200);
-    expect(deliveriesForCurrentTest()).toHaveLength(0);
+    expect(getDeliveriesMatching(currentMarker)).toHaveLength(0);
   }, 10_000);
 
   it('renders the resume section when resume is present in the dispatch', async () => {
     const payload = {
       agentName: 'winston',
-      request: `Resume integration test ${currentTestId}`,
+      request: `Resume integration test ${currentMarker}`,
       replyContext: {
         channel: 'slack',
         threadTs: '1700000000.000200',
         channelId: 'C0123456',
-        senderId: 'heather@example.com',
+        senderEmail: 'heather@example.com',
         originalRequestText: 'Resume test',
       },
-      senderIdentity: 'heather@example.com',
+      senderEmail: 'heather@example.com',
       resume: {
         branch: 'builder/resume-fixture',
         answer: 'Yes, Slack only.',
@@ -245,7 +196,7 @@ describe('Builder dispatch integration', () => {
 
     expect(response.status).toBe(202);
 
-    const deliveries = await waitForDeliveries(1);
+    const deliveries = await waitForDeliveries(currentMarker, 1);
     const [delivery] = deliveries;
     expect(delivery!.prompt).toContain('Resume context');
     expect(delivery!.prompt).toContain('builder/resume-fixture');

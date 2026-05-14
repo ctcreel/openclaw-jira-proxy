@@ -47,7 +47,7 @@ The privileged-route template additionally enforces an operator-allowlist (Layer
 
 ### D3. Builder lives in clawndom; her target is the dispatching agent's directory
 
-Builder's definition (system prompt, plan template, tool list) lives at `src/system-agents/builder/` in clawndom. There is one Builder definition shared across all dispatching agents. The path is deliberately `system-agents/` (not `agents/`) so it doesn't collide with the "agents" concept used by clawndom's external-agent loader (`AGENTS_CONFIG` → `loadAgents`). Each dispatch carries `agent_name`, which Builder's runner resolves against `AGENTS_CONFIG` to find:
+Builder's definition (system prompt, plan template, tool list) lives at `src/system-agents/builder/` in clawndom. There is one Builder definition shared across all dispatching agents. The path is deliberately `system-agents/` (not `agents/`) so it doesn't collide with the "agents" concept used by clawndom's external-agent loader (`AGENTS_CONFIG` → `loadAgents`). Each dispatch carries `agentName`, which Builder's runner resolves against `AGENTS_CONFIG` to find:
 
 - Target repo and `path` (the dispatching agent's directory)
 - Builder bot identity for that repo (resolved per-repo, since colocated agents share a repo)
@@ -70,7 +70,7 @@ Builder gets one dedicated BullMQ queue. All dispatches share it; the existing c
 
 ### D6. Reply-context envelope is opaque to Builder
 
-The dispatching agent attaches `{channel, thread_ts | message_id, sender_id, original_request_text}` to the dispatch payload. Builder treats this as an opaque blob and echoes it back on every callback. The dispatching agent is responsible for using it to reply to the original Slack thread or email. This keeps Builder out of Slack/Gmail tool grants entirely.
+The dispatching agent attaches `{channel, thread_ts | message_id, senderEmail, originalRequestText}` to the dispatch payload. Builder treats this as an opaque blob and echoes it back on every callback. The dispatching agent is responsible for using it to reply to the original Slack thread or email. This keeps Builder out of Slack/Gmail tool grants entirely.
 
 ### D7. Lifecycle states are explicit and four
 
@@ -80,7 +80,7 @@ The dispatching agent attaches `{channel, thread_ts | message_id, sender_id, ori
 
 Clawndom has no hot reload today. `loadAgents()` runs once at startup and the in-memory agent set is frozen for the process's lifetime. A Builder change therefore becomes live only after clawndom is restarted.
 
-**v1: external orchestrator.** After Builder's PR is merged, the existing supervisor (PM2 / systemd / k8s deployment) restarts clawndom. After the new instance comes up healthy, the supervisor fires a deploy webhook (`POST /webhooks/builder-deploy-complete` with the affected `job_id`); Builder's callback handler treats it as the `testable` signal and dispatches the operator reply.
+**v1: external orchestrator.** After Builder's PR is merged, the existing supervisor (PM2 / systemd / k8s deployment) restarts clawndom. After the new instance comes up healthy, the supervisor fires a deploy webhook (`POST /webhooks/builder-deploy-complete` with the affected `jobId`); Builder's callback handler treats it as the `testable` signal and dispatches the operator reply.
 
 - The `testable_mechanism` enum stays as specified — `deploy_webhook` is the default for clawndom-resident agents.
 - `cache_refresh` remains valid for the future-state hot-reload follow-on; `pr_preview` remains valid for agents that have external preview environments.
@@ -91,11 +91,11 @@ Clawndom has no hot reload today. `loadAgents()` runs once at startup and the in
 
 ### D9. Pause/resume via git-native state
 
-When Builder pauses with `question_pending`, she commits her plan as `.builder/plan.md` to her working branch. The callback carries `{question, branch, plan_path}`. The dispatching agent relays the question. The operator's answer triggers a new Builder dispatch carrying `{agent_name, resume: {branch, answer}}`. Builder re-hydrates by checking out the branch and reading the plan. No separate state store.
+When Builder pauses with `question_pending`, she commits her plan as `.builder/plan.md` to her working branch. The callback carries `{question, branch, planPath}`. The dispatching agent relays the question. The operator's answer triggers a new Builder dispatch carrying `{agentName, resume: {branch, answer}}`. Builder re-hydrates by checking out the branch and reading the plan. No separate state store.
 
-### D10. Idempotency via `event_id` on every callback
+### D10. Idempotency via `eventId` on every callback
 
-Each callback carries `event_id = job_id + state_name` (e.g., `builder-job-42:testable`). The callback consumer dedupes against a Redis-backed store (24h TTL by default). Retried deliveries cannot cause double-replies.
+Each callback carries `eventId = jobId + state_name` (e.g., `builder-job-42:testable`). The callback consumer dedupes against a Redis-backed store (24h TTL by default). Retried deliveries cannot cause double-replies.
 
 ### D11. Per-agent-repo Builder identity; branch protection is a bot allowlist
 
@@ -128,14 +128,14 @@ Opting an agent (and its repo) into Builder is a one-time checklist run by you, 
 
 ### D17. Operator-identity canonical key: email
 
-The per-agent operator allowlist is a flat list of email addresses. For dispatching agents whose channel naturally produces email identities (Gmail, etc.), the From: address is used directly. For Slack-channel dispatching agents, the dispatching agent does a `users.info` lookup with the `users:read.email` scope to resolve the Slack `user_id` → email before sending the dispatch. Builder treats `sender_identity` as an email string for re-verification against the allowlist.
+The per-agent operator allowlist is a flat list of email addresses. For dispatching agents whose channel naturally produces email identities (Gmail, etc.), the From: address is used directly. For Slack-channel dispatching agents, the dispatching agent does a `users.info` lookup with the `users:read.email` scope to resolve the Slack `user_id` → email before sending the dispatch. Builder treats `senderEmail` as an email string for re-verification against the allowlist.
 
 - Rationale: keeps the allowlist a flat list (operationally trivial), single identity model across channels, single Slack API call per dispatch is invisible at expected volumes (operator-initiated, low-frequency).
 - Alternative considered: per-operator records with multiple identity bindings (email + Slack user_id + etc.) — rejected as premature; can be added later if the operator set grows large.
 
 ### D18. Reply-context persistence: dispatching-agent-side Redis hash
 
-The dispatching agent persists `{job_id → reply_context + resume metadata}` in a Redis hash with a 24-hour TTL, keyed by `job_id`. Stored on the original dispatch, read on every callback, cleared on terminal state (`testable` or `failed`).
+The dispatching agent persists `{jobId → replyContext + resume metadata}` in a Redis hash with a 24-hour TTL, keyed by `jobId`. Stored on the original dispatch, read on every callback, cleared on terminal state (`testable` or `failed`).
 
 - Rationale: conversations are state; pretending otherwise is architectural cosplay. The CPS-style "embed continuation in the message" pattern only fully escapes server-side state when the message envelope is a first-class typed protocol — Slack and email aren't that. A 1KB Redis entry with TTL is the cheapest possible store and the most debuggable (`redis-cli HGET`).
 - Alternative considered: continuation-token-in-message (CPS-style) — elegant in theory, but the channel boundary always needs at least a `thread_ts → token` map in practice, which is functionally equivalent to a Redis hash.
@@ -149,7 +149,7 @@ When an agent doesn't declare its own `branch_naming_pattern`, Builder uses `bui
 
 - **[Operator-allowlist drift]** → Per-agent configuration owns the list; rotation requires deploys. Mitigation: keep small, review on operator changes.
 - **[Builder stuck without `failed`]** → Wall-clock timeout watchdog in BullMQ; on timeout the runner emits a synthetic `failed` callback. Without this, the `failed` state exists in the contract but the operator still strands.
-- **[Reply-context loss during pause/resume]** → The envelope must be reattached on resume dispatch. Mitigation: dispatching agent persists `{job_id → reply_context}` for the conversation window; alternative is for Builder to commit it to her branch (acceptable but slightly leaky — context contains channel IDs).
+- **[Reply-context loss during pause/resume]** → The envelope must be reattached on resume dispatch. Mitigation: dispatching agent persists `{jobId → replyContext}` for the conversation window; alternative is for Builder to commit it to her branch (acceptable but slightly leaky — context contains channel IDs).
 - **[Restart on every Builder dispatch]** → Option 1 means each merge bounces clawndom. Mitigation: graceful shutdown in the supervisor; consider hot-reload (option 3) as a follow-on if restart cost becomes painful.
 - **[Per-repo credentials leak]** → 1Password rotation per repo; the App's installation on the affected repo can be revoked without touching others. Per-tenant blast radius.
 - **[Bot-allowlist administration]** → Each repo's allowlist must stay in sync with the bots that legitimately author PRs (Builder + Patch + Scarlett + any future bots). Mitigation: document in the onboarding recipe; review on bot additions/rotations.
@@ -162,7 +162,7 @@ When an agent doesn't declare its own `branch_naming_pattern`, Builder uses `bui
 1. Land clawndom infrastructure (internal-bearer strategy, dispatch route, queue, runner, callback route, idempotency, per-agent config schema additions, Builder agent definition) behind a feature flag.
 2. Choose the first opt-in agent and its repo. Run the per-agent-repo onboarding checklist: provision Builder GitHub App, install on the repo, store credentials in 1Password, update the repo's branch-protection approved-bot allowlist to include the new Builder bot (without removing existing legitimate bots), and configure per-agent fields in `AGENTS_CONFIG` (`builder_bot_ref`, `branch_naming_pattern`, `operator_allowlist` (empty initially), `testable_mechanism: "deploy_webhook"`, supervisor webhook URL).
 3. Add the `dispatch_to_builder` tool to the agent's tool registry; add the privileged-route template variant; update tool-grant config so the tool is loaded only on the privileged route.
-4. Configure the supervisor (PM2 / systemd / k8s) to call clawndom's deploy-webhook endpoint after each successful clawndom restart, with the affected `job_id`.
+4. Configure the supervisor (PM2 / systemd / k8s) to call clawndom's deploy-webhook endpoint after each successful clawndom restart, with the affected `jobId`.
 5. Smoke-test by adding a single operator to the agent's allowlist and dispatching a no-op improvement; verify PR opens authored by Builder's bot, restart happens, `testable` callback fires, and the operator sees the reply.
 6. Roll out additional agents/repos one at a time.
 

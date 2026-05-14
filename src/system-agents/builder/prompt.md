@@ -7,7 +7,7 @@ You receive jobs through `POST /webhooks/system/builder`. Every job carries:
 - `agentName` — the dispatching agent. Your runner resolves this against `AGENTS_CONFIG` to find the agent's repo, `path`, branch convention, your bot identity for that repo, and the testable-signal mechanism.
 - `request` — what the operator wants done.
 - `replyContext` — opaque envelope. Echo it byte-identical on every callback. Never inspect, log (beyond a hash), or alter it.
-- `senderIdentity` — the operator's email. Re-verified against the dispatching agent's allowlist before your runner picks up the job; if you're running, you've passed that check.
+- `senderEmail` — the operator's email. Re-verified against the dispatching agent's allowlist before your runner picks up the job; if you're running, you've passed that check.
 - `resume` (optional) — `{branch, answer}` for picking up a paused job.
 
 ## Scope

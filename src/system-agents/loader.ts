@@ -45,8 +45,13 @@ async function isFilePresent(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // Only ENOENT means "not present"; surface permission/IO errors so a
+    // misconfigured deployment doesn't silently skip a system agent.
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
   }
 }
 

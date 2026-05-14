@@ -4,7 +4,7 @@ import type IORedis from 'ioredis';
 import express from 'express';
 import supertest from 'supertest';
 
-const redisInstance = new RedisMock() as unknown as IORedis;
+const redisInstance: IORedis = new RedisMock();
 
 vi.mock('../../../src/services/dedup.service', () => ({
   getDedupRedis: (): IORedis => redisInstance,
@@ -13,7 +13,7 @@ vi.mock('../../../src/services/dedup.service', () => ({
 const { createDeployCompleteHandler, deployCompleteJsonParser } =
   await import('../../../src/system-agents/builder/deploy-complete.controller');
 
-function makeApp(): express.Express {
+function buildTestApp(): express.Express {
   const app = express();
   app.post(
     '/webhooks/builder-deploy-complete',
@@ -28,7 +28,7 @@ describe('deploy-complete controller', () => {
 
   beforeEach(async () => {
     await redisInstance.flushall();
-    app = makeApp();
+    app = buildTestApp();
   });
 
   it('accepts a valid ok signal and records the event', async () => {

@@ -6,7 +6,7 @@ import supertest from 'supertest';
 
 const VALID_TOKEN = 'integration-bearer-token';
 const knownSecrets = new Map<string, string>([['builder_internal_bearer', VALID_TOKEN]]);
-const redisInstance = new RedisMock() as unknown as IORedis;
+const redisInstance: IORedis = new RedisMock();
 
 interface FakeSecretManager {
   hasSecret: (key: string) => boolean;
@@ -33,7 +33,7 @@ const { requireBuilderInternalBearer } =
 const { createDeployCompleteHandler, deployCompleteJsonParser } =
   await import('../../../src/system-agents/builder/deploy-complete.controller');
 
-function makeApp(): express.Express {
+function buildTestApp(): express.Express {
   const app = express();
   app.post(
     '/webhooks/builder-deploy-complete',
@@ -49,7 +49,7 @@ describe('deploy-complete route (bearer + parser + handler chain)', () => {
 
   beforeEach(async () => {
     await redisInstance.flushall();
-    app = makeApp();
+    app = buildTestApp();
   });
 
   it('a fully-valid supervisor call: 202 + dedupe entry written', async () => {

@@ -2,7 +2,7 @@
 
 **Job ID:** <!-- filled in by Builder at job start -->
 **Dispatching agent:** <!-- e.g., winston -->
-**Operator:** <!-- senderIdentity (email) -->
+**Operator:** <!-- senderEmail -->
 **Branch:** <!-- builder/<kebab-summary> or override -->
 
 ## Goal

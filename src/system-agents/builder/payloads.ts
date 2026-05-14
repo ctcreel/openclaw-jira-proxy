@@ -4,7 +4,7 @@ const slackEnvelope = z.object({
   channel: z.literal('slack'),
   threadTs: z.string().min(1),
   channelId: z.string().min(1),
-  senderId: z.string().email(),
+  senderEmail: z.string().email(),
   originalRequestText: z.string().min(1),
 });
 
@@ -12,7 +12,7 @@ const emailEnvelope = z.object({
   channel: z.literal('email'),
   messageId: z.string().min(1),
   threadId: z.string().min(1).optional(),
-  senderId: z.string().email(),
+  senderEmail: z.string().email(),
   originalRequestText: z.string().min(1),
 });
 
@@ -44,7 +44,7 @@ export const builderDispatchPayloadSchema = z
     agentName: z.string().min(1),
     request: z.string().min(1),
     replyContext: replyContextEnvelopeSchema,
-    senderIdentity: z.string().email(),
+    senderEmail: z.string().email(),
     resume: resumePayloadSchema.optional(),
   })
   .strict();

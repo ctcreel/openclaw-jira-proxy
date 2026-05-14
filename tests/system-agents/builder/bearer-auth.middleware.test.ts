@@ -24,7 +24,7 @@ vi.mock('../../../src/secrets/manager', () => ({
 const { requireBuilderInternalBearer } =
   await import('../../../src/system-agents/builder/bearer-auth.middleware');
 
-function makeApp(): express.Express {
+function buildTestApp(): express.Express {
   const app = express();
   app.get('/protected', requireBuilderInternalBearer, (_request, response) => {
     response.status(200).json({ ok: true });
@@ -36,7 +36,7 @@ describe('requireBuilderInternalBearer', () => {
   let app: express.Express;
 
   beforeEach(() => {
-    app = makeApp();
+    app = buildTestApp();
   });
 
   it('rejects requests with no Authorization header (401)', async () => {

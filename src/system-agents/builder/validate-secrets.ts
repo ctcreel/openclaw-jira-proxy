@@ -1,6 +1,14 @@
 import type { AgentEntry } from '../../config';
-import type { SecretManager } from '../../secrets/manager';
 import { isOptedInToBuilder, validateBuilderAgentFields } from './agent-config';
+
+/**
+ * Narrow surface this validator needs from the SecretManager. Declared
+ * here (instead of importing the full `SecretManager` class) so tests
+ * can pass a minimal stub without casting through `unknown`.
+ */
+export interface BuilderSecretLookup {
+  hasSecret(key: string): boolean;
+}
 
 /**
  * Fail fast at startup if any opted-in agent declares a `builderBotRef`
@@ -12,14 +20,14 @@ import { isOptedInToBuilder, validateBuilderAgentFields } from './agent-config';
  */
 export function validateBuilderAgentSecrets(
   agents: readonly AgentEntry[],
-  secretManager: SecretManager,
+  secretLookup: BuilderSecretLookup,
 ): void {
   const missing: Array<{ agent: string; key: string }> = [];
   for (const agent of agents) {
     validateBuilderAgentFields(agent.name, agent);
     if (!isOptedInToBuilder(agent)) continue;
     if (agent.builderBotRef === undefined) continue;
-    if (!secretManager.hasSecret(agent.builderBotRef)) {
+    if (!secretLookup.hasSecret(agent.builderBotRef)) {
       missing.push({ agent: agent.name, key: agent.builderBotRef });
     }
   }

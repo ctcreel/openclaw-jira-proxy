@@ -25,69 +25,18 @@ import request from 'supertest';
 
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
-import { registerRunner, resetRunners } from '../../src/runners/registry';
-import type { AgentRunner, RunOptions, RunResult } from '../../src/runners/types';
+import { resetRunners } from '../../src/runners/registry';
 import type { ResolvedAgent } from '../../src/services/agent-loader.service';
+import {
+  getDeliveriesMatching,
+  installCapturingRunner,
+  nextTestMarker,
+  sleep,
+  waitForDeliveries,
+} from './helpers/builder-test-harness';
 
 const VALID_TOKEN = 'integration-bearer-token-builder-callback';
 
-interface DeliveredPayload {
-  prompt: string;
-  agentId: string;
-  receivedAt: string;
-}
-
-const allDeliveries: DeliveredPayload[] = [];
-
-class CapturingRunner implements AgentRunner {
-  readonly name = 'openclaw';
-
-  async run(options: RunOptions): Promise<RunResult> {
-    allDeliveries.push({
-      prompt: options.prompt,
-      agentId: options.agentId,
-      receivedAt: new Date().toISOString(),
-    });
-    return {
-      status: 'ok',
-      runId: `mock-callback-run-${Date.now()}`,
-      renderedPrompt: options.prompt,
-    };
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-let currentTestId = '';
-let testCounter = 0;
-function nextTestId(): string {
-  return `callback-test-${Date.now()}-${++testCounter}`;
-}
-
-function deliveriesForCurrentTest(): DeliveredPayload[] {
-  return allDeliveries.filter((delivery) => delivery.prompt.includes(currentTestId));
-}
-
-async function waitForDeliveries(count: number, timeoutMs = 8000): Promise<DeliveredPayload[]> {
-  const start = Date.now();
-  while (Date.now() - start <= timeoutMs) {
-    const matched = deliveriesForCurrentTest();
-    if (matched.length >= count) return matched;
-    await sleep(50);
-  }
-  const finalMatched = deliveriesForCurrentTest();
-  if (finalMatched.length >= count) return finalMatched;
-  throw new Error(`Timed out waiting for ${count} deliveries (got ${finalMatched.length})`);
-}
-
-/**
- * Fake dispatching agent (stand-in for Winston). Created with a real
- * on-disk template file so the worker's template renderer can resolve
- * `messageTemplate` paths. Mirrors the shape an opted-in agent would
- * declare per `docs/builder-onboarding.md` step 2.5.
- */
 let agentTempDir = '';
 const TEMPLATE_RELATIVE_PATH = 'templates/builder-callback-reply.njk';
 const TEMPLATE_BODY =
@@ -103,9 +52,7 @@ function buildFakeDispatchingAgent(): ResolvedAgent {
           rules: [
             {
               name: 'reply-to-operator',
-              condition: {
-                all_of: [{ equals: { field: 'agentName', value: 'winston' } }],
-              },
+              condition: { all_of: [{ equals: { field: 'agentName', value: 'winston' } }] },
               messageTemplate: TEMPLATE_RELATIVE_PATH,
             },
           ],
@@ -116,10 +63,49 @@ function buildFakeDispatchingAgent(): ResolvedAgent {
   };
 }
 
+interface CallbackPayload {
+  eventId: string;
+  state: string;
+  agentName: string;
+  replyContext: {
+    channel: string;
+    threadTs?: string;
+    channelId?: string;
+    senderEmail: string;
+    originalRequestText: string;
+  };
+  question?: string;
+  branch?: string;
+  planPath?: string;
+  prUrl?: string;
+  testUrl?: string;
+}
+
+function buildCallback(
+  state: string,
+  marker: string,
+  extras: Partial<CallbackPayload> = {},
+): CallbackPayload {
+  return {
+    eventId: `job-${marker}:${state}`,
+    state,
+    agentName: 'winston',
+    replyContext: {
+      channel: 'slack',
+      threadTs: '1700000000.000000',
+      channelId: 'C0123456',
+      senderEmail: 'heather@example.com',
+      originalRequestText: `${state}-marker ${marker}`,
+    },
+    ...extras,
+  };
+}
+
 describe('Builder callback integration', () => {
   let app: Express;
   let workers: BullMQWorker[] = [];
   let queueNames: string[] = [];
+  let currentMarker = '';
 
   beforeAll(async () => {
     agentTempDir = await mkdtemp(join(tmpdir(), 'builder-callback-test-agent-'));
@@ -138,9 +124,7 @@ describe('Builder callback integration', () => {
     ]);
     resetSettings();
     resetQueues();
-
-    resetRunners();
-    registerRunner(new CapturingRunner());
+    installCapturingRunner();
 
     const agent = buildFakeDispatchingAgent();
     const { createApp } = await import('../../src/app');
@@ -157,9 +141,8 @@ describe('Builder callback integration', () => {
   }, 30_000);
 
   beforeEach(() => {
-    currentTestId = nextTestId();
-    resetRunners();
-    registerRunner(new CapturingRunner());
+    currentMarker = nextTestMarker('callback-test');
+    installCapturingRunner();
   });
 
   afterAll(async () => {
@@ -187,85 +170,51 @@ describe('Builder callback integration', () => {
   });
 
   it('a working callback routes to the dispatching agent and reaches its runner', async () => {
-    const callback = {
-      eventId: `job-${currentTestId}:working`,
-      state: 'working',
-      agentName: 'winston',
-      replyContext: {
-        channel: 'slack',
-        threadTs: '1700000000.000300',
-        channelId: 'C0123456',
-        senderId: 'heather@example.com',
-        originalRequestText: `request marker ${currentTestId}`,
-      },
-    };
-
     const response = await request(app)
       .post('/webhooks/builder-callback')
       .set('Authorization', `Bearer ${VALID_TOKEN}`)
       .set('Content-Type', 'application/json')
-      .send(callback);
+      .send(buildCallback('working', currentMarker));
 
     expect(response.status).toBe(202);
     expect(response.body.accepted).toBe(true);
 
-    const deliveries = await waitForDeliveries(1);
-    expect(deliveries).toHaveLength(1);
+    const deliveries = await waitForDeliveries(currentMarker, 1);
     expect(deliveries[0]!.agentId).toBe('winston');
   }, 15_000);
 
   it('a question_pending callback routes to the dispatching agent', async () => {
-    const callback = {
-      eventId: `job-${currentTestId}:question_pending`,
-      state: 'question_pending',
-      agentName: 'winston',
-      question: 'Slack-only or email too?',
-      branch: 'builder/onboarding-helper',
-      planPath: '.builder/plan.md',
-      replyContext: {
-        channel: 'slack',
-        threadTs: '1700000000.000400',
-        channelId: 'C0123456',
-        senderId: 'heather@example.com',
-        originalRequestText: `qp marker ${currentTestId}`,
-      },
-    };
-
     const response = await request(app)
       .post('/webhooks/builder-callback')
       .set('Authorization', `Bearer ${VALID_TOKEN}`)
       .set('Content-Type', 'application/json')
-      .send(callback);
+      .send(
+        buildCallback('question_pending', currentMarker, {
+          question: 'Slack-only or email too?',
+          branch: 'builder/onboarding-helper',
+          planPath: '.builder/plan.md',
+        }),
+      );
 
     expect(response.status).toBe(202);
-    const deliveries = await waitForDeliveries(1);
+    const deliveries = await waitForDeliveries(currentMarker, 1);
     expect(deliveries[0]!.agentId).toBe('winston');
   }, 15_000);
 
   it('a testable callback routes to the dispatching agent', async () => {
-    const callback = {
-      eventId: `job-${currentTestId}:testable`,
-      state: 'testable',
-      agentName: 'winston',
-      prUrl: 'https://github.com/example/repo/pull/123',
-      testUrl: 'https://preview-123.example.com',
-      replyContext: {
-        channel: 'slack',
-        threadTs: '1700000000.000500',
-        channelId: 'C0123456',
-        senderId: 'heather@example.com',
-        originalRequestText: `testable marker ${currentTestId}`,
-      },
-    };
-
     const response = await request(app)
       .post('/webhooks/builder-callback')
       .set('Authorization', `Bearer ${VALID_TOKEN}`)
       .set('Content-Type', 'application/json')
-      .send(callback);
+      .send(
+        buildCallback('testable', currentMarker, {
+          prUrl: 'https://github.com/example/repo/pull/123',
+          testUrl: 'https://preview-123.example.com',
+        }),
+      );
 
     expect(response.status).toBe(202);
-    const deliveries = await waitForDeliveries(1);
+    const deliveries = await waitForDeliveries(currentMarker, 1);
     expect(deliveries[0]!.agentId).toBe('winston');
   }, 15_000);
 
@@ -274,31 +223,15 @@ describe('Builder callback integration', () => {
       .post('/webhooks/builder-callback')
       .set('Authorization', 'Bearer wrong-token')
       .set('Content-Type', 'application/json')
-      .send({
-        eventId: `job-${currentTestId}:working`,
-        state: 'working',
-        agentName: 'winston',
-        replyContext: { channel: 'slack', marker: currentTestId },
-      });
+      .send(buildCallback('working', currentMarker));
 
     expect(response.status).toBe(401);
     await sleep(200);
-    expect(deliveriesForCurrentTest()).toHaveLength(0);
+    expect(getDeliveriesMatching(currentMarker)).toHaveLength(0);
   }, 10_000);
 
   it('skips callbacks targeting an unknown agentName (no delivery, no error)', async () => {
-    const callback = {
-      eventId: `job-${currentTestId}:working`,
-      state: 'working',
-      agentName: 'not-an-agent',
-      replyContext: {
-        channel: 'slack',
-        threadTs: '1700000000.000600',
-        channelId: 'C0123456',
-        senderId: 'heather@example.com',
-        originalRequestText: `unknown marker ${currentTestId}`,
-      },
-    };
+    const callback = buildCallback('working', currentMarker, { agentName: 'not-an-agent' });
 
     const response = await request(app)
       .post('/webhooks/builder-callback')
@@ -308,6 +241,6 @@ describe('Builder callback integration', () => {
 
     expect(response.status).toBe(202);
     await sleep(500);
-    expect(deliveriesForCurrentTest()).toHaveLength(0);
+    expect(getDeliveriesMatching(currentMarker)).toHaveLength(0);
   }, 10_000);
 });

@@ -2,7 +2,7 @@ import express from 'express';
 import type { RequestHandler, Request, Response } from 'express';
 
 import { getLogger } from '../../lib/logging';
-import { recordCallbackEvent } from './callback-dedupe';
+import { saveCallbackEvent } from './callback-dedupe';
 import { builderDeployCompletePayloadSchema } from './payloads';
 
 const logger = getLogger('builder-deploy-complete');
@@ -38,7 +38,7 @@ export function createDeployCompleteHandler(): DeployCompleteHandler {
     const state = payload.status === 'ok' ? 'testable' : 'failed';
     const eventId = `${payload.jobId}:${state}`;
 
-    const firstDelivery = await recordCallbackEvent(eventId);
+    const firstDelivery = await saveCallbackEvent(eventId);
     if (!firstDelivery) {
       logger.info({ eventId }, 'Duplicate deploy-complete signal — no-op');
       response.status(202).json({ accepted: true, deduped: true });

@@ -11,7 +11,7 @@ const slackEnvelope = {
   channel: 'slack' as const,
   threadTs: '1700000000.000100',
   channelId: 'C0123456',
-  senderId: 'heather@example.com',
+  senderEmail: 'heather@example.com',
   originalRequestText: 'Please help with onboarding',
 };
 
@@ -19,7 +19,7 @@ const emailEnvelope = {
   channel: 'email' as const,
   messageId: '<abc@example.com>',
   threadId: 'thread-123',
-  senderId: 'heather@example.com',
+  senderEmail: 'heather@example.com',
   originalRequestText: 'Please help with onboarding',
 };
 
@@ -44,9 +44,9 @@ describe('replyContextEnvelopeSchema', () => {
     expect(() => replyContextEnvelopeSchema.parse(broken)).toThrow();
   });
 
-  it('rejects a non-email senderId', () => {
+  it('rejects a non-email senderEmail', () => {
     expect(() =>
-      replyContextEnvelopeSchema.parse({ ...slackEnvelope, senderId: 'not-an-email' }),
+      replyContextEnvelopeSchema.parse({ ...slackEnvelope, senderEmail: 'not-an-email' }),
     ).toThrow();
   });
 });
@@ -56,7 +56,7 @@ describe('builderDispatchPayloadSchema', () => {
     agentName: 'winston',
     request: 'Add a helper that summarizes daily standups',
     replyContext: slackEnvelope,
-    senderIdentity: 'heather@example.com',
+    senderEmail: 'heather@example.com',
   };
 
   it('accepts a minimal valid dispatch', () => {
@@ -83,9 +83,9 @@ describe('builderDispatchPayloadSchema', () => {
     expect(() => builderDispatchPayloadSchema.parse(broken)).toThrow();
   });
 
-  it('rejects a non-email senderIdentity', () => {
+  it('rejects a non-email senderEmail in the dispatch', () => {
     expect(() =>
-      builderDispatchPayloadSchema.parse({ ...validDispatch, senderIdentity: 'heather' }),
+      builderDispatchPayloadSchema.parse({ ...validDispatch, senderEmail: 'heather' }),
     ).toThrow();
   });
 });

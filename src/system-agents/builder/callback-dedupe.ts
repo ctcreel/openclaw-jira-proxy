@@ -16,8 +16,7 @@ const KEY_PREFIX = 'builder:callback:event:';
  * recorded (caller should perform the side effect), `false` if it was
  * already recorded (caller should return 202 silently).
  */
-// noqa: NAMING001
-export async function recordCallbackEvent(
+export async function saveCallbackEvent(
   eventId: string,
   redis: IORedis = getDedupRedis(),
 ): Promise<boolean> {
