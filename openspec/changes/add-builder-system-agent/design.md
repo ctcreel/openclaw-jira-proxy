@@ -53,7 +53,7 @@ Builder's definition (system prompt, plan template, tool list) lives at `src/sys
 - Builder bot identity for that repo (resolved per-repo, since colocated agents share a repo)
 - Branch naming convention
 - Operator allowlist (per-agent, not per-repo)
-- `testable_mechanism` (per-agent)
+- `testableMechanism` (per-agent)
 
 Builder MUST modify files only under the dispatching agent's `path`. She MUST NOT modify other colocated agents' paths, the agent's `sharedTools` directory (pinned by ref; requires a separate coordinated change that also bumps the agent's `clawndom.yaml` ref), or clawndom itself.
 
@@ -82,7 +82,7 @@ Clawndom has no hot reload today. `loadAgents()` runs once at startup and the in
 
 **v1: external orchestrator.** After Builder's PR is merged, the existing supervisor (PM2 / systemd / k8s deployment) restarts clawndom. After the new instance comes up healthy, the supervisor fires a deploy webhook (`POST /webhooks/builder-deploy-complete` with the affected `jobId`); Builder's callback handler treats it as the `testable` signal and dispatches the operator reply.
 
-- The `testable_mechanism` enum stays as specified — `deploy_webhook` is the default for clawndom-resident agents.
+- The `testableMechanism` enum stays as specified — `deploy_webhook` is the default for clawndom-resident agents.
 - `cache_refresh` remains valid for the future-state hot-reload follow-on; `pr_preview` remains valid for agents that have external preview environments.
 - BullMQ persists jobs across restarts, so in-flight Builder jobs whose runners are killed mid-restart resume on the new instance.
 - Trade-off: every Builder dispatch causes a clawndom restart. Acceptable when restarts are seconds and the supervisor does graceful shutdown; painful for high-traffic deployments.
@@ -143,7 +143,7 @@ The dispatching agent persists `{jobId → replyContext + resume metadata}` in a
 
 ### D19. Default branch-naming convention
 
-When an agent doesn't declare its own `branch_naming_pattern`, Builder uses `builder/<kebab-case-summary>`. Agents whose repos enforce a structured naming pattern (e.g., `{type}/{TICKET-ID}-{description}`) declare their override per-agent in `AGENTS_CONFIG`.
+When an agent doesn't declare its own `branchNamingPattern`, Builder uses `builder/<kebab-case-summary>`. Agents whose repos enforce a structured naming pattern (e.g., `{type}/{TICKET-ID}-{description}`) declare their override per-agent in `AGENTS_CONFIG`.
 
 ## Risks / Trade-offs
 
@@ -160,7 +160,7 @@ When an agent doesn't declare its own `branch_naming_pattern`, Builder uses `bui
 ## Migration Plan
 
 1. Land clawndom infrastructure (internal-bearer strategy, dispatch route, queue, runner, callback route, idempotency, per-agent config schema additions, Builder agent definition) behind a feature flag.
-2. Choose the first opt-in agent and its repo. Run the per-agent-repo onboarding checklist: provision Builder GitHub App, install on the repo, store credentials in 1Password, update the repo's branch-protection approved-bot allowlist to include the new Builder bot (without removing existing legitimate bots), and configure per-agent fields in `AGENTS_CONFIG` (`builder_bot_ref`, `branch_naming_pattern`, `operator_allowlist` (empty initially), `testable_mechanism: "deploy_webhook"`, supervisor webhook URL).
+2. Choose the first opt-in agent and its repo. Run the per-agent-repo onboarding checklist: provision Builder GitHub App, install on the repo, store credentials in 1Password, update the repo's branch-protection approved-bot allowlist to include the new Builder bot (without removing existing legitimate bots), and configure per-agent fields in `AGENTS_CONFIG` (`builderBotRef`, `branchNamingPattern`, `operatorAllowlist` (empty initially), `testableMechanism: "deploy_webhook"`, supervisor webhook URL).
 3. Add the `dispatch_to_builder` tool to the agent's tool registry; add the privileged-route template variant; update tool-grant config so the tool is loaded only on the privileged route.
 4. Configure the supervisor (PM2 / systemd / k8s) to call clawndom's deploy-webhook endpoint after each successful clawndom restart, with the affected `jobId`.
 5. Smoke-test by adding a single operator to the agent's allowlist and dispatching a no-op improvement; verify PR opens authored by Builder's bot, restart happens, `testable` callback fires, and the operator sees the reply.

@@ -51,7 +51,7 @@ A `question_pending` ends the job. Resume arrives as a new dispatch with `resume
 
 These are not assumptions — they are requirements with scenarios in the spec.
 
-- **Fresh start.** Before each non-resume job, `git fetch` and reset to the latest `origin/main`. Create your working branch from current state, not from a stale checkout.
+- **Fresh start.** Before each non-resume job, `git fetch` and reset to the latest commit on the dispatching agent's configured base ref (defaults to the repo's default branch — usually `main`). Create your working branch from current state, not from a stale checkout.
 - **Branch naming.** Use the dispatching agent's configured `branchNamingPattern` if set, otherwise default to `builder/<kebab-case-summary>`. Never push to `main` directly.
 - **Resume preserves history.** On resume, check out the named branch and continue. Do not force-push or rebase your own paused commits.
 - **Verification before PR.** Run the dispatching agent's verification command (`make check-all` or the configured equivalent). Do not open a PR with known failures. If the failure isn't yours to fix, emit `failed`.

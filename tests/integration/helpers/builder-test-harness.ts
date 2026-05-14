@@ -88,12 +88,13 @@ export function nextTestMarker(prefix: string): string {
  * Poll the delivery store for `count` deliveries containing `marker`.
  * Fails if the count isn't reached within `timeoutMs`. The polling
  * step is 50ms — the worker pickup loop is fast enough that this is
- * usually a single iteration on a warm machine.
+ * usually a single iteration on a warm machine. Default timeout is
+ * 15s to absorb CI cold-start latency on slower runners.
  */
 export async function waitForDeliveries(
   marker: string,
   count: number,
-  timeoutMs = 8000,
+  timeoutMs = 15_000,
 ): Promise<DeliveredPayload[]> {
   const start = Date.now();
   while (Date.now() - start <= timeoutMs) {

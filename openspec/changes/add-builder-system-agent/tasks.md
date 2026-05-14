@@ -4,7 +4,7 @@ These are baked into the spec (design D17–D19); the tasks here exist so an imp
 
 - [x] 1.1 Confirm canonical operator-identity key is **email**; Slack-channel dispatching agents resolve `user_id` → email via `users.info` (`users:read.email` scope) before dispatching; allowlist is a flat list of email strings per agent.
 - [x] 1.2 Confirm reply-context persistence is a **dispatching-agent-side Redis hash** keyed by `job_id` with a 24-hour TTL, stored on dispatch, read on callback, cleared on terminal state.
-- [x] 1.3 Confirm default branch-naming convention is **`builder/<kebab-summary>`**; agents may override via `branch_naming_pattern` in `AGENTS_CONFIG`.
+- [x] 1.3 Confirm default branch-naming convention is **`builder/<kebab-summary>`**; agents may override via `branchNamingPattern` in `AGENTS_CONFIG`.
 
 ## 2. Per-Agent Configuration Schema Extensions
 
@@ -115,4 +115,4 @@ These tasks run when an actual operator + agent-repo + Builder bot exist in a de
 
 ## 13. Follow-On (Out of Scope for This Change)
 
-- [ ] 13.1 File a separate openspec change for **hot-reload in clawndom** (option 3): a file-watcher or polling mechanism that re-runs `loadAgents` (or a smaller refresh) without a process restart. Once shipped, opted-in agents can switch from `testable_mechanism = "deploy_webhook"` to `"cache_refresh"` to eliminate per-dispatch restarts.
+- [ ] 13.1 File a separate openspec change for **hot-reload in clawndom** (option 3): a file-watcher or polling mechanism that re-runs `loadAgents` (or a smaller refresh) without a process restart. Once shipped, opted-in agents can switch from `testableMechanism = "deploy_webhook"` to `"cache_refresh"` to eliminate per-dispatch restarts.

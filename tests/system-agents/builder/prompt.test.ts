@@ -42,9 +42,9 @@ describe('Builder system prompt', () => {
     expect(prompt).toMatch(/silent failure is forbidden/i);
   });
 
-  it('encodes repo hygiene: fresh start (fetch + reset to origin/main)', async () => {
+  it('encodes repo hygiene: fresh start (fetch + reset to configured base ref)', async () => {
     const prompt = await loadPrompt();
-    expect(prompt).toMatch(/origin\/main/);
+    expect(prompt).toMatch(/base ref/i);
     expect(prompt).toMatch(/fetch/i);
   });
 

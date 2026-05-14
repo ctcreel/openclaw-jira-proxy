@@ -75,7 +75,19 @@ Content-Type: application/json
 
 (Or `"status": "failed"` with an optional `reason` if the new instance fails to come up healthy.)
 
-The supervisor needs to know which `job_id` to send. Convention: read it from the most-recently-merged Builder PR's commit trailer (`Builder-Job-Id: <id>`) which Builder writes into her commits. The supervisor's hook script extracts the trailer from `git log -1 --format='%(trailers:key=Builder-Job-Id,valueonly=true)'` and includes it in the webhook body.
+The supervisor needs to know which `jobId` to send. Convention: read it from the most-recently-merged Builder PR's commit trailer (`Builder-Job-Id: <id>`) which Builder writes into her commits. The supervisor's hook script MUST locate the most recent commit *authored by the Builder bot* (otherwise a non-Builder merge could be picked up, sending the wrong `jobId`) and only then read the trailer. Example:
+
+```sh
+BUILDER_BOT="<repo>-builder[bot]"
+COMMIT=$(git log -n 1 --author="$BUILDER_BOT" --format='%H')
+JOB_ID=$(git show -s --format='%(trailers:key=Builder-Job-Id,valueonly=true)' "$COMMIT")
+if [ -z "$JOB_ID" ]; then
+  echo "No Builder-Job-Id trailer on $COMMIT; refusing to fire deploy-complete" >&2
+  exit 0
+fi
+```
+
+If `JOB_ID` is empty, fail closed — do **not** POST to the deploy-complete webhook with an empty or guessed value.
 
 ## Layer 2 — Per agent
 

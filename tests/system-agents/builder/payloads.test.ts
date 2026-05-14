@@ -4,21 +4,29 @@ import {
   builderCallbackPayloadSchema,
   builderDeployCompletePayloadSchema,
   builderDispatchPayloadSchema,
+  type ReplyContextEnvelope,
   replyContextEnvelopeSchema,
 } from '../../../src/system-agents/builder/payloads';
 
-const slackEnvelope = {
-  channel: 'slack' as const,
+const slackEnvelope: ReplyContextEnvelope = {
+  channel: 'slack',
   threadTs: '1700000000.000100',
   channelId: 'C0123456',
   senderEmail: 'heather@example.com',
   originalRequestText: 'Please help with onboarding',
 };
 
-const emailEnvelope = {
-  channel: 'email' as const,
+const emailEnvelope: ReplyContextEnvelope = {
+  channel: 'email',
   messageId: '<abc@example.com>',
   threadId: 'thread-123',
+  senderEmail: 'heather@example.com',
+  originalRequestText: 'Please help with onboarding',
+};
+
+const emailEnvelopeNoThreadId: ReplyContextEnvelope = {
+  channel: 'email',
+  messageId: '<abc@example.com>',
   senderEmail: 'heather@example.com',
   originalRequestText: 'Please help with onboarding',
 };
@@ -28,8 +36,14 @@ describe('replyContextEnvelopeSchema', () => {
     expect(replyContextEnvelopeSchema.parse(slackEnvelope)).toEqual(slackEnvelope);
   });
 
-  it('accepts an email envelope (threadId optional)', () => {
+  it('accepts an email envelope with threadId', () => {
     expect(replyContextEnvelopeSchema.parse(emailEnvelope)).toEqual(emailEnvelope);
+  });
+
+  it('accepts an email envelope without threadId (optional field)', () => {
+    expect(replyContextEnvelopeSchema.parse(emailEnvelopeNoThreadId)).toEqual(
+      emailEnvelopeNoThreadId,
+    );
   });
 
   it('rejects an envelope with an unknown channel', () => {
