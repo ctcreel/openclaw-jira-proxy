@@ -64,7 +64,7 @@ const agentRoutingSchema = z.object({
   rules: z.array(agentRuleSchema).default([]),
 });
 
-const agentConfigSchema = z.object({
+export const agentConfigSchema = z.object({
   routing: z.record(z.string(), agentRoutingSchema).default({}),
   modelRules: z.record(z.string(), z.array(modelRuleSchema)).default({}),
   /** Per-agent memory namespaces. Pruning + provider/store binding live here. */

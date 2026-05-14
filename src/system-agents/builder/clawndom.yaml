@@ -1,0 +1,12 @@
+# Builder's agent config. Loaded by the system-agent loader (not by
+# AGENTS_CONFIG / the external-agent loader), so paths in this file are
+# relative to src/system-agents/builder/.
+
+routing:
+  # Every dispatch from POST /webhooks/system/builder fires this rule.
+  # The provider name `builder-dispatch` matches the webhook provider
+  # auto-injected by the system-agent loader.
+  builder-dispatch:
+    rules:
+      - name: handle-dispatch
+        messageTemplate: templates/dispatch.njk
