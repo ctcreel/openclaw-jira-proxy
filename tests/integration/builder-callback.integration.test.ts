@@ -28,6 +28,7 @@ import { resetQueues } from '../../src/services/queue.service';
 import { resetRunners } from '../../src/runners/registry';
 import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 import {
+  clearWebhookDedupKeys,
   getDeliveriesMatching,
   installCapturingRunner,
   nextTestMarker,
@@ -140,9 +141,10 @@ describe('Builder callback integration', () => {
     await sleep(500);
   }, 30_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     currentMarker = nextTestMarker('callback-test');
     installCapturingRunner();
+    await clearWebhookDedupKeys();
   });
 
   afterAll(async () => {

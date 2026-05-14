@@ -6,6 +6,8 @@
  * tripping SonarCloud's 3% new-code-duplication gate (the dispatch +
  * callback integration tests landed with near-identical shells).
  */
+import IORedis from 'ioredis';
+
 import { registerRunner, resetRunners } from '../../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../../src/runners/types';
 
@@ -47,6 +49,26 @@ export class CapturingRunner implements AgentRunner {
 export function installCapturingRunner(): void {
   resetRunners();
   registerRunner(new CapturingRunner());
+}
+
+/**
+ * Wipe the webhook-ingestion dedup cache between Builder integration
+ * tests. Builder providers don't carry a context-extraction strategy,
+ * so every dispatch resolves to the same `?/?` dedup key — without
+ * this, the second test in a file (and onward) silently lands inside
+ * the 60-second dedup window and the worker never picks up its job.
+ */
+export async function clearWebhookDedupKeys(): Promise<void> {
+  const redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
+  const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  try {
+    const keys = await connection.keys('clawndom:dedup:*');
+    if (keys.length > 0) {
+      await connection.del(...keys);
+    }
+  } finally {
+    await connection.quit();
+  }
 }
 
 export function getDeliveriesMatching(marker: string): DeliveredPayload[] {

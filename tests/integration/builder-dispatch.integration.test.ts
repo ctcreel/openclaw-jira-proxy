@@ -21,6 +21,7 @@ import { resetQueues } from '../../src/services/queue.service';
 import { resetRunners } from '../../src/runners/registry';
 import type * as SecretsManagerModule from '../../src/secrets/manager';
 import {
+  clearWebhookDedupKeys,
   getDeliveriesMatching,
   installCapturingRunner,
   nextTestMarker,
@@ -88,9 +89,10 @@ describe('Builder dispatch integration', () => {
     await sleep(500);
   }, 30_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     currentMarker = nextTestMarker('dispatch-test');
     installCapturingRunner();
+    await clearWebhookDedupKeys();
   });
 
   afterAll(async () => {
