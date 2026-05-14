@@ -5,8 +5,11 @@
 routing:
   # Every dispatch from POST /webhooks/system/builder fires this rule.
   # The provider name `builder-dispatch` matches the webhook provider
-  # auto-injected by the system-agent loader.
+  # auto-injected by the system-agent loader. The empty `all_of`
+  # condition is the catch-all — every well-formed dispatch matches.
   builder-dispatch:
     rules:
       - name: handle-dispatch
+        condition:
+          all_of: []
         messageTemplate: templates/dispatch.njk
