@@ -50,6 +50,7 @@ describe('loadAgents — memory config validation', () => {
         '      maxStoresPerRun: 5',
         '',
       ].join('\n'),
+      { 'templates/chat.md': 'noop' },
     );
     const resolved = await loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes));
     const config = resolved[0]!.config;
@@ -209,6 +210,7 @@ describe('loadAgents — memory config validation', () => {
         '        messageTemplate: templates/chat.md',
         '',
       ].join('\n'),
+      { 'templates/chat.md': 'noop' },
     );
     const resolved = await loadAgents([entry('a', 'a')], configDir, makeFakeGit(fakeRemotes));
     expect(resolved[0]!.config.memory).toBeUndefined();

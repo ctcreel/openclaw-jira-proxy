@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
 
+import { auditAgent } from '../audit';
 import { modelRuleSchema } from '../config';
 import type { AgentEntry, SharedToolsConfig } from '../config';
 import { getLogger } from '../lib/logging';
@@ -16,9 +17,27 @@ import { agentMemorySchema, ruleMemorySchema } from './memory/config-schemas';
 import { listVectorStores } from './memory/vector-store';
 import { conditionSchema } from '../strategies/routing';
 import { listSessionKeyStrategies, sessionConfigSchema } from '../strategies/session-key';
+import { ruleToolsSchema, type ToolRef } from './tools/config-schemas';
+import { loadToolDescriptor } from './tools/parse';
+import { validateToolSignature } from './tools/validate';
+import { getToolCatalog } from './tool-catalog.service';
+import { getSecretManager } from '../secrets/manager';
 
 const execFile = promisify(execFileCallback);
 const logger = getLogger('agent-loader');
+
+// Per-rule control over which identity-tier docs get auto-injected into
+// the system slot. Both default to true; an opt-out shape lets mechanical
+// routes (cron health checks, etc.) skip SOUL when the voice/principles
+// guidance would just be cache pollution. Anything that's NOT a rule
+// definition (e.g. a one-shot scheduled health check that needs neither)
+// can set both to false.
+const identityInjectionSchema = z
+  .object({
+    identity: z.boolean().default(true),
+    soul: z.boolean().default(true),
+  })
+  .default({ identity: true, soul: true });
 
 // Rules are shared across providers, but `routing.schedule` rules carry
 // extra fields (cron + timezone + catchUp + context) and don't need a
@@ -31,7 +50,20 @@ const logger = getLogger('agent-loader');
 // other providers ignore it. A non-schedule rule with `runner` set parses
 // successfully but has no runtime effect — acceptable v1 trade-off
 // against splitting the schema per provider.
+// Identity slug pattern: starts with a letter, then letters/digits/hyphens
+// only. This is the stable identifier that survives `name:` renames and
+// keys the sidecar layout file (clawndom.layout.yaml). When omitted, the
+// loader defaults it to `kebab-case(name)`. See `resolveRuleId`.
+const ruleIdPattern = /^[a-z][a-z0-9-]*$/;
+
 const agentRuleSchema = z.object({
+  /** Stable identifier that survives renames. Defaults to a kebab-slug of
+   * `name:` when omitted. Editor write-back / sidecar layout / audit
+   * cross-references all use this. */
+  id: z
+    .string()
+    .regex(ruleIdPattern, { message: 'id must be lowercase kebab-case (letters, digits, hyphens)' })
+    .optional(),
   name: z.string().optional(),
   condition: conditionSchema.optional(),
   messageTemplate: z.string().optional(),
@@ -58,6 +90,62 @@ const agentRuleSchema = z.object({
    * Only honoured by the claude-cli runner today; other runners ignore.
    */
   maxTurns: z.number().int().positive().optional(),
+  /**
+   * Agent-callable tools available to this rule's runs. Each entry uses
+   * `module.python:` with a dotted import-path reference to a Python tool
+   * directory containing `tool.yaml` and `impl.py`.
+   * See `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`.
+   * Implemented per SPE-2078; supersedes the reverted SPE-2070 design.
+   */
+  tools: ruleToolsSchema.optional(),
+  /**
+   * Auto-injection of agent-identity docs into the system slot. By default,
+   * every rule prepends `{{system-doc:identity/IDENTITY.md}}` and
+   * `{{system-doc:identity/SOUL.md}}` to the template body before render —
+   * so authors don't have to repeat those two lines on every template, and
+   * the rule config is the single place that controls which routes need
+   * identity/soul context.
+   *
+   *   identity: { identity: false }   — skip IDENTITY.md (rare).
+   *   identity: { soul: false }       — skip SOUL.md (mechanical routes
+   *                                     like cron-fired health checks).
+   *   identity: { identity: false, soul: false } — bare prompt; the
+   *                                     template's full content is what
+   *                                     the model sees.
+   */
+  identity: identityInjectionSchema.optional().default({}),
+  /**
+   * Internal task types this rule's template dispatches via POST /api/tasks.
+   * Makes the cross-rule edge explicit instead of buried in template prose.
+   *
+   *   dispatches:
+   *     - handle-cancellation
+   *     - draft-response
+   *
+   * The audit verifies that the template's curl-to-/api/tasks calls only
+   * reference task types in this list, and that each entry corresponds to a
+   * `routing.internal` rule somewhere in the configured agents. Empty/omitted
+   * = this rule dispatches no internal tasks.
+   */
+  dispatches: z.array(z.string().min(1)).default([]),
+  /**
+   * Names of the per-event variables this rule's template expects to receive.
+   * For webhook rules these come from the provider's context-extraction
+   * strategy; for `routing.internal` rules they come from the dispatch
+   * payload posted by the upstream rule. Declared here so the audit can
+   * enforce the producer/consumer contract — `{{ messageId }}` in a template
+   * with no `messageId` in `inputs:` is a warning.
+   *
+   *   inputs:
+   *     - messageId
+   *     - threadId
+   *     - from
+   *
+   * Empty/omitted = the rule doesn't declare its inputs. The audit reports
+   * undeclared `{{ var }}` references as informational findings; tightening
+   * to errors happens once every rule has declared its inputs.
+   */
+  inputs: z.array(z.string().min(1)).default([]),
 });
 
 const agentRoutingSchema = z.object({
@@ -193,12 +281,58 @@ export async function loadAgents(
 
     validateMemoryConfig(entry.name, config);
     validateSessionConfig(entry.name, config);
+    await validateToolsConfig(entry.name, config, agentDir);
+    await runWorkspaceAudit(entry.name, agentDir);
 
     resolved.push({ name: entry.name, dir: agentDir, config });
   }
 
   validateMemoryNamespaceUniqueness(resolved);
   return resolved;
+}
+
+/**
+ * Boot-time workspace audit. Runs the same checks `clawndom-audit` runs at
+ * CI time, but against the just-cloned workspace on the operator's machine.
+ * Refuses to start an agent whose workspace fails any error-level rule —
+ * a broken workspace will produce nothing but failed jobs, so failing fast
+ * is strictly better than handing the agent to BullMQ.
+ *
+ * Warnings (legacy patterns, undeclared scopes) are logged but don't block
+ * startup — they're nudges, not crashes.
+ */
+async function runWorkspaceAudit(agentName: string, agentDir: string): Promise<void> {
+  const report = await auditAgent(agentDir);
+  const errors = report.findings.filter((finding) => finding.severity === 'error');
+  const warnings = report.findings.filter((finding) => finding.severity === 'warning');
+
+  for (const warning of warnings) {
+    const location =
+      warning.path !== undefined
+        ? warning.line !== undefined
+          ? ` (${warning.path}:${warning.line})`
+          : ` (${warning.path})`
+        : '';
+    logger.warn(
+      { agent: agentName, rule: warning.rule },
+      `Workspace audit warning${location}: ${warning.message}`,
+    );
+  }
+
+  if (errors.length === 0) return;
+
+  const lines = errors.map((error) => {
+    const location =
+      error.path !== undefined
+        ? error.line !== undefined
+          ? `${error.path}:${error.line}`
+          : error.path
+        : '<unknown>';
+    return `  - [${error.rule}] ${location}: ${error.message}`;
+  });
+  throw new Error(
+    `Agent ${agentName}: workspace audit failed with ${errors.length} error(s):\n${lines.join('\n')}`,
+  );
 }
 
 /**
@@ -292,6 +426,72 @@ export function getAgentDefaultMemoryNamespace(agent: ResolvedAgent): string | u
   if (!namespaces) return undefined;
   const keys = Object.keys(namespaces);
   return keys.length > 0 ? keys[0] : undefined;
+}
+
+/**
+ * Boot-time validation for `routing.<provider>.rules[].tools:` declarations.
+ * For each declared tool: resolve the directory, parse `tool.yaml`, and run
+ * the signature validator that matches the tool's kind. Also reject duplicate
+ * derived tool names within a rule so the Anthropic API registration can't
+ * collide.
+ *
+ * Failing here at boot is the contract that catches YAML↔helper drift before
+ * any agent invokes the tool. See
+ * `openspec/changes/spe-2078-tool-use/specs/agent-tool-use/spec.md`.
+ */
+async function validateToolsConfig(
+  agentName: string,
+  config: AgentConfig,
+  agentDir: string,
+): Promise<void> {
+  for (const [providerName, providerRouting] of Object.entries(config.routing)) {
+    for (const rule of providerRouting.rules) {
+      const tools: readonly ToolRef[] = rule.tools ?? [];
+      if (tools.length === 0) continue;
+      const ruleLabel = rule.name ?? '<unnamed>';
+      const seenNames = new Set<string>();
+      for (const toolRef of tools) {
+        let descriptor;
+        try {
+          descriptor = await loadToolDescriptor(toolRef, agentDir);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${message}`,
+          );
+        }
+        if (seenNames.has(descriptor.name)) {
+          throw new Error(
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": duplicate tool name '${descriptor.name}' (set explicit 'name:' in tool.yaml to disambiguate)`,
+          );
+        }
+        seenNames.add(descriptor.name);
+        getToolCatalog().register(agentName, descriptor);
+        try {
+          await validateToolSignature(descriptor);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": ${message}`,
+          );
+        }
+        // Fail-fast on missing `secrets:` aliases. Resolution happens
+        // per-invocation in load-for-run.ts, but a typo or missing binding
+        // would today surface only on the FIRST tool_use — boot is the
+        // right place to catch it. For each secret, at least one declared
+        // alias MUST be registered in SECRETS_CONFIG.
+        const secretManager = getSecretManager();
+        for (const secretSpecification of descriptor.secrets) {
+          const resolvable = secretSpecification.aliases.some((a) => secretManager.hasSecret(a));
+          if (!resolvable) {
+            throw new Error(
+              `Agent ${agentName}: routing.${providerName} rule "${ruleLabel}": tool '${descriptor.name}' needs secret '${secretSpecification.canonical}' but none of its aliases [${secretSpecification.aliases.join(', ')}] are registered in SECRETS_CONFIG.`,
+            );
+          }
+        }
+      }
+    }
+  }
 }
 
 /**

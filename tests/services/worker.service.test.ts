@@ -944,10 +944,15 @@ describe('processJob message templates', () => {
     await processJob(createFakeJob('{"type":"bug","issue":{"key":"SPE-1"}}'), testProvider, agents);
 
     expect(readFile).toHaveBeenCalledWith('/agents/patch/templates/bug-plan.md', 'utf-8');
+    // worker.service now forwards the rule's identity config to the
+    // template engine as a 4th arg so the renderer can auto-prepend
+    // IDENTITY/SOUL. The exact shape depends on whether the test rule
+    // went through the schema's default; we only verify the leading args.
     expect(renderTemplate).toHaveBeenCalledWith(
       'Issue {{ issue.key }}',
       expect.objectContaining({ type: 'bug' }),
       '/agents/patch',
+      expect.any(Object),
     );
     expect(runSpy.mock.calls[0]![0].prompt).toBe('rendered rule template');
   });

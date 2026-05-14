@@ -8,6 +8,8 @@
     "build": "tsup",
     "build:tsc": "tsc",
     "start": "node dist/server.js",
+    "audit-agent": "tsx src/audit/cli.ts",
+    "graph-agent": "tsx src/graph/cli.ts",
     "lint": "eslint --ext .ts src/",
     "lint:fix": "eslint --fix --ext .ts src/",
     "typecheck": "tsc --noEmit",
@@ -22,9 +24,14 @@
     "naming:all": "pnpm run naming && pnpm run abbreviations && pnpm run skip-comments",
     "prepare": "husky"
   },
+  "bin": {
+    "clawndom-audit": "dist/audit/cli.js",
+    "clawndom-graph": "dist/graph/cli.js"
+  },
   "dependencies": {
     "@slack/socket-mode": "^2.0.4",
     "bullmq": "^5.30.0",
+    "cron-parser": "^5.5.0",
     "express": "^4.21.0",
     "ioredis": "^5.4.0",
     "js-yaml": "^4.1.1",

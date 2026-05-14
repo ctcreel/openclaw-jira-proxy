@@ -10,6 +10,8 @@ import type { EventBus } from '../services/event-bus.service';
 import { ingestEvent } from '../services/event-ingest.service';
 import { getSignatureStrategy } from '../strategies/signature';
 import type { SignatureStrategy } from '../strategies/signature';
+import { decodePubsubEnvelope } from '../strategies/transport/pubsub-envelope';
+import { getStringHeader } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('webhook-controller');
@@ -48,10 +50,8 @@ function collectAdditionalHeaders(
     return headers;
   }
   for (const name of strategy.additionalHeaders) {
-    const value = request.headers[name];
-    if (typeof value === 'string') {
-      headers[name] = value;
-    }
+    const value = getStringHeader(request, name);
+    if (value !== undefined) headers[name] = value;
   }
   return headers;
 }
@@ -59,18 +59,18 @@ function collectAdditionalHeaders(
 /**
  * Returns the raw body when signature verification passes, otherwise
  * returns null after sending a 401/500 response. Callers short-circuit
- * on null.
+ * on null. Async because the OIDC strategy fetches Google's JWKs.
  */
-function verifyRequestSignature(
+async function verifyRequestSignature(
   request: Request,
   response: Response,
   provider: WebhookProviderConfig,
   strategy: SignatureStrategy,
   events: EventBus,
   traceId: string,
-): Buffer | null {
-  const signatureHeader = request.headers[strategy.headerName];
-  if (typeof signatureHeader !== 'string') {
+): Promise<Buffer | null> {
+  const signatureHeader = getStringHeader(request, strategy.headerName);
+  if (signatureHeader === undefined) {
     logger.warn({ provider: provider.name }, `Missing ${strategy.headerName} header`);
     events.publish({
       type: 'webhook.rejected',
@@ -83,7 +83,9 @@ function verifyRequestSignature(
     return null;
   }
 
-  if (!provider.hmacSecret) {
+  // OIDC verifies tokens against Google's JWKs and doesn't use a static
+  // shared secret, so hmacSecret is required only for the other strategies.
+  if (provider.signatureStrategy !== 'oidc' && !provider.hmacSecret) {
     logger.error({ provider: provider.name }, 'No HMAC secret configured');
     response.status(500).json({ error: 'Provider misconfigured' });
     return null;
@@ -103,7 +105,14 @@ function verifyRequestSignature(
   const rawBody: Buffer = request.body;
   const additionalHeaders = collectAdditionalHeaders(request, strategy);
 
-  if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret, additionalHeaders)) {
+  const passed = await strategy.validate(
+    rawBody,
+    signatureHeader,
+    provider.hmacSecret ?? '',
+    additionalHeaders,
+    provider,
+  );
+  if (!passed) {
     logger.warn({ provider: provider.name }, 'Invalid HMAC signature');
     events.publish({
       type: 'webhook.rejected',
@@ -163,11 +172,28 @@ export function createWebhookHandler(
       rawHeadersHash: hashHeaders(request.headers),
     });
 
-    const rawBody = verifyRequestSignature(request, response, provider, strategy, events, traceId);
+    const rawBody = await verifyRequestSignature(
+      request,
+      response,
+      provider,
+      strategy,
+      events,
+      traceId,
+    );
     if (rawBody === null) return;
 
     const rawBodyString = rawBody.toString('utf-8');
-    const parsedPayload = tryParseJson(rawBodyString);
+    const wrappedPayload = tryParseJson(rawBodyString);
+
+    // When the provider declares `envelope: pubsub`, the inbound body is
+    // Google Cloud Pub/Sub's wrapper `{message: {data: base64}, subscription}`.
+    // Routing rules need to match on the inner payload, so we unwrap after
+    // signature validation but before ingest. Non-Pub/Sub-shaped bodies pass
+    // through unchanged.
+    const parsedPayload =
+      provider.envelope === 'pubsub'
+        ? decodePubsubEnvelope(wrappedPayload).payload
+        : wrappedPayload;
 
     if (handleSlackChallenge(parsedPayload, response, provider)) return;
 

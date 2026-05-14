@@ -104,6 +104,10 @@ describe('loadAgents', () => {
         '        messageTemplate: templates/bug-plan.md',
         '',
       ].join('\n'),
+      // Boot-time audit requires the templates declared in the rules to
+      // actually exist on disk + an identity tier (best-practice prevents
+      // bare-filename injections elsewhere in the workspace).
+      'templates/bug-plan.md': 'Test plan template body.\n',
     });
 
     const git = makeFakeGit();

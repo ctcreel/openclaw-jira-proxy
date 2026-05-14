@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 
 import { getSettings } from '../config';
+import { getStringHeader, getStringParameter } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 import {
   ProviderNotRegisteredError,
@@ -39,8 +40,8 @@ function authenticate(request: Request): boolean {
     logger.error('CLAWNDOM_AGENT_TOKEN is not configured; rejecting memory request');
     return false;
   }
-  const header = request.headers.authorization;
-  if (typeof header !== 'string' || !header.startsWith(BEARER_PREFIX)) {
+  const header = getStringHeader(request, 'authorization');
+  if (header === undefined || !header.startsWith(BEARER_PREFIX)) {
     return false;
   }
   return header.slice(BEARER_PREFIX.length) === expected;
@@ -117,8 +118,8 @@ export async function deleteMemoryEntry(request: Request, response: Response): P
     response.status(400).json({ error: 'Invalid request', details: parsed.error.issues });
     return;
   }
-  const idParameter = request.params['id'];
-  if (typeof idParameter !== 'string' || idParameter.length === 0) {
+  const idParameter = getStringParameter(request, 'id');
+  if (idParameter === undefined) {
     response.status(400).json({ error: 'Missing :id path parameter' });
     return;
   }

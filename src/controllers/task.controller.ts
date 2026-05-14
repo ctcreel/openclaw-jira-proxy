@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
+import { getStringQuery } from '../lib/extract';
 import { getLogger } from '../lib/logging';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import {
@@ -67,14 +68,14 @@ export function getTaskStatusHandler() {
 export function waitTaskHandler() {
   return async (request: Request, response: Response): Promise<void> => {
     const { agent, taskId } = request.params as { agent: string; taskId: string };
-    const timeoutMs = clampTimeout(request.query['timeoutMs']);
+    const timeoutMs = clampTimeout(getStringQuery(request, 'timeoutMs'));
     const result = await waitForTask(agent, taskId, timeoutMs);
     response.status(200).json(result);
   };
 }
 
-function clampTimeout(raw: unknown): number {
-  if (typeof raw !== 'string') return DEFAULT_WAIT_TIMEOUT_MS;
+function clampTimeout(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_WAIT_TIMEOUT_MS;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_WAIT_TIMEOUT_MS;
   return Math.min(parsed, MAX_WAIT_TIMEOUT_MS);

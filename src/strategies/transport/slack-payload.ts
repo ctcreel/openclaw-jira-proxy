@@ -14,6 +14,8 @@
  * construction time.
  */
 
+import { readString, isPlainObject } from '../../lib/extract';
+
 export function buildChannelIdToNameMap(
   channelMap: Readonly<Record<string, string>> | undefined,
 ): ReadonlyMap<string, string> {
@@ -32,31 +34,16 @@ export function enrichSlackPayload(
   payload: unknown,
   channelIdToName: ReadonlyMap<string, string>,
 ): unknown {
-  if (channelIdToName.size === 0) {
-    return payload;
-  }
-  if (!payload || typeof payload !== 'object') {
-    return payload;
-  }
-  const root = payload as Record<string, unknown>;
-  const event = root['event'];
-  if (!event || typeof event !== 'object') {
-    return payload;
-  }
-  const eventRecord = event as Record<string, unknown>;
-  const channelId = eventRecord['channel'];
-  if (typeof channelId !== 'string') {
-    return payload;
-  }
+  if (channelIdToName.size === 0) return payload;
+  if (!isPlainObject(payload)) return payload;
+  const event = payload['event'];
+  if (!isPlainObject(event)) return payload;
+  const channelId = readString(event['channel']);
+  if (channelId === undefined) return payload;
   const name = channelIdToName.get(channelId);
-  if (name === undefined) {
-    return payload;
-  }
+  if (name === undefined) return payload;
   return {
-    ...root,
-    event: {
-      ...eventRecord,
-      channel_name: name,
-    },
+    ...payload,
+    event: { ...event, channel_name: name },
   };
 }

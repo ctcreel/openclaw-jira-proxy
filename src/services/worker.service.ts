@@ -11,7 +11,9 @@ import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
+import { buildMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
 import { extractWebhookContext } from '../strategies/context';
+import { getOptionalStringField } from '../lib/extract';
 import { resolveAgentFromAgents, resolveFieldPath } from '../strategies/routing';
 import type { AgentRule, ResolvedAgent } from './agent-loader.service';
 import { getMemoryService } from './memory/memory.service';
@@ -223,7 +225,9 @@ export async function processJob(
   let systemPrompt = '';
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
-    const rendered = await renderTemplate(templateContent, parsedPayload, agentDir);
+    const rendered = await renderTemplate(templateContent, parsedPayload, agentDir, {
+      identity: resolved.rule.identity,
+    });
     systemPrompt = rendered.systemPrompt;
     // Memory recall fragments are per-event (queryField → embed → search),
     // so they wrap the rendered BODY, not the cacheable system prompt.
@@ -333,6 +337,19 @@ export async function processJob(
     traceId,
   );
 
+  // SPE-2078: build the MCP bundle when this route declares tools.
+  // Resolves each tool's `secrets:` credentials via the SecretManager
+  // and materializes the per-run --mcp-config + tool-config + creds files.
+  // The bundle's env carries CLAWNDOM_TOOL_CREDS_FILE (a path, not the
+  // value) so the spawned MCP server reads the resolved values from a
+  // mode-600 file and unlinks it; the literal credential never lands in
+  // the process envp.
+  const mcpBundle = await buildMCPBundle(resolved.rule.tools, agentDir, {
+    agentId,
+    routeId: `${provider.name}:${resolved.rule.name ?? '<unnamed>'}`,
+    requestId: traceId,
+  });
+
   const result = await dispatchToRunner(runner, {
     prompt,
     sessionKey,
@@ -343,6 +360,7 @@ export async function processJob(
     jobId: jobIdString,
     ...(envOverlay ? { env: envOverlay } : {}),
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+    ...(mcpBundle === undefined ? {} : { mcpBundle }),
     // Quota-pause recovery: when the prior run captured a session_id and
     // got walled by upstream, the requeued envelope carries that id so
     // this pickup resumes the same conversation instead of replanning.
@@ -354,6 +372,7 @@ export async function processJob(
     sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
     sessionUserMessage,
   });
+  await cleanupMCPBundle(mcpBundle);
 
   if (result.status === 'quota_exceeded') {
     await handleQuotaExceeded(
@@ -689,8 +708,8 @@ async function fetchMemoriesForRule(
   const memoryConfig = rule.memory;
   if (memoryConfig === undefined || memoryConfig.retrieve === undefined) return undefined;
 
-  const queryRaw = resolveFieldPath(parsedPayload, memoryConfig.retrieve.queryField);
-  if (typeof queryRaw !== 'string' || queryRaw.length === 0) {
+  const queryRaw = getOptionalStringField(parsedPayload, memoryConfig.retrieve.queryField);
+  if (queryRaw === undefined) {
     logger.debug(
       {
         namespace: memoryConfig.namespace,

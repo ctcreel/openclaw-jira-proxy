@@ -3,6 +3,8 @@ import { dirname, join, resolve, sep } from 'node:path';
 
 import nunjucks from 'nunjucks';
 
+import { isPlainObject } from '../extract';
+
 // Body-level tags — content is inlined into the rendered user prompt.
 const DOC_TAG_PATTERN = /\{\{doc:([^}]+)\}\}/g;
 const SHARED_TAG_PATTERN = /\{\{shared:([^}]+)\}\}/g;
@@ -131,18 +133,47 @@ export interface RenderedTemplate {
   body: string;
 }
 
+export interface IdentityInjection {
+  /** Auto-prepend `{{system-doc:identity/IDENTITY.md}}`. Default true. */
+  readonly identity?: boolean;
+  /** Auto-prepend `{{system-doc:identity/SOUL.md}}`. Default true. */
+  readonly soul?: boolean;
+}
+
+/**
+ * Build the auto-prepended identity-tier injection lines for a rule. When
+ * the caller doesn't pass an `identity` config (e.g. tests rendering a raw
+ * template in isolation), no auto-injection happens — the rule loader is
+ * the only place where the "default ON" semantics live. When the caller
+ * DOES pass a config (worker.service / task-worker), the two injections
+ * default to true and individual fields can be turned off.
+ */
+function buildIdentityPreamble(config: IdentityInjection | undefined): string {
+  if (config === undefined) return '';
+  const wantIdentity = config.identity ?? true;
+  const wantSoul = config.soul ?? true;
+  const lines: string[] = [];
+  if (wantIdentity) lines.push('{{system-doc:identity/IDENTITY.md}}');
+  if (wantSoul) lines.push('{{system-doc:identity/SOUL.md}}');
+  if (lines.length === 0) return '';
+  return `${lines.join('\n')}\n\n`;
+}
+
 export async function renderTemplate(
   template: string,
   payload: unknown,
   baseDir: string,
+  options: { identity?: IdentityInjection } = {},
 ): Promise<RenderedTemplate> {
+  const preamble = buildIdentityPreamble(options.identity);
+  const effectiveTemplate = preamble + template;
   const { body: bodyAfterSystemExtraction, systemContent } = await extractSystemTags(
-    template,
+    effectiveTemplate,
     baseDir,
   );
   const bodyAfterDocTags = await preprocessDocTags(bodyAfterSystemExtraction, baseDir);
 
-  const spreadable = typeof payload === 'object' && payload !== null ? payload : {};
+  const spreadable = isPlainObject(payload) ? payload : {};
   const context = {
     payload: JSON.stringify(payload, null, 2),
     ...spreadable,

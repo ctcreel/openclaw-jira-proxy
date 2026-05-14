@@ -1,4 +1,5 @@
 import type { ProviderConfig } from '../../config';
+import { readString, isPlainObject } from '../../lib/extract';
 
 import type { SessionKeyStrategy } from './types';
 
@@ -38,55 +39,41 @@ interface SlackPayloadShape {
 export const slackSessionKeyStrategy: SessionKeyStrategy = {
   name: 'slack',
   extract(payload: unknown, _providerConfig: ProviderConfig): string | null {
-    if (payload === null || typeof payload !== 'object') {
-      return null;
-    }
-    const slackPayload = payload as SlackPayloadShape;
-    const event = slackPayload.event;
-    if (event === null || event === undefined || typeof event !== 'object') {
-      return null;
-    }
+    if (!isPlainObject(payload)) return null;
+    const eventRaw = (payload as SlackPayloadShape).event;
+    if (!isPlainObject(eventRaw)) return null;
+    const event = eventRaw as SlackEventShape;
 
-    const channel = typeof event.channel === 'string' ? event.channel : null;
-    if (channel === null || channel.length === 0) {
-      return null;
-    }
+    const channel = readString(event.channel);
+    if (channel === undefined) return null;
 
-    const channelType = typeof event.channel_type === 'string' ? event.channel_type : null;
-    const eventType = typeof event.type === 'string' ? event.type : null;
-    const threadTs = typeof event.thread_ts === 'string' ? event.thread_ts : null;
-    const ts = typeof event.ts === 'string' ? event.ts : null;
+    const channelType = readString(event.channel_type);
+    const eventType = readString(event.type);
+    const threadTs = readString(event.thread_ts);
+    const ts = readString(event.ts);
     const hasAssistantThread =
       event.assistant_thread !== null && event.assistant_thread !== undefined;
 
     // DM: one conversation per DM channel, regardless of thread structure.
-    if (channelType === 'im') {
-      return channel;
-    }
+    if (channelType === 'im') return channel;
 
     // Assistant thread: starter has `assistant_thread`; continuations have
     // `channel_type=group` + `thread_ts`. Either way, key by channel only —
     // one conversation per assistant panel.
-    if (hasAssistantThread) {
-      return channel;
-    }
-    if (channelType === 'group' && threadTs !== null) {
-      return channel;
-    }
+    if (hasAssistantThread) return channel;
+    if (channelType === 'group' && threadTs !== undefined) return channel;
 
     // App mention in a regular channel: separate mentions are separate
     // conversations. Use `thread_ts ?? ts` so thread replies under the same
     // mention map to the same key as the mention itself.
     if (eventType === 'app_mention' && channelType === 'channel') {
       const conversationId = threadTs ?? ts;
-      if (conversationId === null) {
-        return null;
-      }
+      if (conversationId === undefined) return null;
       return `${channel}:${conversationId}`;
     }
 
     // Thread reply in a regular channel: continues the parent mention's session.
-    if (eventType === 'message' && channelType === 'channel' && threadTs !== null) {
+    if (eventType === 'message' && channelType === 'channel' && threadTs !== undefined) {
       return `${channel}:${threadTs}`;
     }
 

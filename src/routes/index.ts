@@ -4,11 +4,14 @@ import type { Express } from 'express';
 import { createHealthRoutes } from './health.routes';
 import { createMemoryRoutes } from './memory.routes';
 import { createScheduledTasksRoutes } from './scheduled-tasks.routes';
+import { createVersionRoutes } from './version.routes';
 import { getSettings, isWebhookProvider } from '../config';
 import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
+import { createContextSchemasHandler } from '../controllers/context-schemas.controller';
 import { listRecentSkippedWebhooks } from '../controllers/skipped-webhooks.controller';
 import { handleQueueSnapshot } from '../controllers/queue-snapshot.controller';
+import { listAgentTools, listToolCatalog } from '../controllers/tool-catalog.controller';
 import {
   createTaskHandler,
   getTaskStatusHandler,
@@ -38,6 +41,10 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/webhooks/skipped/recent', listRecentSkippedWebhooks);
   app.get('/api/queue/snapshot', handleQueueSnapshot);
 
+  app.get('/api/tools/catalog', listToolCatalog);
+  app.get('/api/agents/:agent/tools', listAgentTools);
+  app.get('/api/agents/:agent/context-schemas', createContextSchemasHandler(agents));
+
   app.post(
     '/api/tasks',
     express.json({ limit: '1mb' }),
@@ -48,6 +55,10 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/tasks/:agent/:taskId/wait', requireAgentBearer, waitTaskHandler());
 
   app.use('/api/memory', express.json({ limit: '1mb' }), createMemoryRoutes());
+
+  // /api/version — agent_version hash + per-repo breakdown. Bearer-gated.
+  // See openspec/changes/spe-2078-tool-use/specs/agent-versioning/spec.md.
+  app.use('/api/version', requireAgentBearer, createVersionRoutes());
 
   // /api/scheduled-tasks — registry CRUD. Bearer-gated at the parent
   // mount; the inner routes are auth-agnostic so they can be unit-tested

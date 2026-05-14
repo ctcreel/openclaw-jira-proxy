@@ -13,6 +13,8 @@ import { getRunner } from '../runners/registry';
 import { ShellRunner } from '../runners/shell.runner';
 import type { AgentRunner, RunResult } from '../runners/types';
 import { evaluateCondition } from '../strategies/routing';
+import { readString } from '../lib/extract';
+import { buildMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
 import { useMemorySchema, type UseMemory } from '../types/scheduled-task';
 import {
   getAgentDefaultMemoryNamespace,
@@ -76,6 +78,7 @@ async function processInternalTask(
     sessionKey: `agent:${agent.name}:task-${envelope.taskId}`,
     traceId: envelope.taskId,
     jobId: envelope.taskId,
+    routePrefix: 'internal',
   });
 }
 
@@ -127,6 +130,7 @@ async function processScheduledTask(
       sessionKey: `agent:${agent.name}:schedule-${envelope.taskId ?? envelope.rule}-${traceId}`,
       traceId,
       jobId: traceId,
+      routePrefix: 'schedule',
     });
   }
 
@@ -147,6 +151,7 @@ async function processScheduledTask(
     sessionKey: `agent:${agent.name}:schedule-${envelope.rule}-${traceId}`,
     traceId,
     jobId: traceId,
+    routePrefix: 'schedule',
   });
 }
 
@@ -275,8 +280,7 @@ export async function buildRecallBlockIfRequested(
 
 // Exported for direct unit testing.
 export function readDirectPrompt(context: Record<string, unknown>): string | undefined {
-  const value = context['directPrompt'];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return readString(context['directPrompt']);
 }
 
 // Exported for direct unit testing — AC 6 (corrupt entry warns + degrades).
@@ -316,6 +320,12 @@ interface RunRuleOptions {
   readonly sessionKey: string;
   readonly traceId: string;
   readonly jobId: string;
+  /**
+   * Audit `route_id` prefix: `internal` for /api/tasks dispatch,
+   * `schedule` for cron firings. Combined with `rule.name` to form the
+   * audit record's stable identifier.
+   */
+  readonly routePrefix: 'internal' | 'schedule';
 }
 
 async function runRule(
@@ -348,24 +358,40 @@ async function runRule(
     'Agent run delivered',
   );
 
+  // SPE-2078: scheduled / internal-task rules can declare `tools:` too.
+  // Build the same MCP bundle the webhook worker builds (mode-600 creds
+  // file + per-run mcp-config.json) so the runner registers them with
+  // claude-cli via --mcp-config. Without this, tool-bearing rules
+  // silently fall back to claude-cli's default toolset, which is the
+  // exact regression the live deploy surfaced.
+  const mcpBundle = await buildMCPBundle(rule.tools, agent.dir, {
+    agentId: agent.name,
+    routeId: `${runOpts.routePrefix}:${rule.name ?? '<unnamed>'}`,
+    requestId: runOpts.traceId,
+  });
+
   // Scheduled-task workflow doesn't yet have a quota-aware pause-and-hold
   // path (the webhook worker does — see worker.service.ts:handleQuotaExceeded).
   // For now surface quota_exceeded as an error so existing BullMQ retry
   // semantics apply; a follow-up can mirror the webhook side's
   // delayed-resume behaviour for scheduled tasks if recurring-fire quota
   // collisions become a problem.
-  const result = await runner.run({
-    prompt,
-    sessionKey: runOpts.sessionKey,
-    agentId: agent.name,
-    model: undefined,
-    timeoutMs: settings.agentWaitTimeoutMs,
-    traceId: runOpts.traceId,
-    jobId: runOpts.jobId,
-    ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-  });
-
-  return mapRunResult(result);
+  try {
+    const result = await runner.run({
+      prompt,
+      sessionKey: runOpts.sessionKey,
+      agentId: agent.name,
+      model: undefined,
+      timeoutMs: settings.agentWaitTimeoutMs,
+      traceId: runOpts.traceId,
+      jobId: runOpts.jobId,
+      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+      ...(mcpBundle === undefined ? {} : { mcpBundle }),
+    });
+    return mapRunResult(result);
+  } finally {
+    await cleanupMCPBundle(mcpBundle);
+  }
 }
 
 // Shell runners are constructed per-firing because their config (the
@@ -391,7 +417,9 @@ export async function resolveRunnerAndPrompt(
   let systemPrompt = '';
   if (rule.messageTemplate) {
     const templateContent = await readFile(join(agent.dir, rule.messageTemplate), 'utf-8');
-    const rendered = await renderTemplate(templateContent, payload, agent.dir);
+    const rendered = await renderTemplate(templateContent, payload, agent.dir, {
+      identity: rule.identity,
+    });
     prompt = rendered.body;
     systemPrompt = rendered.systemPrompt;
   } else {

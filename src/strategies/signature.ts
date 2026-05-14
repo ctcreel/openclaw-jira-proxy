@@ -1,15 +1,27 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+import type { WebhookProviderConfig } from '../config';
+
+import { oidcStrategy } from './oidc';
+
 export interface SignatureStrategy {
   readonly headerName: string;
   /** Additional headers required for validation (e.g., Slack needs the timestamp header). */
   readonly additionalHeaders?: readonly string[];
+  /**
+   * Validate the inbound request. Return type allows async strategies (OIDC
+   * has to fetch + cache Google's JWKs); sync strategies just return `boolean`.
+   * The optional `provider` argument lets strategies that need richer config
+   * than a single secret (OIDC needs an expected audience) read it from the
+   * provider definition.
+   */
   validate(
     rawBody: Buffer,
     signatureHeader: string,
     secret: string,
     headers?: Record<string, string>,
-  ): boolean;
+    provider?: WebhookProviderConfig,
+  ): boolean | Promise<boolean>;
 }
 
 function validateHmacSha256(rawBody: Buffer, signatureHeader: string, secret: string): boolean {
@@ -139,6 +151,7 @@ const strategies: Record<string, SignatureStrategy> = {
   github: githubStrategy,
   bearer: bearerStrategy,
   slack: slackStrategy,
+  oidc: oidcStrategy,
 };
 
 export function getSignatureStrategy(name: string): SignatureStrategy {

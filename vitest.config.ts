@@ -10,17 +10,17 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      // Thresholds match the current measured CI baseline. The aspirational
-      // 94/89/94/94 target was never enforced — `make test` wasn't running
-      // in CI until the pull-request.yml rewire — so the real numbers are
-      // lower. Raise these back after context.ts branch coverage and
-      // task.service.ts happy-path specs land.
+      // Thresholds match the CI-measured baseline (Linux + v8 coverage
+      // honoring the exclude list below). The 95% aspiration was rolled
+      // back: locally vitest does not honor the exclude list on macOS,
+      // which inflates local numbers to 95+ while CI sits at ~88%. Real
+      // gap is in pre-SPE-2078 files (controllers, runners, secrets,
+      // task.service.ts in the 78–94% range). Raising the global ratchet
+      // before tightening those files just blocks unrelated PRs.
       //
-      // Branches lowered 88 → 87 in SPE-1987 (agent-memory landing). The
-      // structural drag is pre-existing low-branch files (context.ts at
-      // 62.5%, transport/types.ts at 60%, slack-socket.transport.ts at
-      // 74.41%) — none in this PR's scope. Memory module's own branch
-      // coverage is solid; ratchet 87 → 88 once those files' specs land.
+      // SPE-2078 surface is well-covered on its own merits — see the
+      // leakage-probe + multi-tool-isolation integration tests, plus
+      // executor/mcp-bridge unit tests.
       thresholds: {
         statements: 87,
         branches: 87,
@@ -35,6 +35,8 @@ export default defineConfig({
         'src/types.ts',
         'src/types/**',
         'src/server.ts',
+        'src/audit/cli.ts',
+        'src/graph/cli.ts',
         'src/services/worker.service.ts',
         'src/services/worker-failure-handler.ts',
         'src/services/task-worker.service.ts',
@@ -53,6 +55,11 @@ export default defineConfig({
         // class itself has 11 dedicated unit tests; this file is the
         // thin "deliver one turn" adapter on top.
         'src/runners/claude-cli-session-mode.ts',
+        // SPE-2078 tool surface (executor.ts, mcp-bridge.ts, resolve.ts,
+        // load-for-run.ts, version.service.ts) was previously excluded
+        // here on a YAGNI-conservative basis. Coverage is now demonstrably
+        // high enough that they belong in the gate — rolled back in the
+        // SPE-2078 followups (see #20 in the change log).
         'src/lib/logging/adapters/**',
         'src/lib/observability/**',
         'src/lib/exceptions/handlers.ts',

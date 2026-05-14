@@ -52,6 +52,13 @@ function buildCliArgs(options: RunOptions, systemPrompt: string | undefined): st
   if (options.model) {
     args.push('--model', options.model);
   }
+  // SPE-2078: when the worker passed an MCP bundle, register the per-run
+  // tool surface via Claude CLI's --mcp-config. The spawned MCP server
+  // (`scripts/clawndom_mcp_server.py`) exposes the route's declared tools
+  // and dispatches to impl.{py,sh} with credentials injected from env.
+  if (options.mcpBundle !== undefined) {
+    args.push('--mcp-config', options.mcpBundle.mcpConfigPath);
+  }
   if (options.resumeSessionId !== undefined) {
     // Quota-pause recovery: continue the prior conversation rather than
     // spawn fresh. claude-cli accepts --resume alongside -p; the prompt
@@ -324,10 +331,18 @@ function runClaudeCliSubprocess(
   options: RunOptions,
 ): Promise<RunResult> {
   return new Promise<RunResult>((resolve) => {
+    // SPE-2078: when an MCP bundle is present, merge its env (credentials
+    // for the per-run tool surface) on top of any caller-supplied env.
+    // Env vars do not enter the model's context — claude-cli inherits them
+    // and forwards to the MCP server it spawns.
+    const mergedEnv =
+      options.mcpBundle !== undefined || options.env !== undefined
+        ? { ...process.env, ...(options.env ?? {}), ...(options.mcpBundle?.env ?? {}) }
+        : process.env;
     const child = spawn(binary, args, {
       cwd: workDirectory,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: options.env ? { ...process.env, ...options.env } : process.env,
+      env: mergedEnv,
     }) as CliProcess;
 
     const state = { stderr: '' };

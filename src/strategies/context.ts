@@ -6,6 +6,7 @@
  */
 
 import type { ProviderConfig } from '../config';
+import { getScalarField, getStringField } from '../lib/extract';
 import { resolveFieldPath } from './routing/field-path';
 
 export interface WebhookContext {
@@ -27,14 +28,10 @@ export interface ContextStrategy {
 const jiraStrategy: ContextStrategy = {
   name: 'jira',
   extract(payload: unknown): WebhookContext {
-    const issueKey = resolveFieldPath(payload, 'issue.key');
-    const summary = resolveFieldPath(payload, 'issue.fields.summary');
-    const statusName = resolveFieldPath(payload, 'issue.fields.status.name');
-
     return {
-      id: typeof issueKey === 'string' ? issueKey : '?',
-      title: typeof summary === 'string' ? summary.slice(0, 80) : '?',
-      status: typeof statusName === 'string' ? statusName : '?',
+      id: getStringField(payload, 'issue.key'),
+      title: getStringField(payload, 'issue.fields.summary').slice(0, 80),
+      status: getStringField(payload, 'issue.fields.status.name'),
       source: 'jira',
     };
   },
@@ -43,25 +40,20 @@ const jiraStrategy: ContextStrategy = {
 const githubStrategy: ContextStrategy = {
   name: 'github',
   extract(payload: unknown): WebhookContext {
-    const repo = resolveFieldPath(payload, 'repository.full_name');
-    const action = resolveFieldPath(payload, 'action');
-
-    const prNumber = resolveFieldPath(payload, 'pull_request.number');
-    const prTitle = resolveFieldPath(payload, 'pull_request.title');
-    const issueNumber = resolveFieldPath(payload, 'issue.number');
-    const issueTitle = resolveFieldPath(payload, 'issue.title');
-    const ref = resolveFieldPath(payload, 'ref');
-
-    let id = typeof repo === 'string' ? repo : '?';
+    let id = getStringField(payload, 'repository.full_name');
     let title = '?';
 
-    if (typeof prNumber === 'number' || typeof prNumber === 'string') {
+    const prNumber = getScalarField(payload, 'pull_request.number');
+    const issueNumber = getScalarField(payload, 'issue.number');
+    const ref = getStringField(payload, 'ref', '');
+
+    if (prNumber !== undefined) {
       id += `#${prNumber}`;
-      title = typeof prTitle === 'string' ? prTitle.slice(0, 80) : '?';
-    } else if (typeof issueNumber === 'number' || typeof issueNumber === 'string') {
+      title = getStringField(payload, 'pull_request.title').slice(0, 80);
+    } else if (issueNumber !== undefined) {
       id += `#${issueNumber}`;
-      title = typeof issueTitle === 'string' ? issueTitle.slice(0, 80) : '?';
-    } else if (typeof ref === 'string') {
+      title = getStringField(payload, 'issue.title').slice(0, 80);
+    } else if (ref.length > 0) {
       id += ` ${ref}`;
       title = 'push';
     }
@@ -69,7 +61,7 @@ const githubStrategy: ContextStrategy = {
     return {
       id,
       title,
-      status: typeof action === 'string' ? action : '?',
+      status: getStringField(payload, 'action'),
       source: 'github',
     };
   },
@@ -84,26 +76,23 @@ const SLACK_CHANNEL_ENVIRONMENT: Record<string, string> = {
 const slackStrategy: ContextStrategy = {
   name: 'slack',
   extract(payload: unknown): WebhookContext {
-    const messageTimestamp = resolveFieldPath(payload, 'event.ts');
-    const channel = resolveFieldPath(payload, 'event.channel');
-    const blocks = resolveFieldPath(payload, 'event.blocks');
-
     let title = '?';
+    const blocks = resolveFieldPath(payload, 'event.blocks');
     if (Array.isArray(blocks) && blocks.length > 0) {
-      // resolveFieldPath accepts unknown — no narrowing cast needed.
       const firstBlock: unknown = blocks[0];
-      const text =
-        resolveFieldPath(firstBlock, 'text.text') ?? resolveFieldPath(firstBlock, 'text');
-      if (typeof text === 'string') {
-        title = text.slice(0, 80);
-      }
+      const text = getStringField(firstBlock, 'text.text', '');
+      // Slack message blocks have either { text: { text: "..." } } or
+      // { text: "..." } depending on block type. Fall through to the
+      // shorter shape when the structured one is empty.
+      const resolved = text.length > 0 ? text : getStringField(firstBlock, 'text', '');
+      if (resolved.length > 0) title = resolved.slice(0, 80);
     }
 
-    const channelId = typeof channel === 'string' ? channel : '';
+    const channelId = getStringField(payload, 'event.channel', '');
     const environment = SLACK_CHANNEL_ENVIRONMENT[channelId] ?? 'unknown';
 
     return {
-      id: typeof messageTimestamp === 'string' ? messageTimestamp : '?',
+      id: getStringField(payload, 'event.ts'),
       title,
       status: environment,
       source: 'slack',

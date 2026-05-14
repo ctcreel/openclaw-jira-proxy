@@ -8,6 +8,7 @@ import { getSkippedWebhooksRegistry } from './services/skipped-webhooks.service'
 import { getRecentCompletionsRegistry } from './services/recent-completions.service';
 import { loadAgents } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
+import { initializeAgentVersion } from './services/version.service';
 import { buildAlertRegistry } from './services/alerts';
 import { getInflightRegistry } from './services/inflight-registry.service';
 import { getOrphanReaper } from './services/orphan-reaper.service';
@@ -328,6 +329,10 @@ async function startServer(): Promise<void> {
     },
     'Agents loaded',
   );
+
+  // SPE-2078: capture composite agent_version hash from involved repos.
+  // Fails boot in CLAWNDOM_ENV=production if any repo has uncommitted changes.
+  await initializeAgentVersion(agents.map((a) => a.dir));
 
   const memoryNamespaces = await bootstrapMemoryService(agents, secretManager);
   const pruningScheduler = new MemoryPruningScheduler(memoryNamespaces);
