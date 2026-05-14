@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { runnerConfigSchema } from './runners/types';
 import { secretBindingSchema, secretProviderConfigSchema } from './secrets/types';
+import { builderAgentFieldsSchema } from './system-agents/builder/agent-config';
 
 /**
  * On-disk cache for resolved secrets. Added in SPE-2005 to break the
@@ -141,18 +142,20 @@ export const sharedToolsSchema = z.object({
 
 export type SharedToolsConfig = z.infer<typeof sharedToolsSchema>;
 
-export const agentEntrySchema = z.object({
-  /** Logical agent name (matches the `agentId` referenced in routing rules). */
-  name: z.string().min(1),
-  /** Git URL — cloned once per unique repo at startup. */
-  repo: z.string().min(1),
-  /** Optional subdirectory inside the repo. Useful for monorepos. */
-  path: z.string().optional(),
-  /** Optional branch, tag, or commit SHA. Defaults to the repo's default branch. */
-  ref: z.string().optional(),
-  /** Optional shared-tools dependency cloned at a pinned ref. */
-  sharedTools: sharedToolsSchema.optional(),
-});
+export const agentEntrySchema = z
+  .object({
+    /** Logical agent name (matches the `agentId` referenced in routing rules). */
+    name: z.string().min(1),
+    /** Git URL — cloned once per unique repo at startup. */
+    repo: z.string().min(1),
+    /** Optional subdirectory inside the repo. Useful for monorepos. */
+    path: z.string().optional(),
+    /** Optional branch, tag, or commit SHA. Defaults to the repo's default branch. */
+    ref: z.string().optional(),
+    /** Optional shared-tools dependency cloned at a pinned ref. */
+    sharedTools: sharedToolsSchema.optional(),
+  })
+  .merge(builderAgentFieldsSchema);
 
 export type AgentEntry = z.infer<typeof agentEntrySchema>;
 
