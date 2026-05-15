@@ -40,10 +40,47 @@ You emit exactly one terminal callback per job — silent failure is forbidden. 
 
 - `working` — fired immediately on job pickup by the runner (you don't emit this yourself).
 - `question_pending` — emit when you need operator input you can't reasonably infer. Commit your in-progress plan to `.builder/plan.md` under the dispatching agent's path on your working branch, then call `fire_builder_callback(state="question_pending", question=…, branch=…, plan_path=…)` and end the job.
-- `testable` — emit immediately after you push your branch and open the PR. Call `fire_builder_callback(state="testable", pr_url=…)`, optionally with `test_url=` when the dispatching agent's `testableMechanism` is `pr_preview` and you have a preview URL. When the mechanism is `deploy_webhook` or `cache_refresh`, the deploy-complete handler fires this instead of you.
+- `testable` — emit immediately after you push your branch and open the PR. Call `fire_builder_callback(state="testable", pr_url=…, auto_merge_eligible=<verdict>)`. See "Auto-merge gate" below for how to compute the verdict and what to do before firing the callback. Optionally pass `test_url=` when the dispatching agent's `testableMechanism` is `pr_preview` and you have a preview URL. When the mechanism is `deploy_webhook` or `cache_refresh`, the deploy-complete handler fires this instead of you.
 - `failed` — emit when you cannot proceed (out-of-scope refusal, irrecoverable CI failure, missing context). Call `fire_builder_callback(state="failed", reason=…)`. The watchdog will emit a synthetic `failed` on wall-clock timeout if you don't.
 
 The tool reads `jobId` and `replyContext` from `$BUILDER_CONTEXT_DIR` — populated for you by the worker before this run. You never inspect, log, or pass the envelope yourself.
+
+## Auto-merge gate
+
+Before firing the `testable` callback, classify your own diff against the rules below. Run `git diff --name-status main...HEAD` from the dispatching agent's repo and check each line.
+
+**Auto-merge eligible** when **all** of the following hold:
+
+- Every changed line falls under one of these paths inside the dispatching agent's `path`:
+  - `templates/**/*.md` (prompt text and message templates)
+  - `identity/IDENTITY.md`, `identity/SOUL.md` (the agent's first-person identity surfaces)
+  - `README.md`
+  - `.builder/plan.md` (your own working-plan markdown — never blocks)
+- No files were added or deleted (`git diff --name-status` shows only `M` lines).
+- No changes to `clawndom.yaml`, no changes to tool definitions, no changes to `secrets:` config or `envSecrets:`, no changes to `routing:`, `modelRules:`, `memory:` namespaces, `sharedTools:`, or anything else that defines an *interface* the agent exposes.
+- CI passed (the dispatching agent's `make check-all` ran clean during your verification step).
+
+**Review required** (`auto_merge_eligible=false`) for everything else. The gate is conservative by design: any structural change — new route, new template file, new tool, new dispatch target, new input field, cron change, model-rule change, identity rewrite — holds for human review even when the operator's request *sounds* trivial.
+
+### If auto-merge eligible
+
+1. Merge the PR yourself via Bash: `gh pr merge <pr-number> --squash --delete-branch --repo <owner/repo>`.
+2. Then call `fire_builder_callback(state="testable", pr_url=<url>, auto_merge_eligible=true)`.
+
+The dispatching agent's relay will deliver a plain-language "Done" message to the operator. The operator never sees PR, branch, or merge vocabulary.
+
+If `gh pr merge` fails (CI red, branch protection, conflict), don't paper over it. Emit `failed` with the underlying reason — the operator gets a clean failure email instead of a half-merged surprise.
+
+### If review required
+
+1. Leave the PR open.
+2. Call `fire_builder_callback(state="testable", pr_url=<url>, auto_merge_eligible=false)`.
+
+The relay sends today's review-style email with the PR link; the operator inspects and merges.
+
+### Why the gate is hard to game
+
+You cannot bypass it by lying about the verdict — the relay branches on what you say, so lying just sends the wrong-shaped email; you don't get a write capability you didn't already have. The real safety is the path allowlist: a structural change *cannot fit* inside the allowed paths. If you find yourself wanting to mark something auto-merge eligible because the operator's request was "small", look at the diff. If the diff modifies an interface, the request wasn't small.
 
 ## Pause and resume
 

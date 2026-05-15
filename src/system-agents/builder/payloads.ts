@@ -76,6 +76,20 @@ const testableCallback = z.object({
   replyContext: replyContextEnvelopeSchema,
   prUrl: z.string().url(),
   testUrl: z.string().url().optional(),
+  /**
+   * Builder's verdict on whether her diff is safe to auto-merge without
+   * human review. `true` means the diff is restricted to operator-tunable
+   * prompt text (templates only, no structural changes); the dispatching
+   * agent's relay should ship a plain-language "Done" message that never
+   * surfaces PR / branch / merge vocabulary. `false` (or absent) means
+   * the diff touches structural surfaces and the relay should ask the
+   * operator to review.
+   *
+   * Builder is the classifier for v1 — the dispatching agent treats the
+   * verdict as authoritative. CI-side re-verification is a planned
+   * hardening pass.
+   */
+  autoMergeEligible: z.boolean().optional(),
 });
 
 const failedCallback = z.object({
