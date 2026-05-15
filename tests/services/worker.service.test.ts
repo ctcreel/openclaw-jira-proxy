@@ -29,6 +29,14 @@ vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Default to "no tools on this rule" — `buildMCPBundle` returns undefined
+// and `cleanupMCPBundle` is a no-op spy. Tests that exercise the
+// per-dispatch cleanup-guard branch override per-call.
+vi.mock('../../src/services/tools/load-for-run', () => ({
+  buildMCPBundle: vi.fn().mockResolvedValue(undefined),
+  cleanupMCPBundle: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { loggerInfoSpy, loggerDebugSpy, loggerWarnSpy, loggerErrorSpy } = vi.hoisted(() => ({
   loggerInfoSpy: vi.fn(),
   loggerDebugSpy: vi.fn(),
@@ -447,6 +455,57 @@ describe('processJob per-dispatch workDirectory', () => {
     const filenames = writeCalls.map((call) => String(call[0]));
     expect(filenames).toContain('/scratch/builder/dispatch-abc123/.builder-context/job-id');
     expect(filenames.some((path) => path.endsWith('/reply-context.json'))).toBe(false);
+  });
+
+  it('removes the per-dispatch directory when the side-channel writeFile fails after mkdtemp', async () => {
+    const fsModule = await import('node:fs/promises');
+    // Simulate disk-full / EACCES on the FIRST writeFile (job-id). The
+    // helper has already mkdtempd workDirectory; without the inner
+    // try/catch in `allocatePerDispatchWorkDirectory` this would leak.
+    vi.mocked(fsModule.writeFile).mockRejectedValueOnce(new Error('ENOSPC'));
+
+    await expect(
+      processJob(
+        createFakeJob('{"agentName":"builder","request":"x"}'),
+        buildPerDispatchProvider(),
+        buildBuilderAgents(),
+      ),
+    ).rejects.toThrow('ENOSPC');
+
+    expect(vi.mocked(fsModule.rm)).toHaveBeenCalledWith('/scratch/builder/dispatch-abc123', {
+      recursive: true,
+      force: true,
+    });
+    // The runner never got far enough to be invoked.
+    expect(runSpy).not.toHaveBeenCalled();
+  });
+
+  it('still cleans up the MCP bundle when per-dispatch allocation throws', async () => {
+    const fsModule = await import('node:fs/promises');
+    const { buildMCPBundle, cleanupMCPBundle } =
+      await import('../../src/services/tools/load-for-run');
+    // Stub buildMCPBundle to return a sentinel; cleanupMCPBundle is a vi.fn
+    // we can assert against. Then make mkdtemp throw so per-dispatch fails.
+    vi.mocked(buildMCPBundle).mockResolvedValueOnce({
+      mcpConfigPath: '/tmp/mcp.json',
+      toolConfigPath: '/tmp/tools.json',
+      env: {},
+    });
+    vi.mocked(fsModule.mkdtemp).mockRejectedValueOnce(new Error('mkdtemp boom'));
+
+    await expect(
+      processJob(
+        createFakeJob('{"agentName":"builder","request":"x"}'),
+        buildPerDispatchProvider(),
+        buildBuilderAgents(),
+      ),
+    ).rejects.toThrow('mkdtemp boom');
+
+    expect(vi.mocked(cleanupMCPBundle)).toHaveBeenCalledWith({
+      mcpConfigPath: '/tmp/mcp.json',
+      toolConfigPath: '/tmp/tools.json',
+      env: {},
+    });
   });
 
   it('merges BUILDER_CONTEXT_DIR alongside provider-declared envSecrets', async () => {

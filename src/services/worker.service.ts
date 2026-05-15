@@ -350,45 +350,56 @@ export async function processJob(
     requestId: traceId,
   });
 
-  const perDispatch = await allocatePerDispatchWorkDirectory(provider, jobIdString, parsedPayload);
-  const workDirectoryOverride = perDispatch?.workDirectory;
-  // Per-dispatch context env (e.g. `BUILDER_CONTEXT_DIR`) merges on top
-  // of the secret-derived overlay; later keys win, but the two sets are
-  // disjoint by construction (system-agent context vars are reserved).
-  const finalEnvOverlay =
-    perDispatch !== undefined ? { ...(envOverlay ?? {}), ...perDispatch.env } : envOverlay;
-
+  // Both `allocatePerDispatchWorkDirectory` and `dispatchToRunner` can throw.
+  // The outer try/finally ensures `cleanupMCPBundle` always runs (closing
+  // the mode-600 creds file the MCP server already opened); the inner one
+  // ensures the per-dispatch scratch directory is removed even when the
+  // runner throws. Both paths leave no resource leaked.
   let result: RunResult;
   try {
-    result = await dispatchToRunner(runner, {
-      prompt,
-      sessionKey,
-      agentId,
-      model: selectedModel,
-      timeoutMs: settings.agentWaitTimeoutMs,
-      traceId,
-      jobId: jobIdString,
-      ...(finalEnvOverlay ? { env: finalEnvOverlay } : {}),
-      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-      ...(mcpBundle === undefined ? {} : { mcpBundle }),
-      ...(workDirectoryOverride === undefined ? {} : { workDirectoryOverride }),
-      // Quota-pause recovery: when the prior run captured a session_id and
-      // got walled by upstream, the requeued envelope carries that id so
-      // this pickup resumes the same conversation instead of replanning.
-      ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
-      // Per-rule turn ceiling. Default 150 in the runner; rules whose work
-      // cascades wider (multi-file test-tuple updates, structural refactors)
-      // opt into a higher value via the rule's `maxTurns` field.
-      ...(resolved.rule.maxTurns === undefined ? {} : { maxTurns: resolved.rule.maxTurns }),
-      sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
-      sessionUserMessage,
-    });
-  } finally {
-    if (workDirectoryOverride !== undefined) {
-      await rm(workDirectoryOverride, { recursive: true, force: true });
+    const perDispatch = await allocatePerDispatchWorkDirectory(
+      provider,
+      jobIdString,
+      parsedPayload,
+    );
+    const workDirectoryOverride = perDispatch?.workDirectory;
+    // Per-dispatch context env (e.g. `BUILDER_CONTEXT_DIR`) merges on top
+    // of the secret-derived overlay; later keys win, but the two sets are
+    // disjoint by construction (system-agent context vars are reserved).
+    const finalEnvOverlay =
+      perDispatch !== undefined ? { ...(envOverlay ?? {}), ...perDispatch.env } : envOverlay;
+    try {
+      result = await dispatchToRunner(runner, {
+        prompt,
+        sessionKey,
+        agentId,
+        model: selectedModel,
+        timeoutMs: settings.agentWaitTimeoutMs,
+        traceId,
+        jobId: jobIdString,
+        ...(finalEnvOverlay ? { env: finalEnvOverlay } : {}),
+        ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+        ...(mcpBundle === undefined ? {} : { mcpBundle }),
+        ...(workDirectoryOverride === undefined ? {} : { workDirectoryOverride }),
+        // Quota-pause recovery: when the prior run captured a session_id and
+        // got walled by upstream, the requeued envelope carries that id so
+        // this pickup resumes the same conversation instead of replanning.
+        ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
+        // Per-rule turn ceiling. Default 150 in the runner; rules whose work
+        // cascades wider (multi-file test-tuple updates, structural refactors)
+        // opt into a higher value via the rule's `maxTurns` field.
+        ...(resolved.rule.maxTurns === undefined ? {} : { maxTurns: resolved.rule.maxTurns }),
+        sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
+        sessionUserMessage,
+      });
+    } finally {
+      if (workDirectoryOverride !== undefined) {
+        await rm(workDirectoryOverride, { recursive: true, force: true });
+      }
     }
+  } finally {
+    await cleanupMCPBundle(mcpBundle);
   }
-  await cleanupMCPBundle(mcpBundle);
 
   if (result.status === 'quota_exceeded') {
     await handleQuotaExceeded(
@@ -595,15 +606,24 @@ async function allocatePerDispatchWorkDirectory(
   await mkdir(scratchRoot, { recursive: true });
   const workDirectory = await mkdtemp(join(scratchRoot, 'dispatch-'));
 
-  const contextDir = join(workDirectory, '.builder-context');
-  await mkdir(contextDir, { recursive: true });
-  await writeFile(join(contextDir, 'job-id'), jobIdString);
-  const replyContext = extractReplyContext(parsedPayload);
-  if (replyContext !== undefined) {
-    await writeFile(join(contextDir, 'reply-context.json'), JSON.stringify(replyContext));
+  // The mkdir + writeFile calls below can each fail (out-of-disk, EACCES,
+  // EROFS). Without cleanup they leak the just-created `workDirectory`,
+  // which the caller never gets a chance to remove because the helper
+  // throws before returning. Wrap so a partial-setup failure unwinds
+  // cleanly.
+  try {
+    const contextDir = join(workDirectory, '.builder-context');
+    await mkdir(contextDir, { recursive: true });
+    await writeFile(join(contextDir, 'job-id'), jobIdString);
+    const replyContext = extractReplyContext(parsedPayload);
+    if (replyContext !== undefined) {
+      await writeFile(join(contextDir, 'reply-context.json'), JSON.stringify(replyContext));
+    }
+    return { workDirectory, env: { BUILDER_CONTEXT_DIR: contextDir } };
+  } catch (error) {
+    await rm(workDirectory, { recursive: true, force: true });
+    throw error;
   }
-
-  return { workDirectory, env: { BUILDER_CONTEXT_DIR: contextDir } };
 }
 
 /**
