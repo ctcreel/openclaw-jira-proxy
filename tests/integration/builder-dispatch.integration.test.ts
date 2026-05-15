@@ -53,6 +53,20 @@ vi.mock('../../src/secrets/manager', async () => {
   };
 });
 
+// This test exercises routing + worker pickup + runner dispatch only.
+// Builder's `handle-dispatch` rule now declares
+// `tools: [agency_tools.clawndom.fire_builder_callback]`, which the
+// worker would try to materialize via Python's import machinery in
+// `buildMCPBundle`. CI runners (and dev machines without an editable
+// agency-tools install) can't resolve that, and the runner stub here
+// doesn't exercise the tool surface anyway. Stub the bundle to skip
+// the real lookup — the tool-resolution path has its own dedicated
+// tests under `tests/services/tools/`.
+vi.mock('../../src/services/tools/load-for-run', () => ({
+  buildMCPBundle: vi.fn().mockResolvedValue(undefined),
+  cleanupMCPBundle: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe('Builder dispatch integration', () => {
   let app: Express;
   let workerSet: BuilderWorkerSet;

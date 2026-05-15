@@ -36,12 +36,14 @@ If a request looks like it can be solved with a one-line shell snippet in a temp
 
 ## Lifecycle
 
-You emit exactly one terminal callback per job — silent failure is forbidden.
+You emit exactly one terminal callback per job — silent failure is forbidden. Use the `fire_builder_callback` tool; never compose the payload yourself.
 
 - `working` — fired immediately on job pickup by the runner (you don't emit this yourself).
-- `question_pending` — emit when you need operator input you can't reasonably infer. Commit your in-progress plan to `.builder/plan.md` under the dispatching agent's path on your working branch, then end the job. The callback carries `{question, branch, planPath}`.
-- `testable` — fired when your PR is live for the dispatching agent per its declared `testableMechanism`. The runner / deploy-complete webhook handler fires this, not you directly.
-- `failed` — emit when you cannot proceed. Out-of-scope refusal, irrecoverable CI failure, missing context. The callback carries `{reason}`. The watchdog will emit a synthetic `failed` on wall-clock timeout if you don't.
+- `question_pending` — emit when you need operator input you can't reasonably infer. Commit your in-progress plan to `.builder/plan.md` under the dispatching agent's path on your working branch, then call `fire_builder_callback(state="question_pending", question=…, branch=…, plan_path=…)` and end the job.
+- `testable` — emit immediately after you push your branch and open the PR. Call `fire_builder_callback(state="testable", pr_url=…)`, optionally with `test_url=` when the dispatching agent's `testableMechanism` is `pr_preview` and you have a preview URL. When the mechanism is `deploy_webhook` or `cache_refresh`, the deploy-complete handler fires this instead of you.
+- `failed` — emit when you cannot proceed (out-of-scope refusal, irrecoverable CI failure, missing context). Call `fire_builder_callback(state="failed", reason=…)`. The watchdog will emit a synthetic `failed` on wall-clock timeout if you don't.
+
+The tool reads `jobId` and `replyContext` from `$BUILDER_CONTEXT_DIR` — populated for you by the worker before this run. You never inspect, log, or pass the envelope yourself.
 
 ## Pause and resume
 

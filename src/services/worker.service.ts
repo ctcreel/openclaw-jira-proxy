@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Worker, Queue } from 'bullmq';
@@ -350,7 +350,13 @@ export async function processJob(
     requestId: traceId,
   });
 
-  const workDirectoryOverride = await allocatePerDispatchWorkDirectory(provider);
+  const perDispatch = await allocatePerDispatchWorkDirectory(provider, jobIdString, parsedPayload);
+  const workDirectoryOverride = perDispatch?.workDirectory;
+  // Per-dispatch context env (e.g. `BUILDER_CONTEXT_DIR`) merges on top
+  // of the secret-derived overlay; later keys win, but the two sets are
+  // disjoint by construction (system-agent context vars are reserved).
+  const finalEnvOverlay =
+    perDispatch !== undefined ? { ...(envOverlay ?? {}), ...perDispatch.env } : envOverlay;
 
   let result: RunResult;
   try {
@@ -362,7 +368,7 @@ export async function processJob(
       timeoutMs: settings.agentWaitTimeoutMs,
       traceId,
       jobId: jobIdString,
-      ...(envOverlay ? { env: envOverlay } : {}),
+      ...(finalEnvOverlay ? { env: finalEnvOverlay } : {}),
       ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
       ...(mcpBundle === undefined ? {} : { mcpBundle }),
       ...(workDirectoryOverride === undefined ? {} : { workDirectoryOverride }),
@@ -554,23 +560,63 @@ function buildSessionDispatch(
 }
 
 /**
- * Allocate a per-dispatch working directory when the provider's runner config
- * opts in via `workDirectoryStrategy: 'per-dispatch'`. The directory is
- * created under the runner's configured `workDirectory` (which acts as the
- * scratch root) so operators control the disk location. Caller is responsible
- * for cleanup via `rm(..., { recursive: true, force: true })`.
+ * Allocate a per-dispatch working directory + side-channel context dir
+ * when the provider's runner config opts in via
+ * `workDirectoryStrategy: 'per-dispatch'`.
  *
- * Returns `undefined` when the provider opts out (the default — the runner
- * singleton's static `workDirectory` is used as-is for every dispatch).
+ * The working directory is created under the runner's configured
+ * `workDirectory` (which acts as the scratch root). A sibling
+ * `.builder-context/` subdir is created and populated with:
+ *   - `job-id` — the BullMQ job id (for `eventId = <jobId>:<state>`)
+ *   - `reply-context.json` — the verbatim `replyContext` field from
+ *     the dispatch payload, when present. System-agent callback tools
+ *     read this to echo the opaque envelope without it ever entering
+ *     the rendered prompt.
+ *
+ * The path to the context dir is returned in `env.BUILDER_CONTEXT_DIR`
+ * so the worker can merge it into the runner subprocess's env.
+ *
+ * Caller is responsible for cleanup via
+ * `rm(workDirectory, { recursive: true, force: true })`; the context
+ * dir is removed along with its parent.
+ *
+ * Returns `undefined` when the provider opts out (the default — the
+ * runner singleton's static `workDirectory` is used as-is for every
+ * dispatch).
  */
 async function allocatePerDispatchWorkDirectory(
   provider: ProviderConfig,
-): Promise<string | undefined> {
+  jobIdString: string,
+  parsedPayload: unknown,
+): Promise<{ workDirectory: string; env: Record<string, string> } | undefined> {
   if (provider.runner?.type !== 'claude-cli') return undefined;
   if (provider.runner.workDirectoryStrategy !== 'per-dispatch') return undefined;
   const scratchRoot = provider.runner.workDirectory;
   await mkdir(scratchRoot, { recursive: true });
-  return mkdtemp(join(scratchRoot, 'dispatch-'));
+  const workDirectory = await mkdtemp(join(scratchRoot, 'dispatch-'));
+
+  const contextDir = join(workDirectory, '.builder-context');
+  await mkdir(contextDir, { recursive: true });
+  await writeFile(join(contextDir, 'job-id'), jobIdString);
+  const replyContext = extractReplyContext(parsedPayload);
+  if (replyContext !== undefined) {
+    await writeFile(join(contextDir, 'reply-context.json'), JSON.stringify(replyContext));
+  }
+
+  return { workDirectory, env: { BUILDER_CONTEXT_DIR: contextDir } };
+}
+
+/**
+ * Pull the `replyContext` field off a dispatch payload without inspecting
+ * its shape — system-agent dispatches carry an opaque envelope that the
+ * worker forwards byte-for-byte. Returns `undefined` for payloads that
+ * don't have one (e.g. workspace-agent dispatches that happen to share
+ * per-dispatch runner config).
+ */
+function extractReplyContext(parsedPayload: unknown): unknown {
+  if (typeof parsedPayload !== 'object' || parsedPayload === null) return undefined;
+  if (!('replyContext' in parsedPayload)) return undefined;
+  return (parsedPayload as { replyContext: unknown }).replyContext;
 }
 
 /**

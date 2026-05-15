@@ -26,6 +26,7 @@ vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   mkdtemp: vi.fn().mockResolvedValue('/scratch/builder/dispatch-abc123'),
   rm: vi.fn().mockResolvedValue(undefined),
+  writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { loggerInfoSpy, loggerDebugSpy, loggerWarnSpy, loggerErrorSpy } = vi.hoisted(() => ({
@@ -407,6 +408,136 @@ describe('processJob per-dispatch workDirectory', () => {
       recursive: true,
       force: true,
     });
+  });
+
+  it('writes job-id + reply-context.json to .builder-context and injects BUILDER_CONTEXT_DIR env', async () => {
+    class PerDispatchRunner implements AgentRunner {
+      readonly name = 'claude-cli';
+      async run(options: RunOptions): Promise<RunResult> {
+        return runSpy(options);
+      }
+    }
+    registerRunner(new PerDispatchRunner());
+
+    const provider: ProviderConfig = {
+      ...testProvider,
+      runner: {
+        type: 'claude-cli',
+        workDirectory: '/scratch/builder',
+        workDirectoryStrategy: 'per-dispatch',
+      },
+    };
+    const agents = [
+      buildAgent('builder', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    const replyContext = {
+      channel: 'email',
+      messageId: '<abc@mail.gmail.com>',
+      threadId: 't-1',
+      senderEmail: 'heather@talkatlanta.info',
+      originalRequestText: 'ping',
+    };
+    const payload = JSON.stringify({
+      agentName: 'winston',
+      request: 'do the thing',
+      replyContext,
+      senderEmail: 'heather@talkatlanta.info',
+    });
+
+    await processJob(createFakeJob(payload, 'dispatch-42'), provider, agents);
+
+    const fsModule = await import('node:fs/promises');
+    expect(vi.mocked(fsModule.mkdir)).toHaveBeenCalledWith(
+      '/scratch/builder/dispatch-abc123/.builder-context',
+      { recursive: true },
+    );
+    expect(vi.mocked(fsModule.writeFile)).toHaveBeenCalledWith(
+      '/scratch/builder/dispatch-abc123/.builder-context/job-id',
+      'dispatch-42',
+    );
+    expect(vi.mocked(fsModule.writeFile)).toHaveBeenCalledWith(
+      '/scratch/builder/dispatch-abc123/.builder-context/reply-context.json',
+      JSON.stringify(replyContext),
+    );
+    expect(runSpy.mock.calls[0]![0].env?.BUILDER_CONTEXT_DIR).toBe(
+      '/scratch/builder/dispatch-abc123/.builder-context',
+    );
+  });
+
+  it('omits reply-context.json when the dispatch payload has no replyContext field', async () => {
+    class PerDispatchRunner implements AgentRunner {
+      readonly name = 'claude-cli';
+      async run(options: RunOptions): Promise<RunResult> {
+        return runSpy(options);
+      }
+    }
+    registerRunner(new PerDispatchRunner());
+
+    const provider: ProviderConfig = {
+      ...testProvider,
+      runner: {
+        type: 'claude-cli',
+        workDirectory: '/scratch/builder',
+        workDirectoryStrategy: 'per-dispatch',
+      },
+    };
+    const agents = [
+      buildAgent('builder', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    await processJob(
+      createFakeJob('{"agentName":"builder","request":"x"}', 'job-no-rc'),
+      provider,
+      agents,
+    );
+
+    const fsModule = await import('node:fs/promises');
+    const writeCalls = vi.mocked(fsModule.writeFile).mock.calls;
+    const filenames = writeCalls.map((call) => call[0] as string);
+    expect(filenames).toContain('/scratch/builder/dispatch-abc123/.builder-context/job-id');
+    expect(filenames.some((path) => path.endsWith('/reply-context.json'))).toBe(false);
+  });
+
+  it('merges BUILDER_CONTEXT_DIR alongside provider-declared envSecrets', async () => {
+    class PerDispatchRunner implements AgentRunner {
+      readonly name = 'claude-cli';
+      async run(options: RunOptions): Promise<RunResult> {
+        return runSpy(options);
+      }
+    }
+    registerRunner(new PerDispatchRunner());
+
+    // The worker calls resolveEnvSecrets(provider.envSecrets) before
+    // merging in the per-dispatch context env. Wire a SecretManager
+    // with the declared key bound so both keys end up on the runner
+    // subprocess env.
+    await buildMockSecretManager([['jira_hmac', 'hmac-value']]);
+
+    const provider: ProviderConfig = {
+      ...testProvider,
+      envSecrets: ['jira_hmac'],
+      runner: {
+        type: 'claude-cli',
+        workDirectory: '/scratch/builder',
+        workDirectoryStrategy: 'per-dispatch',
+      },
+    };
+    const agents = [
+      buildAgent('builder', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    await processJob(createFakeJob('{"agentName":"builder","request":"x"}'), provider, agents);
+
+    const env = runSpy.mock.calls[0]![0].env;
+    expect(env?.JIRA_HMAC).toBe('hmac-value');
+    expect(env?.BUILDER_CONTEXT_DIR).toBe('/scratch/builder/dispatch-abc123/.builder-context');
   });
 });
 
