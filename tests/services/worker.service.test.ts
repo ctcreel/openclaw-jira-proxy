@@ -307,9 +307,9 @@ describe('processJob per-dispatch workDirectory', () => {
   // scoped variable + afterEach mirrors the pattern in the envSecrets
   // describe blocks below so handles don't leak across suites.
   let perDispatchManager: SecretManager | null = null;
-  afterEach(async () => {
+  afterEach(() => {
     if (perDispatchManager) {
-      await perDispatchManager.close();
+      perDispatchManager.close();
       perDispatchManager = null;
     }
   });
