@@ -1,5 +1,8 @@
 import type { WebhookProviderConfig } from '../config';
+import { getLogger } from '../lib/logging';
 import type { SecretManager } from '../secrets/manager';
+
+const logger = getLogger('system-agent-providers');
 
 /**
  * Logical secret key holding the shared bearer token that opted-in agents
@@ -50,9 +53,26 @@ export function buildBuilderCallbackProvider(secretManager: SecretManager): Webh
  * system agents add their entries here. The deploy-complete admin
  * route is wired separately in routes/index.ts because it doesn't fan
  * out to agents — it synthesizes a callback POST internally.
+ *
+ * Fail-soft: if `BUILDER_INTERNAL_BEARER` is not bound in SECRETS_CONFIG,
+ * the auto-injected providers are skipped and Builder is dormant for
+ * this boot. The rest of clawndom comes up normally. A startup-blocking
+ * "fail closed" check here would mean every host that hasn't run the
+ * Builder onboarding recipe yet can't boot — that's a worse failure
+ * mode than "Builder doesn't route until you finish onboarding."
+ *
+ * The warning log is the operator's signal that Builder needs the
+ * SECRETS_CONFIG binding before any dispatching agent can reach her.
  */
 export function buildSystemAgentProviders(
   secretManager: SecretManager,
 ): readonly WebhookProviderConfig[] {
+  if (!secretManager.hasSecret(BUILDER_INTERNAL_BEARER_SECRET_KEY)) {
+    logger.warn(
+      { key: BUILDER_INTERNAL_BEARER_SECRET_KEY },
+      'Builder bearer secret not configured; skipping system-agent provider injection. Run docs/builder-onboarding.md to provision.',
+    );
+    return [];
+  }
   return [buildBuilderDispatchProvider(secretManager), buildBuilderCallbackProvider(secretManager)];
 }
