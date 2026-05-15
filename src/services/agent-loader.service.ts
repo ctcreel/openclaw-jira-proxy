@@ -166,6 +166,15 @@ export interface ResolvedAgent {
   readonly name: string;
   readonly dir: string;
   readonly config: AgentConfig;
+  /**
+   * The `AGENTS_CONFIG` entry this agent was loaded from. Carries the
+   * operator-level fields (repo, path, sharedTools, builderBotRef,
+   * `operatorAllowlist`, testableMechanism, branchNamingPattern) so
+   * downstream callers can enforce Layer-3-style checks without
+   * re-walking settings. `undefined` for system agents (Builder)
+   * which aren't loaded from `AGENTS_CONFIG`.
+   */
+  readonly entry?: AgentEntry;
 }
 
 export interface GitClient {
@@ -284,7 +293,7 @@ export async function loadAgents(
     await validateToolsConfig(entry.name, config, agentDir);
     await runWorkspaceAudit(entry.name, agentDir);
 
-    resolved.push({ name: entry.name, dir: agentDir, config });
+    resolved.push({ name: entry.name, dir: agentDir, config, entry });
   }
 
   validateMemoryNamespaceUniqueness(resolved);

@@ -13,6 +13,7 @@ import type { SignatureStrategy } from '../strategies/signature';
 import { decodePubsubEnvelope } from '../strategies/transport/pubsub-envelope';
 import { getStringHeader } from '../lib/extract';
 import { getLogger } from '../lib/logging';
+import { validateBuilderDispatchSenderGate } from '../system-agents/builder/sender-gate';
 
 const logger = getLogger('webhook-controller');
 
@@ -196,6 +197,34 @@ export function createWebhookHandler(
         : wrappedPayload;
 
     if (handleSlackChallenge(parsedPayload, response, provider)) return;
+
+    // Layer 3 of Builder's operator-allowlist enforcement model: the
+    // dispatching agent's privileged route (Layer 2) should have already
+    // refused non-allowlisted senders, but a template-injection or
+    // future-contributor mistake could land us here with a bypassed
+    // dispatch. The gate validates the payload shape and re-checks
+    // senderEmail against the dispatching agent's `operatorAllowlist`
+    // (from AGENTS_CONFIG). Refusals return an uninformative 403 to
+    // avoid telegraphing internals to a hostile caller; the real reason
+    // lands in the server log only.
+    if (provider.name === 'builder-dispatch') {
+      const gate = validateBuilderDispatchSenderGate(parsedPayload, agents);
+      if (!gate.ok) {
+        logger.warn(
+          { provider: provider.name, traceId, reason: gate.reason },
+          'builder-dispatch sender-gate refusal',
+        );
+        events.publish({
+          type: 'webhook.rejected',
+          timestamp: Date.now(),
+          traceId,
+          provider: provider.name,
+          reason: 'sender-gate-refusal',
+        });
+        response.status(gate.status).json(gate.body);
+        return;
+      }
+    }
 
     const result = await ingestEvent({
       provider,

@@ -20,7 +20,12 @@ function mountApp(): Express {
 
 interface SkippedResponseBody {
   skipped: Array<Record<string, unknown>>;
-  counts: { noMatch: number; duplicate: number; signatureFailure: number };
+  counts: {
+    noMatch: number;
+    duplicate: number;
+    signatureFailure: number;
+    senderGateRefusal: number;
+  };
 }
 
 describe('GET /api/webhooks/skipped/recent', () => {
@@ -47,7 +52,7 @@ describe('GET /api/webhooks/skipped/recent', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       skipped: [],
-      counts: { noMatch: 0, duplicate: 0, signatureFailure: 0 },
+      counts: { noMatch: 0, duplicate: 0, signatureFailure: 0, senderGateRefusal: 0 },
     });
   });
 
@@ -82,21 +87,38 @@ describe('GET /api/webhooks/skipped/recent', () => {
       provider: 'github',
       reason: 'invalid-signature',
     });
+    bus.publish({
+      type: 'webhook.rejected',
+      timestamp: 4,
+      traceId: 't-4',
+      provider: 'builder-dispatch',
+      reason: 'sender-gate-refusal',
+    });
 
     const response = await fetch(`${baseUrl}/api/webhooks/skipped/recent`);
     expect(response.status).toBe(200);
 
     const body = (await response.json()) as SkippedResponseBody;
-    expect(body.counts).toEqual({ noMatch: 1, duplicate: 1, signatureFailure: 1 });
-    expect(body.skipped).toHaveLength(3);
+    expect(body.counts).toEqual({
+      noMatch: 1,
+      duplicate: 1,
+      signatureFailure: 1,
+      senderGateRefusal: 1,
+    });
+    expect(body.skipped).toHaveLength(4);
     // most-recent-first
     expect(body.skipped[0]).toMatchObject({
+      reason: 'sender-gate-refusal',
+      provider: 'builder-dispatch',
+      timestamp: 4,
+    });
+    expect(body.skipped[1]).toMatchObject({
       reason: 'invalid-signature',
       provider: 'github',
       timestamp: 3,
     });
-    expect(body.skipped[1]).toMatchObject({ reason: 'duplicate', contextId: 'SPE-2' });
-    expect(body.skipped[2]).toMatchObject({ reason: 'no-routing-match', contextId: 'SPE-1' });
+    expect(body.skipped[2]).toMatchObject({ reason: 'duplicate', contextId: 'SPE-2' });
+    expect(body.skipped[3]).toMatchObject({ reason: 'no-routing-match', contextId: 'SPE-1' });
   });
 
   it('clamps the ?limit= query parameter to [0, server-cap]', async () => {
