@@ -9,6 +9,7 @@ import {
   type AgentVersion,
   type RepoInput,
 } from '../lib/version/agent-version';
+import { readRepoVersion } from '../lib/version/git';
 
 const logger = getLogger('version');
 
@@ -151,8 +152,23 @@ async function findNestedGitDirs(parentDir: string, seen: Map<string, RepoInput>
       continue;
     }
     if (existsSync(join(candidate, '.git'))) {
-      seen.set(candidate, { name: computeRepoName(candidate), path: candidate });
+      if (await isReadableGitRepo(candidate)) {
+        seen.set(candidate, { name: computeRepoName(candidate), path: candidate });
+      }
     }
+  }
+}
+
+async function isReadableGitRepo(repoPath: string): Promise<boolean> {
+  // Walk-scoped sibling discovery occasionally turns up dirs with a
+  // `.git` entry but a broken HEAD (a half-cloned/checked-out repo, a
+  // worktree pointing at a deleted base, etc.). Treat those as "skip"
+  // rather than failing the whole agent_version computation.
+  try {
+    await readRepoVersion(repoPath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

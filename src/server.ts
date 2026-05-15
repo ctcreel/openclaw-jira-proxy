@@ -32,6 +32,9 @@ import { OnePasswordProvider } from './secrets/onepassword.provider';
 import { OAuthSecretProvider } from './secrets/oauth.provider';
 import { FileSecretProvider } from './secrets/file.provider';
 import { validateProviderEnvSecrets } from './secrets/validate-env-secrets';
+import { validateBuilderAgentSecrets } from './system-agents/builder/validate-secrets';
+import { loadSystemAgents } from './system-agents/loader';
+import { buildSystemAgentProviders } from './system-agents/providers';
 import { SlackSocketTransport } from './strategies/transport';
 import type { Transport } from './strategies/transport';
 
@@ -309,12 +312,21 @@ async function startServer(): Promise<void> {
   resolveProviderHmacSecrets(settings.providers, secretManager);
   validateProviderEnvSecrets(settings.providers, secretManager);
   validateSlackSocketSecrets(settings.providers, secretManager);
+  validateBuilderAgentSecrets(settings.agents, secretManager);
 
   const runnersWithConnections = await registerSelectedRunners(settings, secretManager, logger);
 
-  const agents = await loadAgents(settings.agents, settings.configDir);
+  const externalAgents = await loadAgents(settings.agents, settings.configDir);
+  const systemAgents = await loadSystemAgents();
+  const agents = [...externalAgents, ...systemAgents];
+  for (const provider of buildSystemAgentProviders(secretManager)) {
+    settings.providers.push(provider);
+  }
   logger.info(
-    { agents: agents.map((agent) => ({ name: agent.name, dir: agent.dir })) },
+    {
+      external: externalAgents.map((agent) => ({ name: agent.name, dir: agent.dir })),
+      system: systemAgents.map((agent) => ({ name: agent.name, dir: agent.dir })),
+    },
     'Agents loaded',
   );
 

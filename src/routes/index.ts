@@ -20,6 +20,11 @@ import {
 import { requireAgentBearer } from '../middleware/bearer-auth.middleware';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import { WebhookTransport } from '../strategies/transport';
+import { requireBuilderInternalBearer } from '../system-agents/builder/bearer-auth.middleware';
+import {
+  createDeployCompleteHandler,
+  deployCompleteJsonParser,
+} from '../system-agents/builder/deploy-complete.controller';
 
 /**
  * Registers the always-on framework routes (health, events stream, task
@@ -63,6 +68,13 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
     express.json({ limit: '1mb' }),
     requireAgentBearer,
     createScheduledTasksRoutes(agents),
+  );
+
+  app.post(
+    '/webhooks/builder-deploy-complete',
+    deployCompleteJsonParser,
+    requireBuilderInternalBearer,
+    createDeployCompleteHandler(),
   );
 
   for (const provider of getSettings().providers) {

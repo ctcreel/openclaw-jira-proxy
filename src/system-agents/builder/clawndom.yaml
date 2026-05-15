@@ -1,0 +1,22 @@
+# Builder's agent config. Loaded by the system-agent loader (not by
+# AGENTS_CONFIG / the external-agent loader), so paths in this file are
+# relative to src/system-agents/builder/.
+
+routing:
+  # Every dispatch from POST /webhooks/system/builder fires this rule.
+  # The provider name `builder-dispatch` matches the webhook provider
+  # auto-injected by the system-agent loader. The empty `all_of`
+  # condition is the catch-all — every well-formed dispatch matches.
+  builder-dispatch:
+    rules:
+      - name: handle-dispatch
+        condition:
+          all_of: []
+        messageTemplate: templates/dispatch.njk
+        # Builder's prompt.md is her identity AND her soul; she is a
+        # system agent with a single fixed role and no need for the
+        # separate IDENTITY.md / SOUL.md tier that ordinary agents use.
+        # Opt out of the auto-injection added by the loader's default.
+        identity:
+          identity: false
+          soul: false
