@@ -1,78 +1,48 @@
-import type { WebhookProviderConfig } from '../config';
+import { getSettings, type WebhookProviderConfig } from '../config';
 import { getLogger } from '../lib/logging';
-import type { SecretManager } from '../secrets/manager';
 
 const logger = getLogger('system-agent-providers');
 
 /**
- * Logical secret key holding the shared bearer token that opted-in agents
- * use to authenticate calls to system-agent routes. Configured via
- * SECRETS_CONFIG; the system-agent provider injection resolves it eagerly
- * at startup so the existing webhook handler sees `hmacSecret` populated.
+ * Builder's dispatch provider config. Uses the same `CLAWNDOM_AGENT_TOKEN`
+ * the existing internal-tool API (`/api/tasks`) already authenticates
+ * with, so opted-in agents that already wield `dispatch_task` need no
+ * new secret to also wield `dispatch_to_builder`. One bearer per
+ * clawndom instance covers every internal-tool surface.
  */
-export const BUILDER_INTERNAL_BEARER_SECRET_KEY = 'builder_internal_bearer';
-
-/**
- * Builder's dispatch provider config. The runtime adds this to
- * `settings.providers` once Builder's clawndom.yaml is loaded, so the
- * existing webhook → queue → worker → runner chain picks her dispatch up
- * the same way it picks up Jira or GitHub events. The route, queue, and
- * worker are all provided by the existing machinery — only the provider
- * entry is new.
- */
-export function buildBuilderDispatchProvider(secretManager: SecretManager): WebhookProviderConfig {
+export function buildBuilderDispatchProvider(agentToken: string): WebhookProviderConfig {
   return {
     name: 'builder-dispatch',
     transport: 'webhook',
     routePath: '/webhooks/system/builder',
     signatureStrategy: 'bearer',
-    hmacSecret: secretManager.getSecret(BUILDER_INTERNAL_BEARER_SECRET_KEY),
+    hmacSecret: agentToken,
   };
 }
 
-/**
- * Builder's callback provider config. Builder POSTs lifecycle state
- * transitions here; the request fans out through the standard ingestion
- * path so each opted-in dispatching agent's `routing.builder-callback`
- * rules can match its own callbacks by `agent_name` and render a
- * reply template using the echoed reply-context envelope.
- */
-export function buildBuilderCallbackProvider(secretManager: SecretManager): WebhookProviderConfig {
+export function buildBuilderCallbackProvider(agentToken: string): WebhookProviderConfig {
   return {
     name: 'builder-callback',
     transport: 'webhook',
     routePath: '/webhooks/builder-callback',
     signatureStrategy: 'bearer',
-    hmacSecret: secretManager.getSecret(BUILDER_INTERNAL_BEARER_SECRET_KEY),
+    hmacSecret: agentToken,
   };
 }
 
 /**
- * All auto-injected webhook providers contributed by bundled system
- * agents. Today that's Builder's dispatch and callback routes; future
- * system agents add their entries here. The deploy-complete admin
- * route is wired separately in routes/index.ts because it doesn't fan
- * out to agents — it synthesizes a callback POST internally.
- *
- * Fail-soft: if `BUILDER_INTERNAL_BEARER` is not bound in SECRETS_CONFIG,
- * the auto-injected providers are skipped and Builder is dormant for
- * this boot. The rest of clawndom comes up normally. A startup-blocking
- * "fail closed" check here would mean every host that hasn't run the
- * Builder onboarding recipe yet can't boot — that's a worse failure
- * mode than "Builder doesn't route until you finish onboarding."
- *
- * The warning log is the operator's signal that Builder needs the
- * SECRETS_CONFIG binding before any dispatching agent can reach her.
+ * Auto-injected webhook providers contributed by bundled system agents.
+ * Fail-soft: if `CLAWNDOM_AGENT_TOKEN` isn't configured (which is itself
+ * a serious deploy gap — `/api/tasks` would also be broken), skip the
+ * injection and log a warning. Builder dormant for this boot.
  */
-export function buildSystemAgentProviders(
-  secretManager: SecretManager,
-): readonly WebhookProviderConfig[] {
-  if (!secretManager.hasSecret(BUILDER_INTERNAL_BEARER_SECRET_KEY)) {
+export function buildSystemAgentProviders(): readonly WebhookProviderConfig[] {
+  const agentToken = getSettings().agentToken;
+  if (!agentToken) {
     logger.warn(
-      { key: BUILDER_INTERNAL_BEARER_SECRET_KEY },
-      'Builder bearer secret not configured; skipping system-agent provider injection. Run docs/builder-onboarding.md to provision.',
+      'CLAWNDOM_AGENT_TOKEN not configured; skipping system-agent provider injection. Builder dormant until the token is set.',
     );
     return [];
   }
-  return [buildBuilderDispatchProvider(secretManager), buildBuilderCallbackProvider(secretManager)];
+  return [buildBuilderDispatchProvider(agentToken), buildBuilderCallbackProvider(agentToken)];
 }

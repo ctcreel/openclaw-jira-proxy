@@ -1,35 +1,19 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import RedisMock from 'ioredis-mock';
 import type IORedis from 'ioredis';
 import express from 'express';
 import supertest from 'supertest';
 
+import { resetSettings } from '../../../src/config';
+import { requireAgentBearer } from '../../../src/middleware/bearer-auth.middleware';
+
 const VALID_TOKEN = 'integration-bearer-token';
-const knownSecrets = new Map<string, string>([['builder_internal_bearer', VALID_TOKEN]]);
 const redisInstance: IORedis = new RedisMock();
-
-interface FakeSecretManager {
-  hasSecret: (key: string) => boolean;
-  getSecret: (key: string) => string;
-}
-
-vi.mock('../../../src/secrets/manager', () => ({
-  getSecretManager: (): FakeSecretManager => ({
-    hasSecret: (key: string): boolean => knownSecrets.has(key),
-    getSecret: (key: string): string => {
-      const value = knownSecrets.get(key);
-      if (value === undefined) throw new Error(`Unknown key: ${key}`);
-      return value;
-    },
-  }),
-}));
 
 vi.mock('../../../src/services/dedup.service', () => ({
   getDedupRedis: (): IORedis => redisInstance,
 }));
 
-const { requireBuilderInternalBearer } =
-  await import('../../../src/system-agents/builder/bearer-auth.middleware');
 const { createDeployCompleteHandler, deployCompleteJsonParser } =
   await import('../../../src/system-agents/builder/deploy-complete.controller');
 
@@ -38,18 +22,28 @@ function buildTestApp(): express.Express {
   app.post(
     '/webhooks/builder-deploy-complete',
     deployCompleteJsonParser,
-    requireBuilderInternalBearer,
+    requireAgentBearer,
     createDeployCompleteHandler(),
   );
   return app;
 }
 
-describe('deploy-complete route (bearer + parser + handler chain)', () => {
+describe('deploy-complete route (CLAWNDOM_AGENT_TOKEN + parser + handler chain)', () => {
   let app: express.Express;
+  let originalToken: string | undefined;
 
   beforeEach(async () => {
+    originalToken = process.env['CLAWNDOM_AGENT_TOKEN'];
+    process.env['CLAWNDOM_AGENT_TOKEN'] = VALID_TOKEN;
+    resetSettings();
     await redisInstance.flushall();
     app = buildTestApp();
+  });
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env['CLAWNDOM_AGENT_TOKEN'];
+    else process.env['CLAWNDOM_AGENT_TOKEN'] = originalToken;
+    resetSettings();
   });
 
   it('a fully-valid supervisor call: 202 + dedupe entry written', async () => {
