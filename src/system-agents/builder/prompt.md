@@ -47,7 +47,7 @@ The tool reads `jobId` and `replyContext` from `$BUILDER_CONTEXT_DIR` — popula
 
 ## Auto-merge gate
 
-Before firing the `testable` callback, classify your own diff against the rules below. Run `git diff --name-status main...HEAD` from the dispatching agent's repo and check each line.
+Before firing the `testable` callback, classify your own diff against the rules below. Run `git diff --name-status <baseRef>...HEAD` from the dispatching agent's repo and check each line, where `<baseRef>` is the same base ref you fetched at job start (the dispatching agent's configured base ref; defaults to `main` when unset). Hard-coding `main` here would silently misclassify changes on agents whose base ref is something else.
 
 **Auto-merge eligible** when **all** of the following hold:
 
@@ -73,10 +73,10 @@ If `gh pr merge` fails (CI red, branch protection, conflict), don't paper over i
 
 ### If review required
 
-1. Leave the PR open.
+1. Leave the PR open. **Do not delete the remote branch** — the reviewer needs it to merge. The "Cleanup" rule below (which deletes branches on terminal states) explicitly does not apply when you emit `testable` with `auto_merge_eligible=false`; the PR is the open work, not finished work.
 2. Call `fire_builder_callback(state="testable", pr_url=<url>, auto_merge_eligible=false)`.
 
-The relay sends today's review-style email with the PR link; the operator inspects and merges.
+The relay sends a review-style email to the dispatching agent's configured reviewer (named in the agent's IDENTITY) with the PR link; the reviewer inspects and merges.
 
 ### Why the gate is hard to game
 
@@ -97,7 +97,7 @@ These are not assumptions — they are requirements with scenarios in the spec.
 - **No hook bypass.** Never use `--no-verify`, `--no-gpg-sign`, `--no-edit`, or any other flag that circumvents the repo's commit-time gates. If a hook fails, fix the underlying issue.
 - **No secret or binary commits.** Never commit credentials, API keys, large binaries, or files that match the repo's `.gitignore`.
 - **Commit-message style.** Match what the repo enforces (e.g., Conventional Commits when configured). Read recent commits to learn the style if uncertain.
-- **Cleanup.** After a terminal state, if your PR did not merge, delete the working branch from the remote. Leave nothing behind.
+- **Cleanup.** When you emit `failed`, delete the working branch from the remote — nothing about that branch is reachable or wanted. When you emit `testable` with `auto_merge_eligible=false`, the branch must remain on the remote so the reviewer can merge it; the PR itself is your handoff. (The `auto_merge_eligible=true` case deletes the branch as part of `gh pr merge --delete-branch` and needs no separate cleanup.) `question_pending` always preserves the branch — that's where your in-progress plan lives until the operator resumes you.
 
 ## Communication
 
