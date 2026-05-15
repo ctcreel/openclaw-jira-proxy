@@ -7,9 +7,13 @@
  * callback integration tests landed with near-identical shells).
  */
 import IORedis from 'ioredis';
+import type { Worker as BullMQWorker } from 'bullmq';
 
+import { resetSettings } from '../../../src/config';
 import { registerRunner, resetRunners } from '../../../src/runners/registry';
 import type { AgentRunner, RunOptions, RunResult } from '../../../src/runners/types';
+import type { ResolvedAgent } from '../../../src/services/agent-loader.service';
+import { resetQueues } from '../../../src/services/queue.service';
 
 export interface DeliveredPayload {
   prompt: string;
@@ -69,6 +73,56 @@ export async function clearWebhookDedupKeys(): Promise<void> {
   } finally {
     await connection.quit();
   }
+}
+
+export interface BuilderWorkerSet {
+  readonly workers: readonly BullMQWorker[];
+  readonly queueNames: readonly string[];
+}
+
+/**
+ * Build the BullMQ workers for the providers currently in `getSettings()`,
+ * pointed at the given agents. The dispatch and callback integration
+ * tests both want the same shape here; centralising avoids the
+ * structural duplication SonarCloud was failing on.
+ */
+export async function startBuilderTestWorkers(
+  agents: readonly ResolvedAgent[],
+): Promise<BuilderWorkerSet> {
+  const { createWorker } = await import('../../../src/services/worker.service');
+  const { buildQueueName } = await import('../../../src/services/queue.service');
+  const { getSettings } = await import('../../../src/config');
+  const providers = getSettings().providers;
+  const workers = providers.map((provider) => createWorker({ provider, agents }));
+  const queueNames = providers.map((provider) => buildQueueName(provider.name));
+  return { workers, queueNames };
+}
+
+/**
+ * Close the worker set, obliterate each BullMQ queue, and reset
+ * test-global settings/queues/runners + the env vars the harness
+ * relies on. Always runs in `afterAll`; pair with `startBuilderTestWorkers`.
+ */
+export async function stopBuilderTestWorkers(set: BuilderWorkerSet): Promise<void> {
+  for (const worker of set.workers) {
+    await worker.close();
+  }
+
+  const { Queue } = await import('bullmq');
+  const redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
+  const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  for (const queueName of set.queueNames) {
+    const queue = new Queue(queueName, { connection });
+    await queue.obliterate({ force: true });
+    await queue.close();
+  }
+  await connection.quit();
+
+  delete process.env.BULLMQ_QUEUE_PREFIX;
+  delete process.env.PROVIDERS_CONFIG;
+  resetSettings();
+  resetQueues();
+  resetRunners();
 }
 
 export function getDeliveriesMatching(marker: string): DeliveredPayload[] {

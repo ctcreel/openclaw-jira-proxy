@@ -13,19 +13,20 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import type { Express } from 'express';
-import type { Worker as BullMQWorker } from 'bullmq';
 import request from 'supertest';
 
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
-import { resetRunners } from '../../src/runners/registry';
 import type * as SecretsManagerModule from '../../src/secrets/manager';
 import {
+  type BuilderWorkerSet,
   clearWebhookDedupKeys,
   getDeliveriesMatching,
   installCapturingRunner,
   nextTestMarker,
   sleep,
+  startBuilderTestWorkers,
+  stopBuilderTestWorkers,
   waitForDeliveries,
 } from './helpers/builder-test-harness';
 
@@ -54,8 +55,7 @@ vi.mock('../../src/secrets/manager', async () => {
 
 describe('Builder dispatch integration', () => {
   let app: Express;
-  let workers: BullMQWorker[] = [];
-  let queueNames: string[] = [];
+  let workerSet: BuilderWorkerSet;
   let currentMarker = '';
 
   beforeAll(async () => {
@@ -79,12 +79,7 @@ describe('Builder dispatch integration', () => {
     const { createApp } = await import('../../src/app');
     app = createApp(systemAgents);
 
-    const { createWorker } = await import('../../src/services/worker.service');
-    const { buildQueueName } = await import('../../src/services/queue.service');
-    const { getSettings } = await import('../../src/config');
-    const providers = getSettings().providers;
-    workers = providers.map((provider) => createWorker({ provider, agents: systemAgents }));
-    queueNames = providers.map((provider) => buildQueueName(provider.name));
+    workerSet = await startBuilderTestWorkers(systemAgents);
 
     await sleep(500);
   }, 30_000);
@@ -96,25 +91,7 @@ describe('Builder dispatch integration', () => {
   });
 
   afterAll(async () => {
-    for (const worker of workers) await worker.close();
-
-    const { Queue } = await import('bullmq');
-    const IORedis = (await import('ioredis')).default;
-    const connection = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', {
-      maxRetriesPerRequest: null,
-    });
-    for (const queueName of queueNames) {
-      const queue = new Queue(queueName, { connection });
-      await queue.obliterate({ force: true });
-      await queue.close();
-    }
-    await connection.quit();
-
-    delete process.env.BULLMQ_QUEUE_PREFIX;
-    delete process.env.PROVIDERS_CONFIG;
-    resetSettings();
-    resetQueues();
-    resetRunners();
+    await stopBuilderTestWorkers(workerSet);
   });
 
   it('accepts a valid dispatch (202) and delivers a rendered prompt to the runner', async () => {
