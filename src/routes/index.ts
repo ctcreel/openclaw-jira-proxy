@@ -20,7 +20,6 @@ import {
 import { requireAgentBearer } from '../middleware/bearer-auth.middleware';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import { WebhookTransport } from '../strategies/transport';
-import { requireBuilderInternalBearer } from '../system-agents/builder/bearer-auth.middleware';
 import {
   createDeployCompleteHandler,
   deployCompleteJsonParser,
@@ -73,7 +72,7 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.post(
     '/webhooks/builder-deploy-complete',
     deployCompleteJsonParser,
-    requireBuilderInternalBearer,
+    requireAgentBearer,
     createDeployCompleteHandler(),
   );
 
