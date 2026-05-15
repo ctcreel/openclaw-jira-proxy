@@ -302,6 +302,17 @@ describe('processJob', () => {
 });
 
 describe('processJob per-dispatch workDirectory', () => {
+  // SecretManager returned by `buildMockSecretManager` registers global
+  // provider state and exposes a `close()` for teardown. The describe-
+  // scoped variable + afterEach mirrors the pattern in the envSecrets
+  // describe blocks below so handles don't leak across suites.
+  let perDispatchManager: SecretManager | null = null;
+  afterEach(async () => {
+    if (perDispatchManager) {
+      await perDispatchManager.close();
+      perDispatchManager = null;
+    }
+  });
   // Trio of test-local helpers — extracted to keep new code under
   // SonarCloud's 3% duplication ceiling on this PR's new lines.
   class ClaudeCliSpyRunner implements AgentRunner {
@@ -512,8 +523,9 @@ describe('processJob per-dispatch workDirectory', () => {
     // The worker calls resolveEnvSecrets(provider.envSecrets) before
     // merging in the per-dispatch context env. Wire a SecretManager
     // with the declared key bound so both keys end up on the runner
-    // subprocess env.
-    await buildMockSecretManager([['jira_hmac', 'hmac-value']]);
+    // subprocess env. Captured into describe-scoped `perDispatchManager`
+    // so the afterEach can close it.
+    perDispatchManager = await buildMockSecretManager([['jira_hmac', 'hmac-value']]);
 
     await processJob(
       createFakeJob('{"agentName":"builder","request":"x"}'),
