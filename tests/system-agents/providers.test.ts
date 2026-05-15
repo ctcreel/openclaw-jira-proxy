@@ -8,19 +8,31 @@ import {
   buildSystemAgentProviders,
 } from '../../src/system-agents/providers';
 
-function makeSecretManager(token: string): SecretManager {
-  return {
-    getSecret: (key: string) => {
-      if (key !== BUILDER_INTERNAL_BEARER_SECRET_KEY) {
+interface FakeSecretManager {
+  hasSecret(key: string): boolean;
+  getSecret(key: string): string;
+}
+
+function makeSecretManager(knownKeys: ReadonlyMap<string, string>): SecretManager {
+  const fake: FakeSecretManager = {
+    hasSecret: (key: string): boolean => knownKeys.has(key),
+    getSecret: (key: string): string => {
+      const value = knownKeys.get(key);
+      if (value === undefined) {
         throw new Error(`Unexpected secret key in test fake: ${key}`);
       }
-      return token;
+      return value;
     },
-  } as unknown as SecretManager;
+  };
+  return fake as unknown as SecretManager;
+}
+
+function makeSecretManagerWithBearer(token: string): SecretManager {
+  return makeSecretManager(new Map([[BUILDER_INTERNAL_BEARER_SECRET_KEY, token]]));
 }
 
 describe('system-agent providers', () => {
-  const secrets = makeSecretManager('test-bearer-token');
+  const secrets = makeSecretManagerWithBearer('test-bearer-token');
 
   it('builds Builder dispatch provider at /webhooks/system/builder', () => {
     const provider = buildBuilderDispatchProvider(secrets);
@@ -39,7 +51,7 @@ describe('system-agent providers', () => {
     expect(provider.hmacSecret).toBe('test-bearer-token');
   });
 
-  it('buildSystemAgentProviders returns dispatch and callback', () => {
+  it('buildSystemAgentProviders returns dispatch and callback when bearer is bound', () => {
     const providers = buildSystemAgentProviders(secrets);
     expect(providers).toHaveLength(2);
     expect(providers.map((p) => p.name)).toEqual(['builder-dispatch', 'builder-callback']);
@@ -49,5 +61,10 @@ describe('system-agent providers', () => {
     for (const provider of buildSystemAgentProviders(secrets)) {
       expect(provider.signatureStrategy).toBe('bearer');
     }
+  });
+
+  it('returns empty (fail-soft) when the bearer secret is not bound', () => {
+    const empty = makeSecretManager(new Map());
+    expect(buildSystemAgentProviders(empty)).toEqual([]);
   });
 });
