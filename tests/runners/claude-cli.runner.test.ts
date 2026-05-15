@@ -154,6 +154,21 @@ describe('ClaudeCliRunner', () => {
     );
   });
 
+  it('uses workDirectoryOverride as cwd when set, overriding the constructor workDirectory', async () => {
+    vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+    const runner = new ClaudeCliRunner(baseConfig);
+    await runner.run({
+      ...baseOptions,
+      workDirectoryOverride: '/scratch/builder/dispatch-abc',
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      'claude',
+      expect.any(Array),
+      expect.objectContaining({ cwd: '/scratch/builder/dispatch-abc' }),
+    );
+  });
+
   // The "Agent run usage" path's `createMockProcess` races stdout flushing
   // against `process.nextTick(close)`, which works for the existing
   // resolves-on-close tests but fails when the close handler depends on

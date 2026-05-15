@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Worker, Queue } from 'bullmq';
@@ -350,28 +350,38 @@ export async function processJob(
     requestId: traceId,
   });
 
-  const result = await dispatchToRunner(runner, {
-    prompt,
-    sessionKey,
-    agentId,
-    model: selectedModel,
-    timeoutMs: settings.agentWaitTimeoutMs,
-    traceId,
-    jobId: jobIdString,
-    ...(envOverlay ? { env: envOverlay } : {}),
-    ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-    ...(mcpBundle === undefined ? {} : { mcpBundle }),
-    // Quota-pause recovery: when the prior run captured a session_id and
-    // got walled by upstream, the requeued envelope carries that id so
-    // this pickup resumes the same conversation instead of replanning.
-    ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
-    // Per-rule turn ceiling. Default 150 in the runner; rules whose work
-    // cascades wider (multi-file test-tuple updates, structural refactors)
-    // opt into a higher value via the rule's `maxTurns` field.
-    ...(resolved.rule.maxTurns === undefined ? {} : { maxTurns: resolved.rule.maxTurns }),
-    sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
-    sessionUserMessage,
-  });
+  const workDirectoryOverride = await allocatePerDispatchWorkDirectory(provider);
+
+  let result: RunResult;
+  try {
+    result = await dispatchToRunner(runner, {
+      prompt,
+      sessionKey,
+      agentId,
+      model: selectedModel,
+      timeoutMs: settings.agentWaitTimeoutMs,
+      traceId,
+      jobId: jobIdString,
+      ...(envOverlay ? { env: envOverlay } : {}),
+      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+      ...(mcpBundle === undefined ? {} : { mcpBundle }),
+      ...(workDirectoryOverride === undefined ? {} : { workDirectoryOverride }),
+      // Quota-pause recovery: when the prior run captured a session_id and
+      // got walled by upstream, the requeued envelope carries that id so
+      // this pickup resumes the same conversation instead of replanning.
+      ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
+      // Per-rule turn ceiling. Default 150 in the runner; rules whose work
+      // cascades wider (multi-file test-tuple updates, structural refactors)
+      // opt into a higher value via the rule's `maxTurns` field.
+      ...(resolved.rule.maxTurns === undefined ? {} : { maxTurns: resolved.rule.maxTurns }),
+      sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
+      sessionUserMessage,
+    });
+  } finally {
+    if (workDirectoryOverride !== undefined) {
+      await rm(workDirectoryOverride, { recursive: true, force: true });
+    }
+  }
   await cleanupMCPBundle(mcpBundle);
 
   if (result.status === 'quota_exceeded') {
@@ -541,6 +551,26 @@ function buildSessionDispatch(
     config: rule.session,
     providerConfig: provider,
   };
+}
+
+/**
+ * Allocate a per-dispatch working directory when the provider's runner config
+ * opts in via `workDirectoryStrategy: 'per-dispatch'`. The directory is
+ * created under the runner's configured `workDirectory` (which acts as the
+ * scratch root) so operators control the disk location. Caller is responsible
+ * for cleanup via `rm(..., { recursive: true, force: true })`.
+ *
+ * Returns `undefined` when the provider opts out (the default — the runner
+ * singleton's static `workDirectory` is used as-is for every dispatch).
+ */
+async function allocatePerDispatchWorkDirectory(
+  provider: ProviderConfig,
+): Promise<string | undefined> {
+  if (provider.runner?.type !== 'claude-cli') return undefined;
+  if (provider.runner.workDirectoryStrategy !== 'per-dispatch') return undefined;
+  const scratchRoot = provider.runner.workDirectory;
+  await mkdir(scratchRoot, { recursive: true });
+  return mkdtemp(join(scratchRoot, 'dispatch-'));
 }
 
 /**
