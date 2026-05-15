@@ -487,8 +487,8 @@ describe('processJob per-dispatch workDirectory', () => {
     // Stub buildMCPBundle to return a sentinel; cleanupMCPBundle is a vi.fn
     // we can assert against. Then make mkdtemp throw so per-dispatch fails.
     vi.mocked(buildMCPBundle).mockResolvedValueOnce({
-      mcpConfigPath: '/tmp/mcp.json',
-      toolConfigPath: '/tmp/tools.json',
+      mcpConfigPath: '/scratch/builder/mock-mcp.json',
+      toolConfigPath: '/scratch/builder/mock-tools.json',
       env: {},
     });
     vi.mocked(fsModule.mkdtemp).mockRejectedValueOnce(new Error('mkdtemp boom'));
@@ -502,8 +502,8 @@ describe('processJob per-dispatch workDirectory', () => {
     ).rejects.toThrow('mkdtemp boom');
 
     expect(vi.mocked(cleanupMCPBundle)).toHaveBeenCalledWith({
-      mcpConfigPath: '/tmp/mcp.json',
-      toolConfigPath: '/tmp/tools.json',
+      mcpConfigPath: '/scratch/builder/mock-mcp.json',
+      toolConfigPath: '/scratch/builder/mock-tools.json',
       env: {},
     });
   });
