@@ -294,6 +294,35 @@ describe('processJob', () => {
 });
 
 describe('processJob per-dispatch workDirectory', () => {
+  // Trio of test-local helpers — extracted to keep new code under
+  // SonarCloud's 3% duplication ceiling on this PR's new lines.
+  class ClaudeCliSpyRunner implements AgentRunner {
+    readonly name = 'claude-cli';
+    async run(options: RunOptions): Promise<RunResult> {
+      return runSpy(options);
+    }
+  }
+
+  function buildPerDispatchProvider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
+    return {
+      ...testProvider,
+      ...overrides,
+      runner: {
+        type: 'claude-cli',
+        workDirectory: '/scratch/builder',
+        workDirectoryStrategy: 'per-dispatch',
+      },
+    };
+  }
+
+  function buildBuilderAgents(): ResolvedAgent[] {
+    return [
+      buildAgent('builder', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     runSpy.mockResolvedValue({
@@ -303,17 +332,10 @@ describe('processJob per-dispatch workDirectory', () => {
     });
     resetSettings();
     resetRunners();
+    registerRunner(new ClaudeCliSpyRunner());
   });
 
   it('does not pass workDirectoryOverride for static (default) strategy', async () => {
-    class StaticRunner implements AgentRunner {
-      readonly name = 'claude-cli';
-      async run(options: RunOptions): Promise<RunResult> {
-        return runSpy(options);
-      }
-    }
-    registerRunner(new StaticRunner());
-
     const provider: ProviderConfig = {
       ...testProvider,
       runner: { type: 'claude-cli', workDirectory: '/agents/winston' },
@@ -335,29 +357,11 @@ describe('processJob per-dispatch workDirectory', () => {
   });
 
   it('mktemps under workDirectory + passes override + cleans up for per-dispatch strategy', async () => {
-    class PerDispatchRunner implements AgentRunner {
-      readonly name = 'claude-cli';
-      async run(options: RunOptions): Promise<RunResult> {
-        return runSpy(options);
-      }
-    }
-    registerRunner(new PerDispatchRunner());
-
-    const provider: ProviderConfig = {
-      ...testProvider,
-      runner: {
-        type: 'claude-cli',
-        workDirectory: '/scratch/builder',
-        workDirectoryStrategy: 'per-dispatch',
-      },
-    };
-    const agents = [
-      buildAgent('builder', 'test-provider', {
-        rules: [{ condition: { all_of: [] } }],
-      }),
-    ];
-
-    await processJob(createFakeJob('{"event":"test"}'), provider, agents);
+    await processJob(
+      createFakeJob('{"event":"test"}'),
+      buildPerDispatchProvider(),
+      buildBuilderAgents(),
+    );
 
     const fsModule = await import('node:fs/promises');
     expect(vi.mocked(fsModule.mkdir)).toHaveBeenCalledWith('/scratch/builder', { recursive: true });
@@ -371,37 +375,19 @@ describe('processJob per-dispatch workDirectory', () => {
   });
 
   it('cleans up the per-dispatch directory even when the runner throws', async () => {
-    class ThrowingRunner implements AgentRunner {
-      readonly name = 'claude-cli';
-      async run(options: RunOptions): Promise<RunResult> {
-        return runSpy(options);
-      }
-    }
-    registerRunner(new ThrowingRunner());
-
     runSpy.mockResolvedValueOnce({
       status: 'error',
       error: 'boom',
       renderedPrompt: 'r',
     });
 
-    const provider: ProviderConfig = {
-      ...testProvider,
-      runner: {
-        type: 'claude-cli',
-        workDirectory: '/scratch/builder',
-        workDirectoryStrategy: 'per-dispatch',
-      },
-    };
-    const agents = [
-      buildAgent('builder', 'test-provider', {
-        rules: [{ condition: { all_of: [] } }],
-      }),
-    ];
-
-    await expect(processJob(createFakeJob('{"event":"test"}'), provider, agents)).rejects.toThrow(
-      'Agent run failed: boom',
-    );
+    await expect(
+      processJob(
+        createFakeJob('{"event":"test"}'),
+        buildPerDispatchProvider(),
+        buildBuilderAgents(),
+      ),
+    ).rejects.toThrow('Agent run failed: boom');
 
     const fsModule = await import('node:fs/promises');
     expect(vi.mocked(fsModule.rm)).toHaveBeenCalledWith('/scratch/builder/dispatch-abc123', {
@@ -411,28 +397,6 @@ describe('processJob per-dispatch workDirectory', () => {
   });
 
   it('writes job-id + reply-context.json to .builder-context and injects BUILDER_CONTEXT_DIR env', async () => {
-    class PerDispatchRunner implements AgentRunner {
-      readonly name = 'claude-cli';
-      async run(options: RunOptions): Promise<RunResult> {
-        return runSpy(options);
-      }
-    }
-    registerRunner(new PerDispatchRunner());
-
-    const provider: ProviderConfig = {
-      ...testProvider,
-      runner: {
-        type: 'claude-cli',
-        workDirectory: '/scratch/builder',
-        workDirectoryStrategy: 'per-dispatch',
-      },
-    };
-    const agents = [
-      buildAgent('builder', 'test-provider', {
-        rules: [{ condition: { all_of: [] } }],
-      }),
-    ];
-
     const replyContext = {
       channel: 'email',
       messageId: '<abc@mail.gmail.com>',
@@ -447,7 +411,11 @@ describe('processJob per-dispatch workDirectory', () => {
       senderEmail: 'heather@talkatlanta.info',
     });
 
-    await processJob(createFakeJob(payload, 'dispatch-42'), provider, agents);
+    await processJob(
+      createFakeJob(payload, 'dispatch-42'),
+      buildPerDispatchProvider(),
+      buildBuilderAgents(),
+    );
 
     const fsModule = await import('node:fs/promises');
     expect(vi.mocked(fsModule.mkdir)).toHaveBeenCalledWith(
@@ -468,72 +436,31 @@ describe('processJob per-dispatch workDirectory', () => {
   });
 
   it('omits reply-context.json when the dispatch payload has no replyContext field', async () => {
-    class PerDispatchRunner implements AgentRunner {
-      readonly name = 'claude-cli';
-      async run(options: RunOptions): Promise<RunResult> {
-        return runSpy(options);
-      }
-    }
-    registerRunner(new PerDispatchRunner());
-
-    const provider: ProviderConfig = {
-      ...testProvider,
-      runner: {
-        type: 'claude-cli',
-        workDirectory: '/scratch/builder',
-        workDirectoryStrategy: 'per-dispatch',
-      },
-    };
-    const agents = [
-      buildAgent('builder', 'test-provider', {
-        rules: [{ condition: { all_of: [] } }],
-      }),
-    ];
-
     await processJob(
       createFakeJob('{"agentName":"builder","request":"x"}', 'job-no-rc'),
-      provider,
-      agents,
+      buildPerDispatchProvider(),
+      buildBuilderAgents(),
     );
 
     const fsModule = await import('node:fs/promises');
     const writeCalls = vi.mocked(fsModule.writeFile).mock.calls;
-    const filenames = writeCalls.map((call) => call[0] as string);
+    const filenames = writeCalls.map((call) => String(call[0]));
     expect(filenames).toContain('/scratch/builder/dispatch-abc123/.builder-context/job-id');
     expect(filenames.some((path) => path.endsWith('/reply-context.json'))).toBe(false);
   });
 
   it('merges BUILDER_CONTEXT_DIR alongside provider-declared envSecrets', async () => {
-    class PerDispatchRunner implements AgentRunner {
-      readonly name = 'claude-cli';
-      async run(options: RunOptions): Promise<RunResult> {
-        return runSpy(options);
-      }
-    }
-    registerRunner(new PerDispatchRunner());
-
     // The worker calls resolveEnvSecrets(provider.envSecrets) before
     // merging in the per-dispatch context env. Wire a SecretManager
     // with the declared key bound so both keys end up on the runner
     // subprocess env.
     await buildMockSecretManager([['jira_hmac', 'hmac-value']]);
 
-    const provider: ProviderConfig = {
-      ...testProvider,
-      envSecrets: ['jira_hmac'],
-      runner: {
-        type: 'claude-cli',
-        workDirectory: '/scratch/builder',
-        workDirectoryStrategy: 'per-dispatch',
-      },
-    };
-    const agents = [
-      buildAgent('builder', 'test-provider', {
-        rules: [{ condition: { all_of: [] } }],
-      }),
-    ];
-
-    await processJob(createFakeJob('{"agentName":"builder","request":"x"}'), provider, agents);
+    await processJob(
+      createFakeJob('{"agentName":"builder","request":"x"}'),
+      buildPerDispatchProvider({ envSecrets: ['jira_hmac'] }),
+      buildBuilderAgents(),
+    );
 
     const env = runSpy.mock.calls[0]![0].env;
     expect(env?.JIRA_HMAC).toBe('hmac-value');

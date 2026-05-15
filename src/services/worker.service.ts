@@ -611,12 +611,14 @@ async function allocatePerDispatchWorkDirectory(
  * its shape — system-agent dispatches carry an opaque envelope that the
  * worker forwards byte-for-byte. Returns `undefined` for payloads that
  * don't have one (e.g. workspace-agent dispatches that happen to share
- * per-dispatch runner config).
+ * per-dispatch runner config). Uses `Object.hasOwn` (not `in`) so an
+ * inherited `replyContext` getter on Object.prototype can't smuggle a
+ * value into the side-channel file.
  */
 function extractReplyContext(parsedPayload: unknown): unknown {
   if (typeof parsedPayload !== 'object' || parsedPayload === null) return undefined;
-  if (!('replyContext' in parsedPayload)) return undefined;
-  return (parsedPayload as { replyContext: unknown }).replyContext;
+  if (!Object.hasOwn(parsedPayload, 'replyContext')) return undefined;
+  return Reflect.get(parsedPayload, 'replyContext');
 }
 
 /**
