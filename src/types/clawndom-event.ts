@@ -33,7 +33,12 @@ export interface WebhookRejectedEvent {
   timestamp: number;
   traceId: string;
   provider: string;
-  reason: 'invalid-signature' | 'missing-signature' | 'no-routing-match' | 'duplicate';
+  reason:
+    | 'invalid-signature'
+    | 'missing-signature'
+    | 'no-routing-match'
+    | 'duplicate'
+    | 'sender-gate-refusal';
   // Optional because signature-failure rejections happen before the body is
   // parsed — there's no payload to extract context from. Routing rejections
   // (no-routing-match, duplicate) populate these from extractWebhookContext.

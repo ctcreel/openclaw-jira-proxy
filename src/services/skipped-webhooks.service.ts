@@ -15,6 +15,7 @@ export interface SkippedWebhookCounts {
   noMatch: number;
   duplicate: number;
   signatureFailure: number;
+  senderGateRefusal: number;
 }
 
 export interface SkippedWebhooksRegistryOptions {
@@ -40,7 +41,12 @@ export class SkippedWebhooksRegistry {
   private readonly capacity: number;
   // Newest entries pushed at index 0 — listRecent() can slice without reverse.
   private readonly ring: SkippedWebhook[] = [];
-  private counts: SkippedWebhookCounts = { noMatch: 0, duplicate: 0, signatureFailure: 0 };
+  private counts: SkippedWebhookCounts = {
+    noMatch: 0,
+    duplicate: 0,
+    signatureFailure: 0,
+    senderGateRefusal: 0,
+  };
   private unsubscribe: (() => void) | null = null;
 
   constructor(options: SkippedWebhooksRegistryOptions = {}) {
@@ -60,7 +66,7 @@ export class SkippedWebhooksRegistry {
       this.unsubscribe = null;
     }
     this.ring.length = 0;
-    this.counts = { noMatch: 0, duplicate: 0, signatureFailure: 0 };
+    this.counts = { noMatch: 0, duplicate: 0, signatureFailure: 0, senderGateRefusal: 0 };
   }
 
   /**
@@ -108,6 +114,9 @@ export class SkippedWebhooksRegistry {
       case 'invalid-signature':
       case 'missing-signature':
         this.counts.signatureFailure += 1;
+        return;
+      case 'sender-gate-refusal':
+        this.counts.senderGateRefusal += 1;
         return;
     }
   }

@@ -17,6 +17,7 @@ import request from 'supertest';
 
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
+import type { ResolvedAgent } from '../../src/services/agent-loader.service';
 import type * as SecretsManagerModule from '../../src/secrets/manager';
 import {
   type BuilderWorkerSet,
@@ -90,10 +91,29 @@ describe('Builder dispatch integration', () => {
     const { loadSystemAgents } = await import('../../src/system-agents/loader');
     const systemAgents = await loadSystemAgents();
 
-    const { createApp } = await import('../../src/app');
-    app = createApp(systemAgents);
+    // The Layer-3 sender gate looks up `payload.agentName` in the agent
+    // list and validates `senderEmail` against the dispatching agent's
+    // `operatorAllowlist`. The system-agent loader only returns Builder
+    // herself; we synthesize a stub `winston` entry so the gate can find
+    // a dispatching agent. The allowlist matches the test payloads
+    // below (heather@example.com).
+    const { agentConfigSchema } = await import('../../src/services/agent-loader.service');
+    const stubWinston: ResolvedAgent = {
+      name: 'winston',
+      dir: '/scratch/test-winston',
+      config: agentConfigSchema.parse({}),
+      entry: {
+        name: 'winston',
+        repo: 'git@github.com:test/winston.git',
+        operatorAllowlist: ['heather@example.com'],
+      },
+    };
+    const agentsWithStub: readonly ResolvedAgent[] = [...systemAgents, stubWinston];
 
-    workerSet = await startBuilderTestWorkers(systemAgents);
+    const { createApp } = await import('../../src/app');
+    app = createApp(agentsWithStub);
+
+    workerSet = await startBuilderTestWorkers(agentsWithStub);
 
     await sleep(500);
   }, 30_000);

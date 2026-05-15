@@ -66,7 +66,12 @@ function noMatchAgent(): ResolvedAgent {
 
 interface SkippedResponseBody {
   skipped: Array<Record<string, unknown>>;
-  counts: { noMatch: number; duplicate: number; signatureFailure: number };
+  counts: {
+    noMatch: number;
+    duplicate: number;
+    signatureFailure: number;
+    senderGateRefusal: number;
+  };
 }
 
 describe('integration: skipped-webhooks endpoint reflects ingest-path rejections', () => {
@@ -150,7 +155,12 @@ describe('integration: skipped-webhooks endpoint reflects ingest-path rejections
     expect(response.status).toBe(200);
     const body = (await response.json()) as SkippedResponseBody;
 
-    expect(body.counts).toEqual({ noMatch: 2, duplicate: 1, signatureFailure: 0 });
+    expect(body.counts).toEqual({
+      noMatch: 2,
+      duplicate: 1,
+      signatureFailure: 0,
+      senderGateRefusal: 0,
+    });
     expect(body.skipped).toHaveLength(3);
 
     // Most-recent-first; duplicate published last.

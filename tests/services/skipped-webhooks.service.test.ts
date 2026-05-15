@@ -29,7 +29,12 @@ describe('SkippedWebhooksRegistry', () => {
     const registry = new SkippedWebhooksRegistry();
     registry.start();
     expect(registry.listRecent()).toEqual([]);
-    expect(registry.getCounts()).toEqual({ noMatch: 0, duplicate: 0, signatureFailure: 0 });
+    expect(registry.getCounts()).toEqual({
+      noMatch: 0,
+      duplicate: 0,
+      signatureFailure: 0,
+      senderGateRefusal: 0,
+    });
   });
 
   it('records a no-routing-match rejection with full context', () => {
@@ -56,10 +61,15 @@ describe('SkippedWebhooksRegistry', () => {
         traceId: 'trace-1',
       },
     ]);
-    expect(registry.getCounts()).toEqual({ noMatch: 1, duplicate: 0, signatureFailure: 0 });
+    expect(registry.getCounts()).toEqual({
+      noMatch: 1,
+      duplicate: 0,
+      signatureFailure: 0,
+      senderGateRefusal: 0,
+    });
   });
 
-  it('partitions counts by reason — no-match, duplicate, signature failures', () => {
+  it('partitions counts by reason — no-match, duplicate, signature failures, sender-gate refusals', () => {
     const registry = new SkippedWebhooksRegistry();
     registry.start();
     const bus = getEventBus();
@@ -69,9 +79,15 @@ describe('SkippedWebhooksRegistry', () => {
     bus.publish(buildRejected({ reason: 'duplicate', timestamp: 3 }));
     bus.publish(buildRejected({ reason: 'invalid-signature', timestamp: 4 }));
     bus.publish(buildRejected({ reason: 'missing-signature', timestamp: 5 }));
+    bus.publish(buildRejected({ reason: 'sender-gate-refusal', timestamp: 6 }));
 
-    expect(registry.getCounts()).toEqual({ noMatch: 2, duplicate: 1, signatureFailure: 2 });
-    expect(registry.listRecent()).toHaveLength(5);
+    expect(registry.getCounts()).toEqual({
+      noMatch: 2,
+      duplicate: 1,
+      signatureFailure: 2,
+      senderGateRefusal: 1,
+    });
+    expect(registry.listRecent()).toHaveLength(6);
   });
 
   it('returns most-recent-first ordering', () => {
@@ -131,7 +147,12 @@ describe('SkippedWebhooksRegistry', () => {
       rawHeadersHash: 'abc',
     });
     expect(registry.listRecent()).toEqual([]);
-    expect(registry.getCounts()).toEqual({ noMatch: 0, duplicate: 0, signatureFailure: 0 });
+    expect(registry.getCounts()).toEqual({
+      noMatch: 0,
+      duplicate: 0,
+      signatureFailure: 0,
+      senderGateRefusal: 0,
+    });
   });
 
   it('stop() unsubscribes and clears state', () => {
@@ -144,7 +165,12 @@ describe('SkippedWebhooksRegistry', () => {
 
     registry.stop();
     expect(registry.listRecent()).toEqual([]);
-    expect(registry.getCounts()).toEqual({ noMatch: 0, duplicate: 0, signatureFailure: 0 });
+    expect(registry.getCounts()).toEqual({
+      noMatch: 0,
+      duplicate: 0,
+      signatureFailure: 0,
+      senderGateRefusal: 0,
+    });
 
     bus.publish(buildRejected({ traceId: 't-2' }));
     expect(registry.listRecent()).toEqual([]);
