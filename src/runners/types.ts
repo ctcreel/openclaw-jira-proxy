@@ -72,6 +72,15 @@ export interface RunOptions {
    * `bedrock` today) MUST ignore.
    */
   mcpBundle?: ToolMCPBundle;
+  /**
+   * Per-run override for the runner's working directory. When set, the
+   * subprocess's `cwd` is this path instead of the runner singleton's
+   * baked-in `workDirectory`. Used by the worker when a provider's
+   * runner config opts into `workDirectoryStrategy: 'per-dispatch'` —
+   * the worker mktemps a fresh directory and passes it here. Runners
+   * that don't spawn subprocesses MUST ignore this field.
+   */
+  workDirectoryOverride?: string;
 }
 
 /**
@@ -220,6 +229,18 @@ const claudeCliRunnerConfigSchema = z.object({
   binary: z.string().optional(),
   /** System prompt passed via --system-prompt flag. */
   systemPrompt: z.string().optional(),
+  /**
+   * How the working directory for `run()` is resolved. Omitted/`'static'`:
+   * the singleton runner's `workDirectory` is used — the same path across
+   * every dispatch. Right for workspace agents whose checkout is stable
+   * for the life of the deployment.
+   *
+   * `'per-dispatch'`: the worker creates a fresh directory under
+   * `workDirectory` for each dispatch and removes it after the run
+   * completes. Right for system agents (Builder) that clone target repos
+   * at dispatch time and need isolated, throwaway working trees.
+   */
+  workDirectoryStrategy: z.enum(['static', 'per-dispatch']).optional(),
 });
 
 const openaiRunnerConfigSchema = z.object({

@@ -23,6 +23,9 @@ vi.mock('../../src/lib/template/template-engine', () => ({
 
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn().mockResolvedValue('file-template-content'),
+  mkdir: vi.fn().mockResolvedValue(undefined),
+  mkdtemp: vi.fn().mockResolvedValue('/scratch/builder/dispatch-abc123'),
+  rm: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { loggerInfoSpy, loggerDebugSpy, loggerWarnSpy, loggerErrorSpy } = vi.hoisted(() => ({
@@ -286,6 +289,124 @@ describe('processJob', () => {
     await processJob(createFakeJob('{"event":"test"}'), providerWithRunner, agents);
 
     expect(customRunSpy).toHaveBeenCalledOnce();
+  });
+});
+
+describe('processJob per-dispatch workDirectory', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runSpy.mockResolvedValue({
+      status: 'ok',
+      runId: 'mock-run-id',
+      renderedPrompt: 'mock-prompt',
+    });
+    resetSettings();
+    resetRunners();
+  });
+
+  it('does not pass workDirectoryOverride for static (default) strategy', async () => {
+    class StaticRunner implements AgentRunner {
+      readonly name = 'claude-cli';
+      async run(options: RunOptions): Promise<RunResult> {
+        return runSpy(options);
+      }
+    }
+    registerRunner(new StaticRunner());
+
+    const provider: ProviderConfig = {
+      ...testProvider,
+      runner: { type: 'claude-cli', workDirectory: '/agents/winston' },
+    };
+    const agents = [
+      buildAgent('winston', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    await processJob(createFakeJob('{"event":"test"}'), provider, agents);
+
+    expect(runSpy).toHaveBeenCalledOnce();
+    expect(runSpy.mock.calls[0]![0].workDirectoryOverride).toBeUndefined();
+
+    const fsModule = await import('node:fs/promises');
+    expect(vi.mocked(fsModule.mkdtemp)).not.toHaveBeenCalled();
+    expect(vi.mocked(fsModule.rm)).not.toHaveBeenCalled();
+  });
+
+  it('mktemps under workDirectory + passes override + cleans up for per-dispatch strategy', async () => {
+    class PerDispatchRunner implements AgentRunner {
+      readonly name = 'claude-cli';
+      async run(options: RunOptions): Promise<RunResult> {
+        return runSpy(options);
+      }
+    }
+    registerRunner(new PerDispatchRunner());
+
+    const provider: ProviderConfig = {
+      ...testProvider,
+      runner: {
+        type: 'claude-cli',
+        workDirectory: '/scratch/builder',
+        workDirectoryStrategy: 'per-dispatch',
+      },
+    };
+    const agents = [
+      buildAgent('builder', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    await processJob(createFakeJob('{"event":"test"}'), provider, agents);
+
+    const fsModule = await import('node:fs/promises');
+    expect(vi.mocked(fsModule.mkdir)).toHaveBeenCalledWith('/scratch/builder', { recursive: true });
+    expect(vi.mocked(fsModule.mkdtemp)).toHaveBeenCalledWith('/scratch/builder/dispatch-');
+    expect(runSpy).toHaveBeenCalledOnce();
+    expect(runSpy.mock.calls[0]![0].workDirectoryOverride).toBe('/scratch/builder/dispatch-abc123');
+    expect(vi.mocked(fsModule.rm)).toHaveBeenCalledWith('/scratch/builder/dispatch-abc123', {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it('cleans up the per-dispatch directory even when the runner throws', async () => {
+    class ThrowingRunner implements AgentRunner {
+      readonly name = 'claude-cli';
+      async run(options: RunOptions): Promise<RunResult> {
+        return runSpy(options);
+      }
+    }
+    registerRunner(new ThrowingRunner());
+
+    runSpy.mockResolvedValueOnce({
+      status: 'error',
+      error: 'boom',
+      renderedPrompt: 'r',
+    });
+
+    const provider: ProviderConfig = {
+      ...testProvider,
+      runner: {
+        type: 'claude-cli',
+        workDirectory: '/scratch/builder',
+        workDirectoryStrategy: 'per-dispatch',
+      },
+    };
+    const agents = [
+      buildAgent('builder', 'test-provider', {
+        rules: [{ condition: { all_of: [] } }],
+      }),
+    ];
+
+    await expect(processJob(createFakeJob('{"event":"test"}'), provider, agents)).rejects.toThrow(
+      'Agent run failed: boom',
+    );
+
+    const fsModule = await import('node:fs/promises');
+    expect(vi.mocked(fsModule.rm)).toHaveBeenCalledWith('/scratch/builder/dispatch-abc123', {
+      recursive: true,
+      force: true,
+    });
   });
 });
 

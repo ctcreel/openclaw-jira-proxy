@@ -301,13 +301,11 @@ export class ClaudeCliRunner implements AgentRunner {
     const startedAt = new Date().toISOString();
     const runId = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const args = buildCliArgs(options, this.systemPrompt);
+    const workDirectory = options.workDirectoryOverride ?? this.workDirectory;
 
-    logger.info(
-      { runId, binary: this.binary, workDirectory: this.workDirectory },
-      'Spawning Claude CLI',
-    );
+    logger.info({ runId, binary: this.binary, workDirectory }, 'Spawning Claude CLI');
 
-    return runClaudeCliSubprocess(this.binary, args, this.workDirectory, runId, startedAt, options);
+    return runClaudeCliSubprocess(this.binary, args, workDirectory, runId, startedAt, options);
   }
 
   /**
