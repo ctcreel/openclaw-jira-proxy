@@ -20,3 +20,10 @@ routing:
         identity:
           identity: false
           soul: false
+        tools:
+          # fire_builder_callback POSTs lifecycle callbacks to
+          # /webhooks/builder-callback. The tool reads jobId +
+          # replyContext from $BUILDER_CONTEXT_DIR (populated by the
+          # worker before this run), so the opaque envelope never
+          # enters the rendered prompt.
+          - module.python: agency_tools.clawndom.fire_builder_callback

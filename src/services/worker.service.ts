@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Worker, Queue } from 'bullmq';
@@ -350,39 +350,56 @@ export async function processJob(
     requestId: traceId,
   });
 
-  const workDirectoryOverride = await allocatePerDispatchWorkDirectory(provider);
-
+  // Both `allocatePerDispatchWorkDirectory` and `dispatchToRunner` can throw.
+  // The outer try/finally ensures `cleanupMCPBundle` always runs (closing
+  // the mode-600 creds file the MCP server already opened); the inner one
+  // ensures the per-dispatch scratch directory is removed even when the
+  // runner throws. Both paths leave no resource leaked.
   let result: RunResult;
   try {
-    result = await dispatchToRunner(runner, {
-      prompt,
-      sessionKey,
-      agentId,
-      model: selectedModel,
-      timeoutMs: settings.agentWaitTimeoutMs,
-      traceId,
-      jobId: jobIdString,
-      ...(envOverlay ? { env: envOverlay } : {}),
-      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-      ...(mcpBundle === undefined ? {} : { mcpBundle }),
-      ...(workDirectoryOverride === undefined ? {} : { workDirectoryOverride }),
-      // Quota-pause recovery: when the prior run captured a session_id and
-      // got walled by upstream, the requeued envelope carries that id so
-      // this pickup resumes the same conversation instead of replanning.
-      ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
-      // Per-rule turn ceiling. Default 150 in the runner; rules whose work
-      // cascades wider (multi-file test-tuple updates, structural refactors)
-      // opt into a higher value via the rule's `maxTurns` field.
-      ...(resolved.rule.maxTurns === undefined ? {} : { maxTurns: resolved.rule.maxTurns }),
-      sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
-      sessionUserMessage,
-    });
-  } finally {
-    if (workDirectoryOverride !== undefined) {
-      await rm(workDirectoryOverride, { recursive: true, force: true });
+    const perDispatch = await allocatePerDispatchWorkDirectory(
+      provider,
+      jobIdString,
+      parsedPayload,
+    );
+    const workDirectoryOverride = perDispatch?.workDirectory;
+    // Per-dispatch context env (e.g. `BUILDER_CONTEXT_DIR`) merges on top
+    // of the secret-derived overlay; later keys win, but the two sets are
+    // disjoint by construction (system-agent context vars are reserved).
+    const finalEnvOverlay =
+      perDispatch !== undefined ? { ...(envOverlay ?? {}), ...perDispatch.env } : envOverlay;
+    try {
+      result = await dispatchToRunner(runner, {
+        prompt,
+        sessionKey,
+        agentId,
+        model: selectedModel,
+        timeoutMs: settings.agentWaitTimeoutMs,
+        traceId,
+        jobId: jobIdString,
+        ...(finalEnvOverlay ? { env: finalEnvOverlay } : {}),
+        ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+        ...(mcpBundle === undefined ? {} : { mcpBundle }),
+        ...(workDirectoryOverride === undefined ? {} : { workDirectoryOverride }),
+        // Quota-pause recovery: when the prior run captured a session_id and
+        // got walled by upstream, the requeued envelope carries that id so
+        // this pickup resumes the same conversation instead of replanning.
+        ...(envelope.sessionId === undefined ? {} : { resumeSessionId: envelope.sessionId }),
+        // Per-rule turn ceiling. Default 150 in the runner; rules whose work
+        // cascades wider (multi-file test-tuple updates, structural refactors)
+        // opt into a higher value via the rule's `maxTurns` field.
+        ...(resolved.rule.maxTurns === undefined ? {} : { maxTurns: resolved.rule.maxTurns }),
+        sessionDispatch: buildSessionDispatch(provider, parsedPayload, resolved.rule),
+        sessionUserMessage,
+      });
+    } finally {
+      if (workDirectoryOverride !== undefined) {
+        await rm(workDirectoryOverride, { recursive: true, force: true });
+      }
     }
+  } finally {
+    await cleanupMCPBundle(mcpBundle);
   }
-  await cleanupMCPBundle(mcpBundle);
 
   if (result.status === 'quota_exceeded') {
     await handleQuotaExceeded(
@@ -554,23 +571,74 @@ function buildSessionDispatch(
 }
 
 /**
- * Allocate a per-dispatch working directory when the provider's runner config
- * opts in via `workDirectoryStrategy: 'per-dispatch'`. The directory is
- * created under the runner's configured `workDirectory` (which acts as the
- * scratch root) so operators control the disk location. Caller is responsible
- * for cleanup via `rm(..., { recursive: true, force: true })`.
+ * Allocate a per-dispatch working directory + side-channel context dir
+ * when the provider's runner config opts in via
+ * `workDirectoryStrategy: 'per-dispatch'`.
  *
- * Returns `undefined` when the provider opts out (the default — the runner
- * singleton's static `workDirectory` is used as-is for every dispatch).
+ * The working directory is created under the runner's configured
+ * `workDirectory` (which acts as the scratch root). A sibling
+ * `.builder-context/` subdir is created and populated with:
+ *   - `job-id` — the BullMQ job id (for `eventId = <jobId>:<state>`)
+ *   - `reply-context.json` — the verbatim `replyContext` field from
+ *     the dispatch payload, when present. System-agent callback tools
+ *     read this to echo the opaque envelope without it ever entering
+ *     the rendered prompt.
+ *
+ * The path to the context dir is returned in `env.BUILDER_CONTEXT_DIR`
+ * so the worker can merge it into the runner subprocess's env.
+ *
+ * Caller is responsible for cleanup via
+ * `rm(workDirectory, { recursive: true, force: true })`; the context
+ * dir is removed along with its parent.
+ *
+ * Returns `undefined` when the provider opts out (the default — the
+ * runner singleton's static `workDirectory` is used as-is for every
+ * dispatch).
  */
 async function allocatePerDispatchWorkDirectory(
   provider: ProviderConfig,
-): Promise<string | undefined> {
+  jobIdString: string,
+  parsedPayload: unknown,
+): Promise<{ workDirectory: string; env: Record<string, string> } | undefined> {
   if (provider.runner?.type !== 'claude-cli') return undefined;
   if (provider.runner.workDirectoryStrategy !== 'per-dispatch') return undefined;
   const scratchRoot = provider.runner.workDirectory;
   await mkdir(scratchRoot, { recursive: true });
-  return mkdtemp(join(scratchRoot, 'dispatch-'));
+  const workDirectory = await mkdtemp(join(scratchRoot, 'dispatch-'));
+
+  // The mkdir + writeFile calls below can each fail (out-of-disk, EACCES,
+  // EROFS). Without cleanup they leak the just-created `workDirectory`,
+  // which the caller never gets a chance to remove because the helper
+  // throws before returning. Wrap so a partial-setup failure unwinds
+  // cleanly.
+  try {
+    const contextDir = join(workDirectory, '.builder-context');
+    await mkdir(contextDir, { recursive: true });
+    await writeFile(join(contextDir, 'job-id'), jobIdString);
+    const replyContext = extractReplyContext(parsedPayload);
+    if (replyContext !== undefined) {
+      await writeFile(join(contextDir, 'reply-context.json'), JSON.stringify(replyContext));
+    }
+    return { workDirectory, env: { BUILDER_CONTEXT_DIR: contextDir } };
+  } catch (error) {
+    await rm(workDirectory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/**
+ * Pull the `replyContext` field off a dispatch payload without inspecting
+ * its shape — system-agent dispatches carry an opaque envelope that the
+ * worker forwards byte-for-byte. Returns `undefined` for payloads that
+ * don't have one (e.g. workspace-agent dispatches that happen to share
+ * per-dispatch runner config). Uses `Object.hasOwn` (not `in`) so an
+ * inherited `replyContext` getter on Object.prototype can't smuggle a
+ * value into the side-channel file.
+ */
+function extractReplyContext(parsedPayload: unknown): unknown {
+  if (typeof parsedPayload !== 'object' || parsedPayload === null) return undefined;
+  if (!Object.hasOwn(parsedPayload, 'replyContext')) return undefined;
+  return Reflect.get(parsedPayload, 'replyContext');
 }
 
 /**
