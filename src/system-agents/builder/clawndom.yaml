@@ -13,3 +13,10 @@ routing:
         condition:
           all_of: []
         messageTemplate: templates/dispatch.njk
+        # Builder's prompt.md is her identity AND her soul; she is a
+        # system agent with a single fixed role and no need for the
+        # separate IDENTITY.md / SOUL.md tier that ordinary agents use.
+        # Opt out of the auto-injection added by the loader's default.
+        identity:
+          identity: false
+          soul: false
