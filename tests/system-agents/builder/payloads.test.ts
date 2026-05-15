@@ -153,6 +153,41 @@ describe('builderCallbackPayloadSchema', () => {
     ).toBeDefined();
   });
 
+  it('accepts a testable callback with autoMergeEligible=true', () => {
+    const parsed = builderCallbackPayloadSchema.parse({
+      ...base,
+      eventId: 'job-1:testable',
+      state: 'testable',
+      prUrl: 'https://github.com/org/the-agency/pull/42',
+      autoMergeEligible: true,
+    });
+    if (parsed.state !== 'testable') throw new Error('discriminant mismatch');
+    expect(parsed.autoMergeEligible).toBe(true);
+  });
+
+  it('accepts a testable callback with autoMergeEligible=false', () => {
+    const parsed = builderCallbackPayloadSchema.parse({
+      ...base,
+      eventId: 'job-1:testable',
+      state: 'testable',
+      prUrl: 'https://github.com/org/the-agency/pull/42',
+      autoMergeEligible: false,
+    });
+    if (parsed.state !== 'testable') throw new Error('discriminant mismatch');
+    expect(parsed.autoMergeEligible).toBe(false);
+  });
+
+  it('accepts a testable callback with autoMergeEligible omitted (default review behavior)', () => {
+    const parsed = builderCallbackPayloadSchema.parse({
+      ...base,
+      eventId: 'job-1:testable',
+      state: 'testable',
+      prUrl: 'https://github.com/org/the-agency/pull/42',
+    });
+    if (parsed.state !== 'testable') throw new Error('discriminant mismatch');
+    expect(parsed.autoMergeEligible).toBeUndefined();
+  });
+
   it('accepts a failed callback with reason', () => {
     expect(
       builderCallbackPayloadSchema.parse({
