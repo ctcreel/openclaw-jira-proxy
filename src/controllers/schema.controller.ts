@@ -49,9 +49,7 @@ export function getRoutingSchemas(): {
   agentRule: ReturnType<typeof zodToJsonSchema>;
   agentConfig: ReturnType<typeof zodToJsonSchema>;
 } {
-  if (cachedSchemas === null) {
-    cachedSchemas = buildSchemas();
-  }
+  cachedSchemas ??= buildSchemas();
   return cachedSchemas;
 }
 

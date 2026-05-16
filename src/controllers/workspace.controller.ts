@@ -32,20 +32,12 @@ import { getToolCatalog } from '../services/tool-catalog.service';
  * callers and the audit wrapper still use them.
  */
 export function createWorkspaceHandler(agents: readonly ResolvedAgent[]) {
-  const byName = new Map(agents.map((a) => [a.name, a] as const));
+  const byName = buildAgentIndex(agents);
 
   return async (request: Request, response: Response): Promise<void> => {
-    const raw = request.params['agent'];
-    const name = typeof raw === 'string' ? raw : '';
-    if (name === '') {
-      response.status(400).json({ error: 'agent path parameter is required' });
-      return;
-    }
-    const agent = byName.get(name);
-    if (agent === undefined) {
-      response.status(404).json({ error: `unknown agent: ${name}` });
-      return;
-    }
+    const resolved = resolveAgent(byName, request, response);
+    if (resolved === null) return;
+    const { name, agent } = resolved;
 
     const templates = await listTemplates(agent.dir);
     const tools = getToolCatalog().listForAgent(name) ?? [];
@@ -77,24 +69,44 @@ export function createWorkspaceHandler(agents: readonly ResolvedAgent[]) {
  * "Re-audit" button, post-PR-merge refresh) rather than on every load.
  */
 export function createWorkspaceAuditHandler(agents: readonly ResolvedAgent[]) {
-  const byName = new Map(agents.map((a) => [a.name, a] as const));
+  const byName = buildAgentIndex(agents);
 
   return async (request: Request, response: Response): Promise<void> => {
-    const raw = request.params['agent'];
-    const name = typeof raw === 'string' ? raw : '';
-    if (name === '') {
-      response.status(400).json({ error: 'agent path parameter is required' });
-      return;
-    }
-    const agent = byName.get(name);
-    if (agent === undefined) {
-      response.status(404).json({ error: `unknown agent: ${name}` });
-      return;
-    }
+    const resolved = resolveAgent(byName, request, response);
+    if (resolved === null) return;
 
-    const report = await auditAgent(agent.dir);
+    const report = await auditAgent(resolved.agent.dir);
     response.json(report);
   };
+}
+
+function buildAgentIndex(agents: readonly ResolvedAgent[]): ReadonlyMap<string, ResolvedAgent> {
+  return new Map(agents.map((agent) => [agent.name, agent]));
+}
+
+function resolveAgent(
+  byName: ReadonlyMap<string, ResolvedAgent>,
+  request: Request,
+  response: Response,
+): { name: string; agent: ResolvedAgent } | null {
+  const raw = request.params['agent'];
+  const name = typeof raw === 'string' ? raw : '';
+  if (name === '') {
+    response.status(400).json({ error: 'agent path parameter is required' });
+    return null;
+  }
+  const agent = byName.get(name);
+  if (agent === undefined) {
+    response.status(404).json({ error: `unknown agent: ${name}` });
+    return null;
+  }
+  return { name, agent };
+}
+
+function isErrnoCode(error: unknown, code: string): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false;
+  const candidate: unknown = error.code;
+  return typeof candidate === 'string' && candidate === code;
 }
 
 interface TemplateEntry {
@@ -111,8 +123,7 @@ async function listTemplates(agentDir: string): Promise<readonly TemplateEntry[]
     // No templates/ directory is valid (system agents, minimal
     // workspaces). Return empty rather than 500 — the UI handles
     // the empty case as a "no templates yet" surface.
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+    if (isErrnoCode(error, 'ENOENT') || isErrnoCode(error, 'ENOTDIR')) return [];
     throw error;
   }
   const stats = await Promise.all(

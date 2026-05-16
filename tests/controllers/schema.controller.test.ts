@@ -27,7 +27,11 @@ describe('schema.controller — routing JSON Schema', () => {
 
   it('returns three named slices: condition, agentRule, agentConfig', () => {
     const schemas = getRoutingSchemas();
-    expect(Object.keys(schemas).sort()).toEqual(['agentConfig', 'agentRule', 'condition']);
+    expect(Object.keys(schemas).sort((left, right) => left.localeCompare(right))).toEqual([
+      'agentConfig',
+      'agentRule',
+      'condition',
+    ]);
   });
 
   it('condition schema includes the predicate vocabulary (equals, in, matches, exists, all_of, any_of, not)', () => {
@@ -68,6 +72,10 @@ describe('schema.controller — routing JSON Schema', () => {
     const responseMock = buildResponseMock();
     handleRoutingSchema({} as Request, responseMock as unknown as Response);
     const body = responseMock.jsonBody.current as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(['agentConfig', 'agentRule', 'condition']);
+    expect(Object.keys(body).sort((left, right) => left.localeCompare(right))).toEqual([
+      'agentConfig',
+      'agentRule',
+      'condition',
+    ]);
   });
 });
