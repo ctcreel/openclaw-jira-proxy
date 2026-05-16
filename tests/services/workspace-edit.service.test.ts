@@ -181,6 +181,62 @@ describe('processEdits — AST-level rule operations preserve comments', () => {
     expect(result.config.routing['gmail-pubsub']?.rules.length).toBe(1);
   });
 
+  it('rule.move reorders a rule within its provider without losing the comment block above it', () => {
+    const result = processEdits(FIXTURE_WITH_COMMENTS, {
+      message: 'reorder triage rules',
+      description: '',
+      edits: [
+        { op: 'rule.move', provider: 'gmail-pubsub', ruleName: 'email-chat-winston', toIndex: 0 },
+      ],
+    });
+    // email-chat-winston was at index 1; after the move it's at index 0.
+    expect(result.config.routing['gmail-pubsub']?.rules[0]?.name).toBe('email-chat-winston');
+    expect(result.config.routing['gmail-pubsub']?.rules[1]?.name).toBe('triage-heather-inbox');
+    // The block-level comment on the rule that *was* at index 0 is still in the YAML.
+    expect(result.yaml).toContain("# gmail-pubsub: Heather's inbox triage.");
+  });
+
+  it('rule.move clamps toIndex to the valid range (no out-of-bounds errors)', () => {
+    const result = processEdits(FIXTURE_WITH_COMMENTS, {
+      message: 'clamp test',
+      description: '',
+      edits: [
+        // gmail-pubsub has 2 rules; index 99 should clamp to 1 (last).
+        {
+          op: 'rule.move',
+          provider: 'gmail-pubsub',
+          ruleName: 'triage-heather-inbox',
+          toIndex: 99,
+        },
+      ],
+    });
+    expect(result.config.routing['gmail-pubsub']?.rules[0]?.name).toBe('email-chat-winston');
+    expect(result.config.routing['gmail-pubsub']?.rules[1]?.name).toBe('triage-heather-inbox');
+  });
+
+  it('rule.move is a no-op when fromIndex === toIndex (no spurious yaml churn)', () => {
+    const result = processEdits(FIXTURE_WITH_COMMENTS, {
+      message: 'no-op move',
+      description: '',
+      edits: [
+        { op: 'rule.move', provider: 'gmail-pubsub', ruleName: 'triage-heather-inbox', toIndex: 0 },
+      ],
+    });
+    expect(result.yaml.trim()).toBe(FIXTURE_WITH_COMMENTS.trim());
+  });
+
+  it('rule.move refuses an unknown rule name', () => {
+    expect(() =>
+      processEdits(FIXTURE_WITH_COMMENTS, {
+        message: 'move missing',
+        description: '',
+        edits: [
+          { op: 'rule.move', provider: 'gmail-pubsub', ruleName: 'does-not-exist', toIndex: 0 },
+        ],
+      }),
+    ).toThrow(/not found/);
+  });
+
   it('applies multiple edits in order — add + update + delete in one payload', () => {
     const result = processEdits(FIXTURE_WITH_COMMENTS, {
       message: 'batch edit',

@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import {
   createWorkspaceAuditHandler,
   createWorkspaceHandler,
+  createWorkspaceTemplateHandler,
 } from '../../src/controllers/workspace.controller';
 import type { AgentConfig, ResolvedAgent } from '../../src/services/agent-loader.service';
 import { resetToolCatalog } from '../../src/services/tool-catalog.service';
@@ -18,6 +19,7 @@ import { resetToolCatalog } from '../../src/services/tool-catalog.service';
 function mountApp(agents: readonly ResolvedAgent[]): Express {
   const app = express();
   app.get('/api/workspace/:agent', createWorkspaceHandler(agents));
+  app.get('/api/workspace/:agent/template/*', createWorkspaceTemplateHandler(agents));
   app.post('/api/workspace/:agent/audit', createWorkspaceAuditHandler(agents));
   return app;
 }
@@ -140,6 +142,67 @@ describe('workspace controller', () => {
     it('returns 404 when the agent is not loaded', async () => {
       await startWithAgent({ name: 'winston', dir: workspaceDir, config: EMPTY_CONFIG });
       const response = await fetch(`${baseUrl}/api/workspace/nope/audit`, { method: 'POST' });
+      expect(response.status).toBe(404);
+    });
+  });
+
+  describe('GET /api/workspace/:agent/template/*', () => {
+    it('returns the body of a template under templates/', async () => {
+      const templatesDir = join(workspaceDir, 'templates');
+      await mkdir(templatesDir, { recursive: true });
+      await writeFile(join(templatesDir, 'inbox-triage.md'), '# triage\n\nbody here\n');
+      await startWithAgent({ name: 'winston', dir: workspaceDir, config: EMPTY_CONFIG });
+
+      const response = await fetch(
+        `${baseUrl}/api/workspace/winston/template/templates/inbox-triage.md`,
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        path: string;
+        content: string;
+        sizeBytes: number;
+      };
+      expect(body.path).toBe('templates/inbox-triage.md');
+      expect(body.content).toBe('# triage\n\nbody here\n');
+      expect(body.sizeBytes).toBeGreaterThan(0);
+    });
+
+    it('returns 404 when the template file does not exist', async () => {
+      await startWithAgent({ name: 'winston', dir: workspaceDir, config: EMPTY_CONFIG });
+      const response = await fetch(
+        `${baseUrl}/api/workspace/winston/template/templates/missing.md`,
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it('rejects path traversal via ..', async () => {
+      const templatesDir = join(workspaceDir, 'templates');
+      await mkdir(templatesDir, { recursive: true });
+      await writeFile(join(templatesDir, 'real.md'), 'real');
+      await writeFile(join(workspaceDir, 'secret.md'), 'should not be readable');
+      await startWithAgent({ name: 'winston', dir: workspaceDir, config: EMPTY_CONFIG });
+
+      const response = await fetch(
+        `${baseUrl}/api/workspace/winston/template/templates/../secret.md`,
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it('rejects non-markdown/njk extensions', async () => {
+      const templatesDir = join(workspaceDir, 'templates');
+      await mkdir(templatesDir, { recursive: true });
+      await writeFile(join(templatesDir, 'README.txt'), 'plain');
+      await startWithAgent({ name: 'winston', dir: workspaceDir, config: EMPTY_CONFIG });
+
+      const response = await fetch(
+        `${baseUrl}/api/workspace/winston/template/templates/README.txt`,
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it('returns 404 when the agent is not loaded', async () => {
+      await startWithAgent({ name: 'winston', dir: workspaceDir, config: EMPTY_CONFIG });
+      const response = await fetch(`${baseUrl}/api/workspace/nope/template/templates/x.md`);
       expect(response.status).toBe(404);
     });
   });

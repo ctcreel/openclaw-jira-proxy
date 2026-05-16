@@ -16,6 +16,7 @@ import { listAgentTools, listToolCatalog } from '../controllers/tool-catalog.con
 import {
   createWorkspaceAuditHandler,
   createWorkspaceHandler,
+  createWorkspaceTemplateHandler,
 } from '../controllers/workspace.controller';
 import { createWorkspaceEditHandler } from '../controllers/workspace-edit.controller';
 import { RealGitOps } from '../services/workspace-git.service';
@@ -65,6 +66,7 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   });
   app.get('/api/schema/routing', editorGate, handleRoutingSchema);
   app.get('/api/workspace/:agent', editorGate, createWorkspaceHandler(agents));
+  app.get('/api/workspace/:agent/template/*', editorGate, createWorkspaceTemplateHandler(agents));
   app.post('/api/workspace/:agent/audit', editorGate, createWorkspaceAuditHandler(agents));
   app.post(
     '/api/workspace/:agent/edit',
