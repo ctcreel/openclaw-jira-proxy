@@ -117,7 +117,10 @@ describe('workspace-edit controller', () => {
   }
 
   it('rejects an empty agent param with 400', async () => {
-    await start([{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }], new FakeGitOps());
+    await start(
+      [{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }],
+      new FakeGitOps(),
+    );
     const handler = createWorkspaceEditHandler(
       [{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }],
       new FakeGitOps(),
@@ -144,7 +147,10 @@ describe('workspace-edit controller', () => {
   });
 
   it('returns 404 when the agent is not loaded', async () => {
-    await start([{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }], new FakeGitOps());
+    await start(
+      [{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }],
+      new FakeGitOps(),
+    );
     const response = await fetch(`${baseUrl}/api/workspace/nope/edit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
