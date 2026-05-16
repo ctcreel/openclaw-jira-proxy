@@ -25,6 +25,7 @@ import {
   waitTaskHandler,
 } from '../controllers/task.controller';
 import { requireAgentBearer } from '../middleware/bearer-auth.middleware';
+import { createTailscaleIdentityMiddleware } from '../middleware/tailscale-identity.middleware';
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import { WebhookTransport } from '../strategies/transport';
 import {
@@ -51,15 +52,23 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/agents/:agent/tools', listAgentTools);
   app.get('/api/agents/:agent/context-schemas', createContextSchemasHandler(agents));
 
-  // Editor UI surface: a workspace read endpoint, a routing-schema
-  // export, an on-demand audit, and the PR-style write flow. Reads are
-  // open within the tailnet; the write endpoint will sit behind the
-  // Tailscale-identity middleware once that lands.
-  app.get('/api/schema/routing', handleRoutingSchema);
-  app.get('/api/workspace/:agent', createWorkspaceHandler(agents));
-  app.post('/api/workspace/:agent/audit', createWorkspaceAuditHandler(agents));
+  // Editor UI surface: workspace read, routing-schema export, on-demand
+  // audit, and the PR-style write flow. All editor routes sit behind
+  // the Tailscale-identity middleware — Tailscale's reverse proxy
+  // injects user-identity headers on every tailnet request, the
+  // middleware rejects anonymous requests with 401 and enforces an
+  // optional operator allowlist. The server must bind tailnet-only for
+  // this gate to be load-bearing; if exposed publicly an attacker
+  // could synthesize the headers.
+  const editorGate = createTailscaleIdentityMiddleware({
+    allowlist: parseAllowlistFromEnvironment(),
+  });
+  app.get('/api/schema/routing', editorGate, handleRoutingSchema);
+  app.get('/api/workspace/:agent', editorGate, createWorkspaceHandler(agents));
+  app.post('/api/workspace/:agent/audit', editorGate, createWorkspaceAuditHandler(agents));
   app.post(
     '/api/workspace/:agent/edit',
+    editorGate,
     express.json({ limit: '1mb' }),
     createWorkspaceEditHandler(agents, new RealGitOps(), {
       baseBranch: process.env['WORKSPACE_EDIT_BASE_BRANCH'] ?? 'main',
@@ -107,4 +116,20 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
     if (!isWebhookProvider(provider)) continue;
     new WebhookTransport(provider, app, agents).mount();
   }
+}
+
+/**
+ * Read the operator allowlist from `EDITOR_TAILSCALE_ALLOWLIST` (comma-
+ * separated emails). Returning `undefined` lets any tailnet user past
+ * the gate; returning a non-empty array enforces the allowlist; an
+ * empty list (env set to `""`) is treated as "no one is allowed" and
+ * works as a kill-switch.
+ */
+function parseAllowlistFromEnvironment(): readonly string[] | undefined {
+  const raw = process.env['EDITOR_TAILSCALE_ALLOWLIST'];
+  if (raw === undefined) return undefined;
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
