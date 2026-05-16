@@ -17,6 +17,8 @@ import {
   createWorkspaceAuditHandler,
   createWorkspaceHandler,
 } from '../controllers/workspace.controller';
+import { createWorkspaceEditHandler } from '../controllers/workspace-edit.controller';
+import { RealGitOps } from '../services/workspace-git.service';
 import {
   createTaskHandler,
   getTaskStatusHandler,
@@ -50,12 +52,24 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/agents/:agent/context-schemas', createContextSchemasHandler(agents));
 
   // Editor UI surface: a workspace read endpoint, a routing-schema
-  // export, and an on-demand audit. Reads are open within the tailnet;
-  // a future write endpoint (PR-style edits to clawndom.yaml) will
-  // sit behind the Tailscale-identity middleware.
+  // export, an on-demand audit, and the PR-style write flow. Reads are
+  // open within the tailnet; the write endpoint will sit behind the
+  // Tailscale-identity middleware once that lands.
   app.get('/api/schema/routing', handleRoutingSchema);
   app.get('/api/workspace/:agent', createWorkspaceHandler(agents));
   app.post('/api/workspace/:agent/audit', createWorkspaceAuditHandler(agents));
+  app.post(
+    '/api/workspace/:agent/edit',
+    express.json({ limit: '1mb' }),
+    createWorkspaceEditHandler(agents, new RealGitOps(), {
+      baseBranch: process.env['WORKSPACE_EDIT_BASE_BRANCH'] ?? 'main',
+      authorEmail:
+        process.env['WORKSPACE_EDIT_AUTHOR_EMAIL'] ??
+        '277859894+sc0red-patch[bot]@users.noreply.github.com',
+      authorName: process.env['WORKSPACE_EDIT_AUTHOR_NAME'] ?? 'sc0red-patch[bot]',
+      branchNamePrefix: process.env['WORKSPACE_EDIT_BRANCH_PREFIX'] ?? 'workspace-edit',
+    }),
+  );
 
   app.post(
     '/api/tasks',
