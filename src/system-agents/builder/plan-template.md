@@ -1,9 +1,10 @@
-# Builder Plan
+# Builder Plan (PR body template)
+
+This markdown becomes the **body of the draft PR** Builder opens at job start. Builder updates the PR body via `gh pr edit --body` as the job progresses; the PR is the state store, not any file in the repo.
 
 **Job ID:** <!-- filled in by Builder at job start -->
 **Dispatching agent:** <!-- e.g., winston -->
 **Operator:** <!-- senderEmail -->
-**Branch:** <!-- builder/<kebab-summary> or override -->
 
 ## Goal
 

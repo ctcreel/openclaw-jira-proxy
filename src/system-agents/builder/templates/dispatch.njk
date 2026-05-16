@@ -13,10 +13,16 @@
 
 You are resuming a paused job.
 
-- **Branch:** `{{ resume.branch }}`
+- **Draft PR:** {{ resume.prUrl }}
 - **Operator's answer to your prior question:** {{ resume.answer }}
 
-Check out `{{ resume.branch }}`, read `.builder/plan.md` under the dispatching agent's path, and continue from the current step. Do not force-push or rebase away your prior commits.
+Re-hydrate from the PR:
+
+1. Derive the PR number and `owner/repo` from `{{ resume.prUrl }}`.
+2. `gh pr checkout <pr-number> --repo <owner/repo>` to land on the working branch with full history.
+3. `gh pr view <pr-number> --repo <owner/repo> --json body --jq .body` to read the live plan. Continue from the "Current step" section.
+
+Do not force-push or rebase away your prior commits.
 {% endif %}
 
 The reply-context envelope for this job is opaque and must not appear in your output. The callback handler echoes it back to the dispatching agent on every state transition you emit.

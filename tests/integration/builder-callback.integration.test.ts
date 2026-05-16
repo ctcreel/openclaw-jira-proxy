@@ -77,8 +77,6 @@ interface CallbackPayload {
     originalRequestText: string;
   };
   question?: string;
-  branch?: string;
-  planPath?: string;
   prUrl?: string;
   testUrl?: string;
 }
@@ -169,8 +167,7 @@ describe('Builder callback integration', () => {
       .send(
         buildCallback('question_pending', currentMarker, {
           question: 'Slack-only or email too?',
-          branch: 'builder/onboarding-helper',
-          planPath: '.builder/plan.md',
+          prUrl: 'https://github.com/org/the-agency/pull/42',
         }),
       );
 

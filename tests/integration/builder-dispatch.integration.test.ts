@@ -196,7 +196,7 @@ describe('Builder dispatch integration', () => {
       },
       senderEmail: 'heather@example.com',
       resume: {
-        branch: 'builder/resume-fixture',
+        prUrl: 'https://github.com/org/the-agency/pull/42',
         answer: 'Yes, Slack only.',
       },
     };
@@ -212,7 +212,7 @@ describe('Builder dispatch integration', () => {
     const deliveries = await waitForDeliveries(currentMarker, 1);
     const [delivery] = deliveries;
     expect(delivery!.prompt).toContain('Resume context');
-    expect(delivery!.prompt).toContain('builder/resume-fixture');
+    expect(delivery!.prompt).toContain('https://github.com/org/the-agency/pull/42');
     expect(delivery!.prompt).toContain('Yes, Slack only.');
   }, 15_000);
 });
