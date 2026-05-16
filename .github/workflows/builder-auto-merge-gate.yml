@@ -85,12 +85,18 @@ jobs:
           # Persist for the next step.
           echo "$STATUS" > /tmp/diff-status.txt
       - name: Classify diff against Builder's auto-merge allowlist
+        # Route the caller-supplied input through an environment variable
+        # rather than splicing it directly into the script body — splicing
+        # makes the run-block vulnerable to shell injection if a caller
+        # ever passes a value containing `$(...)`, backticks, or
+        # newlines. Sonar `githubactions:S7630`.
+        env:
+          WORKSPACE_ROOT: ${{ inputs.workspace-root }}
         run: |
           set -euo pipefail
 
-          ROOT="${{ inputs.workspace-root }}"
           # Escape any regex metacharacters in the root prefix.
-          ROOT_REGEX=$(printf %s "$ROOT" | sed 's:[][\/.^$*+?()|{}]:\\&:g')
+          ROOT_REGEX=$(printf %s "$WORKSPACE_ROOT" | sed 's:[][\/.^$*+?()|{}]:\\&:g')
 
           # Lines that match the allowlist:
           #   M\t<root>/<agent>/templates/.../<x>.md
