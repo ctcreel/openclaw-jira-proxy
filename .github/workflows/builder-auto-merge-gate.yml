@@ -1,0 +1,130 @@
+name: Builder Auto-Merge Gate
+
+# Reusable workflow that an agent repo invokes on every PR authored by
+# the sc0red-patch[bot] identity. Re-classifies the diff against
+# Builder's auto-merge allowlist and fails when the diff touches paths
+# outside the allowlist — independent verification of Builder's own
+# `auto_merge_eligible` verdict.
+#
+# Threat model: a compromised Builder runtime could fire a `testable`
+# callback with `auto_merge_eligible: true` and then `gh pr merge` a
+# structural change. Branch protection on the dispatching agent's repo
+# should require this check on every Builder-authored PR; the merge
+# command then fails when the diff exceeds the allowlist, blocking the
+# structural change from going live.
+#
+# Calling repo's `.github/workflows/builder-gate.yml`:
+#
+#   name: Builder Auto-Merge Gate
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#   jobs:
+#     gate:
+#       if: github.event.pull_request.user.login == 'sc0red-patch[bot]'
+#       uses: SC0RED/clawndom/.github/workflows/builder-auto-merge-gate.yml@main
+#       with:
+#         workspace-root: workspaces
+#
+# The allowlist rule (kept in lockstep with the "Auto-merge gate" section
+# of clawndom's `src/system-agents/builder/prompt.md`):
+#
+#   - Every changed file's path falls under one of:
+#       <workspace-root>/<agent>/templates/**/*.md
+#       <workspace-root>/<agent>/identity/IDENTITY.md
+#       <workspace-root>/<agent>/identity/SOUL.md
+#       <workspace-root>/<agent>/README.md
+#   - No files added or deleted (git diff --name-status shows only `M`).
+#
+# Anything else FAILS the check, which blocks `gh pr merge` if branch
+# protection requires this check.
+
+on:
+  workflow_call:
+    inputs:
+      workspace-root:
+        description: |
+          Path prefix where agent workspaces live in the calling repo,
+          relative to repo root (e.g. `workspaces`). The allowlist
+          patterns get this prefix.
+        required: false
+        type: string
+        default: workspaces
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute diff status
+        id: diff
+        run: |
+          set -euo pipefail
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+            echo "::error::Missing base or head SHA on the PR event payload."
+            exit 1
+          fi
+
+          # Fetch enough history to compute the merge-base diff.
+          git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA"
+
+          # --name-status emits one line per changed file: <STATUS>\t<PATH>
+          # M = modified, A = added, D = deleted, R = renamed, C = copied.
+          # We want ONLY M lines. Anything else is a structural change.
+          STATUS=$(git diff --name-status "$BASE_SHA..$HEAD_SHA")
+          echo "Diff against base ($BASE_SHA..$HEAD_SHA):"
+          echo "$STATUS"
+          echo
+
+          # Persist for the next step.
+          echo "$STATUS" > /tmp/diff-status.txt
+      - name: Classify diff against Builder's auto-merge allowlist
+        run: |
+          set -euo pipefail
+
+          ROOT="${{ inputs.workspace-root }}"
+          # Escape any regex metacharacters in the root prefix.
+          ROOT_REGEX=$(printf %s "$ROOT" | sed 's:[][\/.^$*+?()|{}]:\\&:g')
+
+          # Lines that match the allowlist:
+          #   M\t<root>/<agent>/templates/.../<x>.md
+          #   M\t<root>/<agent>/identity/IDENTITY.md
+          #   M\t<root>/<agent>/identity/SOUL.md
+          #   M\t<root>/<agent>/README.md
+          ALLOW_RE="^M[[:space:]]+${ROOT_REGEX}/[^/]+/(templates/.+\.md|identity/(IDENTITY|SOUL)\.md|README\.md)\$"
+
+          # Anything that fails to match the allowlist is a violation.
+          # An empty diff (no changes) is also a violation — Builder
+          # opened a PR that does nothing.
+          if ! [ -s /tmp/diff-status.txt ]; then
+            echo "::error::Diff is empty — Builder PRs with no changes are not auto-merge-eligible."
+            exit 1
+          fi
+
+          VIOLATIONS=$(grep -v -E "$ALLOW_RE" /tmp/diff-status.txt || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::Builder PR is NOT auto-merge-eligible — diff includes paths or operations outside the allowlist:"
+            echo "$VIOLATIONS"
+            echo
+            echo "Builder's prompt restricts auto-merge to:"
+            echo "  M ${ROOT}/<agent>/templates/**/*.md"
+            echo "  M ${ROOT}/<agent>/identity/IDENTITY.md"
+            echo "  M ${ROOT}/<agent>/identity/SOUL.md"
+            echo "  M ${ROOT}/<agent>/README.md"
+            echo "Anything else (A/D/R lines, new files, structural paths)"
+            echo "requires a human reviewer. If this PR is genuinely"
+            echo "review-required, that's the correct outcome — Builder"
+            echo "should have fired testable with auto_merge_eligible=false"
+            echo "and left the PR open for the reviewer."
+            exit 1
+          fi
+
+          echo "OK — diff is restricted to operator-tunable surfaces."
+          echo "Auto-merge by the bot is permitted."
