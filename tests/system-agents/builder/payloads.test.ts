@@ -80,9 +80,12 @@ describe('builderDispatchPayloadSchema', () => {
   it('accepts a dispatch with a resume payload', () => {
     const parsed = builderDispatchPayloadSchema.parse({
       ...validDispatch,
-      resume: { branch: 'builder/standups-helper', answer: 'Use Slack only.' },
+      resume: {
+        prUrl: 'https://github.com/org/the-agency/pull/42',
+        answer: 'Use Slack only.',
+      },
     });
-    expect(parsed.resume?.branch).toBe('builder/standups-helper');
+    expect(parsed.resume?.prUrl).toBe('https://github.com/org/the-agency/pull/42');
   });
 
   it('rejects a dispatch with unknown fields (strict)', () => {
@@ -124,8 +127,7 @@ describe('builderCallbackPayloadSchema', () => {
         eventId: 'job-1:question_pending',
         state: 'question_pending',
         question: 'Should this default to Slack DMs or channel posts?',
-        branch: 'builder/standups-helper',
-        planPath: '.builder/plan.md',
+        prUrl: 'https://github.com/org/the-agency/pull/42',
       }),
     ).toBeDefined();
   });

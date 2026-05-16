@@ -29,7 +29,7 @@ export const replyContextEnvelopeSchema = z.discriminatedUnion('channel', [
 export type ReplyContextEnvelope = z.infer<typeof replyContextEnvelopeSchema>;
 
 const resumePayloadSchema = z.object({
-  branch: z.string().min(1),
+  prUrl: z.string().url(),
   answer: z.string().min(1),
 });
 
@@ -66,8 +66,15 @@ const questionPendingCallback = z.object({
   state: z.literal('question_pending'),
   replyContext: replyContextEnvelopeSchema,
   question: z.string().min(1),
-  branch: z.string().min(1),
-  planPath: z.string().min(1),
+  /**
+   * URL of the draft PR Builder opened at job start. The PR body holds
+   * the live plan (sections including "Current step"). On resume Builder
+   * re-checks out via `gh pr checkout` and reads the plan with
+   * `gh pr view ... --json body`. Replaces the prior `branch` +
+   * `planPath` pair so plan state never lives as a file in the workspace
+   * and never bleeds onto `main`.
+   */
+  prUrl: z.string().url(),
 });
 
 const testableCallback = z.object({

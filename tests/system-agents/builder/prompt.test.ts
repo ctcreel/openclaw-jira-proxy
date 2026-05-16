@@ -60,10 +60,10 @@ describe('Builder system prompt', () => {
     expect(prompt).toMatch(/preserve|prior commits/i);
   });
 
-  it('encodes repo hygiene: run check-all before PR', async () => {
+  it('encodes repo hygiene: run check-all before marking PR ready', async () => {
     const prompt = await loadPrompt();
     expect(prompt).toMatch(/make check-all|verification command/i);
-    expect(prompt).toMatch(/before opening|before a PR|before PR/i);
+    expect(prompt).toMatch(/before .*ready|gh pr ready/i);
   });
 
   it('encodes repo hygiene: no hook bypass', async () => {
@@ -96,8 +96,11 @@ describe('Builder system prompt', () => {
     expect(prompt).toMatch(/dispatching agent's callback handler/i);
   });
 
-  it('mentions the plan-template and `.builder/plan.md` location', async () => {
+  it('directs Builder to maintain the plan in a draft PR body rather than a committed file', async () => {
     const prompt = await loadPrompt();
-    expect(prompt).toMatch(/\.builder\/plan\.md/);
+    expect(prompt).toMatch(/draft PR/i);
+    expect(prompt).toMatch(/gh pr edit.*--body/);
+    expect(prompt).toMatch(/gh pr view.*--json body/);
+    expect(prompt).not.toMatch(/\.builder\/plan\.md/);
   });
 });
