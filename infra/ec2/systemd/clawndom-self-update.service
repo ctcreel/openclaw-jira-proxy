@@ -1,0 +1,18 @@
+[Unit]
+Description=Self-update clawndom (pull + build + restart on diff)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+# Environment is templated by the bootstrap script per-host:
+#   CLAWNDOM_REPO_DIR   — absolute path to the clawndom clone on this host
+#                         (e.g. /home/ubuntu/clawndom-winston).
+#   CLAWNDOM_SERVICE    — name of the systemd unit that runs clawndom
+#                         (e.g. clawndom-winston).
+EnvironmentFile=/etc/clawndom-winston/self-update.env
+ExecStart=/usr/bin/env bash -lc '${CLAWNDOM_REPO_DIR}/scripts/self-update.sh'
+StandardOutput=append:/var/log/clawndom-winston/self-update.log
+StandardError=append:/var/log/clawndom-winston/self-update.log

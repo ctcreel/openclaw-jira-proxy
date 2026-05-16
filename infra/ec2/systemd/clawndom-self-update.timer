@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly self-update for clawndom
+
+[Timer]
+# Daily at 03:30 UTC (a quiet window for the workspaces this serves) with a
+# 30-minute random offset so multiple hosts don't hit GitHub at the same
+# wall-clock moment.
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
