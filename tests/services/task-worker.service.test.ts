@@ -9,6 +9,7 @@ import {
   buildRecallBlockIfRequested,
   readDirectPrompt,
   readUseMemory,
+  readScheduledTools,
   mapRunResult,
 } from '../../src/services/task-worker.service';
 import { ShellRunner } from '../../src/runners/shell.runner';
@@ -308,5 +309,44 @@ describe('buildRecallBlockIfRequested', () => {
 
     expect(result).toBeUndefined();
     expect(search).toHaveBeenCalledOnce();
+  });
+});
+
+describe('readScheduledTools', () => {
+  it('returns undefined when tools is absent (the default no-MCP-bundle path)', () => {
+    expect(readScheduledTools({})).toBeUndefined();
+  });
+
+  it('parses a well-formed tools array', () => {
+    const parsed = readScheduledTools({
+      tools: [
+        { 'module.python': 'agency_tools.google.gmail_send' },
+        { 'module.python': 'agency_tools.google.sheets_get' },
+      ],
+    });
+    expect(parsed).toEqual([
+      { 'module.python': 'agency_tools.google.gmail_send' },
+      { 'module.python': 'agency_tools.google.sheets_get' },
+    ]);
+  });
+
+  it('returns undefined and warns when tools is the wrong shape (defensive degradation)', () => {
+    expect(readScheduledTools({ tools: 'agency_tools.google.gmail_send' })).toBeUndefined();
+    expect(readScheduledTools({ tools: [{ wrong_key: 'x' }] })).toBeUndefined();
+    expect(readScheduledTools({ tools: 42 })).toBeUndefined();
+  });
+
+  it('returns undefined for an empty tools array (treated same as omitted)', () => {
+    // The handler treats empty-array and undefined the same — no MCP
+    // bundle gets built either way, since buildMCPBundle returns
+    // undefined for an empty list.
+    const parsed = readScheduledTools({ tools: [] });
+    expect(parsed).toEqual([]);
+  });
+
+  it('rejects a tool ref with a hyphenated python path (the schema regex catches it)', () => {
+    expect(
+      readScheduledTools({ tools: [{ 'module.python': 'has-a-hyphen.bad' }] }),
+    ).toBeUndefined();
   });
 });

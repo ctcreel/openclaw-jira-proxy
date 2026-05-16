@@ -15,6 +15,7 @@ import type { AgentRunner, RunResult } from '../runners/types';
 import { evaluateCondition } from '../strategies/routing';
 import { readString } from '../lib/extract';
 import { buildMCPBundle, cleanupMCPBundle } from './tools/load-for-run';
+import { ruleToolsSchema, type RuleTools } from './tools/config-schemas';
 import { useMemorySchema, type UseMemory } from '../types/scheduled-task';
 import {
   getAgentDefaultMemoryNamespace,
@@ -182,6 +183,21 @@ async function runDirectPrompt(
   // from the model's generation point.
   const prompt = recallBlock !== undefined ? `${recallBlock}\n${directPrompt}` : directPrompt;
 
+  // Optional per-fire MCP bundle. Scheduled prompts that need agency-tools
+  // (gmail_send, calendar_list_events, sheets_get, schedule_task itself)
+  // declare them in payload.tools at scheduling time; without this the
+  // fire-time runner has only claude-cli's default tools and every tool
+  // call in the prompt silently no-ops.
+  const tools = readScheduledTools(envelope.context);
+  const mcpBundle =
+    tools !== undefined
+      ? await buildMCPBundle(tools, agent.dir, {
+          agentId: agent.name,
+          routeId: `schedule:${envelope.taskId ?? envelope.rule ?? 'agent-prompt'}`,
+          requestId: runOpts.traceId,
+        })
+      : undefined;
+
   const promptHash = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
   logger.info(
     {
@@ -196,22 +212,30 @@ async function runDirectPrompt(
       cacheable: false,
       directPrompt: true,
       withMemory: recallBlock !== undefined,
+      withTools: mcpBundle !== undefined,
+      toolCount: tools?.length ?? 0,
     },
     'Agent run delivered',
   );
 
   const runner = getRunner('claude-cli');
-  const result = await runner.run({
-    prompt,
-    sessionKey: runOpts.sessionKey,
-    agentId: agent.name,
-    model: undefined,
-    timeoutMs: settings.agentWaitTimeoutMs,
-    traceId: runOpts.traceId,
-    jobId: runOpts.jobId,
-  });
-
-  return mapRunResult(result);
+  try {
+    const result = await runner.run({
+      prompt,
+      sessionKey: runOpts.sessionKey,
+      agentId: agent.name,
+      model: undefined,
+      timeoutMs: settings.agentWaitTimeoutMs,
+      traceId: runOpts.traceId,
+      jobId: runOpts.jobId,
+      ...(mcpBundle === undefined ? {} : { mcpBundle }),
+    });
+    return mapRunResult(result);
+  } finally {
+    if (mcpBundle !== undefined) {
+      await cleanupMCPBundle(mcpBundle);
+    }
+  }
 }
 
 /**
@@ -296,6 +320,25 @@ export function readUseMemory(context: Record<string, unknown>): UseMemory | und
   logger.warn(
     { issues: parsed.error.issues, rawType: typeof raw },
     'useMemory in scheduled-task envelope failed schema validation — falling back to verbatim',
+  );
+  return undefined;
+}
+
+/**
+ * Read the per-fire tool list from a scheduled-task envelope's
+ * `payload.tools`. Returns `undefined` (no MCP bundle, claude-cli's
+ * default toolset) when the field is absent or malformed. A corrupt
+ * tools entry warns rather than crashes — same defensive degradation
+ * as `readUseMemory` above.
+ */
+export function readScheduledTools(context: Record<string, unknown>): RuleTools | undefined {
+  const raw = context['tools'];
+  if (raw === undefined) return undefined;
+  const parsed = ruleToolsSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  logger.warn(
+    { issues: parsed.error.issues, rawType: typeof raw },
+    'tools in scheduled-task envelope failed schema validation — running without MCP bundle',
   );
   return undefined;
 }
