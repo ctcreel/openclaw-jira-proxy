@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { runnerConfigSchema } from '../runners/types';
 import type { RunnerConfig } from '../runners/types';
+import { toolRefSchema } from '../services/tools/config-schemas';
 
 /**
  * Scheduled-task primitive — the unified shape behind both static
@@ -100,6 +101,17 @@ export const agentPromptScheduleRequestSchema = z.object({
   ttl: z.number().int().nonnegative().optional(),
   maxRuns: z.number().int().positive().optional(),
   context: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Optional list of tools to load into the MCP bundle at fire time. The
+   * direct-prompt fire otherwise runs with claude-cli's built-in tools
+   * only (no gmail/calendar/sheets), so an agent that needs platform
+   * tools at fire time must declare them here at scheduling time. Matches
+   * the shape of the per-rule `tools:` list, so a templates author can
+   * copy directly from a routing rule. The tools are stored on the task
+   * payload and resolved against the agent's workspace exactly the same
+   * way the rule-based path resolves them.
+   */
+  tools: z.array(toolRefSchema).optional(),
 });
 export type AgentPromptScheduleRequest = z.infer<typeof agentPromptScheduleRequestSchema>;
 

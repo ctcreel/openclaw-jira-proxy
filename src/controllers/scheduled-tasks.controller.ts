@@ -169,6 +169,7 @@ export function createSchedulePromptHandler(agents: readonly ResolvedAgent[]) {
     const payload: Record<string, unknown> = {
       directPrompt: parsed.data.prompt,
       ...(parsed.data.useMemory !== undefined ? { useMemory: parsed.data.useMemory } : {}),
+      ...(parsed.data.tools !== undefined ? { tools: parsed.data.tools } : {}),
       ...(parsed.data.context ?? {}),
     };
 
