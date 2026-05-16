@@ -66,7 +66,7 @@ const baseProviderSchema = z.object({
    * name doesn't match a registered strategy key (e.g. a `slack-winston`
    * provider that should still use the `slack` extractor).
    */
-  contextStrategy: z.enum(['jira', 'github', 'slack']).optional(),
+  contextStrategy: z.enum(['jira', 'github', 'slack', 'gmail-pubsub']).optional(),
 });
 
 const webhookProviderSchema = baseProviderSchema.extend({

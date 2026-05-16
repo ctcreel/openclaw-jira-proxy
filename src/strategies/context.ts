@@ -100,6 +100,45 @@ const slackStrategy: ContextStrategy = {
   },
 };
 
+/**
+ * gmail-pubsub coalescing strategy.
+ *
+ * Gmail's watch fires a Pub/Sub notification every time the watched
+ * mailbox changes — including changes Winston himself causes (removing
+ * INBOX, applying labels). That creates a self-feeding cascade: each
+ * triage run modifies labels, each label change fires Pub/Sub, each
+ * Pub/Sub queues another triage. Inboxes drain eventually but every
+ * intermediate triage burns a slot in the worker queue.
+ *
+ * The Gmail API has no "INBOX adds only, ignore removes" filter, so the
+ * fix lives at the ingestion layer here. By returning `emailAddress` as
+ * the dedup id, the shared dedup keyed by `provider:context.id:status`
+ * coalesces every gmail-pubsub notification for the same mailbox within
+ * `DEDUP_TTL_SECONDS` (default 60s) into a single triage job. The first
+ * notification enqueues; the rest land at 202 with `duplicate: true`
+ * and never reach BullMQ.
+ *
+ * No messages are lost: the triage template's first call is
+ * `gmail_search(is:unread label:inbox)`, which picks up every still-
+ * unread message regardless of which historyId fired the notification.
+ * Coalescing means "process the inbox once per 60s window," not "drop
+ * mail" — by design, identical to how cron-debounced inbox fetchers
+ * work elsewhere.
+ */
+const gmailPubsubStrategy: ContextStrategy = {
+  name: 'gmail-pubsub',
+  extract(payload: unknown): WebhookContext {
+    const emailAddress = getStringField(payload, 'emailAddress', '');
+    const historyId = getStringField(payload, 'historyId', '');
+    return {
+      id: emailAddress.length > 0 ? emailAddress : '?',
+      title: historyId.length > 0 ? `history ${historyId}` : '?',
+      status: 'pubsub',
+      source: 'gmail-pubsub',
+    };
+  },
+};
+
 const fallbackStrategy: ContextStrategy = {
   name: 'unknown',
   extract(_payload: unknown): WebhookContext {
@@ -111,6 +150,7 @@ const strategies: Record<string, ContextStrategy> = {
   jira: jiraStrategy,
   github: githubStrategy,
   slack: slackStrategy,
+  'gmail-pubsub': gmailPubsubStrategy,
 };
 
 export function getContextStrategy(provider: ProviderConfig): ContextStrategy {

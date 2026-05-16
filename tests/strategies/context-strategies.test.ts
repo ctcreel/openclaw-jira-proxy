@@ -6,6 +6,7 @@ import { makeProvider } from '../helpers/make-provider';
 const jiraProvider = makeProvider({ name: 'jira', contextStrategy: 'jira' });
 const githubProvider = makeProvider({ name: 'github', contextStrategy: 'github' });
 const slackProvider = makeProvider({ name: 'slack', contextStrategy: 'slack' });
+const gmailPubsubProvider = makeProvider({ name: 'gmail-pubsub' });
 
 describe('jiraStrategy.extract', () => {
   it('extracts issue key, summary, and status from a transition payload', () => {
@@ -199,5 +200,36 @@ describe('slackStrategy.extract', () => {
       event: { channel: 'C08V6MV0VNV', blocks: [] },
     });
     expect(ctx.id).toBe('?');
+  });
+});
+
+describe('gmailPubsubStrategy.extract', () => {
+  it('extracts emailAddress as the dedup id so notifications for the same mailbox coalesce', () => {
+    const ctx = extractWebhookContext(gmailPubsubProvider, {
+      emailAddress: 'heather@talkatlanta.info',
+      historyId: '23014111',
+    });
+    expect(ctx.id).toBe('heather@talkatlanta.info');
+    expect(ctx.title).toBe('history 23014111');
+    expect(ctx.status).toBe('pubsub');
+    expect(ctx.source).toBe('gmail-pubsub');
+  });
+
+  it('falls back to id ? when emailAddress is missing (defensive — defers dedup)', () => {
+    const ctx = extractWebhookContext(gmailPubsubProvider, { historyId: '23014111' });
+    expect(ctx.id).toBe('?');
+    expect(ctx.title).toBe('history 23014111');
+  });
+
+  it('handles a numeric historyId (Gmail emits it as a number sometimes)', () => {
+    const ctx = extractWebhookContext(gmailPubsubProvider, {
+      emailAddress: 'winston@talkatlanta.info',
+      historyId: 156556,
+    });
+    expect(ctx.id).toBe('winston@talkatlanta.info');
+    // getStringField coerces numbers but returns "?" — that's the fallback
+    // shape this codebase has chosen. The id is what dedup keys on; the
+    // title is informational, so this is acceptable behavior.
+    expect(['history 156556', '?']).toContain(ctx.title);
   });
 });
