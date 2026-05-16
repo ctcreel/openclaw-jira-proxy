@@ -50,10 +50,29 @@ const ruleDeleteSchema = z.object({
   ruleName: z.string().min(1),
 });
 
+/**
+ * Reorder a rule within its provider's `rules:` array. The drag-and-drop
+ * editor needs this to let operators set the priority order in which
+ * rules are evaluated — the first matching rule wins, so position
+ * matters for overlap cases.
+ *
+ * `toIndex` is 0-indexed and clamped to `[0, rulesCount - 1]`. The
+ * removed rule lands at `toIndex` *after* it's been pulled out of its
+ * current slot, so moving rule at index 2 to index 0 simply puts it
+ * first; moving 0 to 2 puts it third.
+ */
+const ruleMoveSchema = z.object({
+  op: z.literal('rule.move'),
+  provider: z.string().min(1),
+  ruleName: z.string().min(1),
+  toIndex: z.number().int().min(0),
+});
+
 export const editOperationSchema = z.discriminatedUnion('op', [
   ruleAddSchema,
   ruleUpdateSchema,
   ruleDeleteSchema,
+  ruleMoveSchema,
 ]);
 
 export const editPayloadSchema = z.object({
@@ -147,12 +166,30 @@ function processOne(doc: Document, op: EditOperation): void {
     }
     return;
   }
-  // rule.delete
-  const index = findRuleIndex(rulesSeq, op.ruleName);
-  if (index === -1) {
-    throw new Error(`rule.delete: rule "${op.ruleName}" not found under provider "${op.provider}"`);
+  if (op.op === 'rule.delete') {
+    const index = findRuleIndex(rulesSeq, op.ruleName);
+    if (index === -1) {
+      throw new Error(
+        `rule.delete: rule "${op.ruleName}" not found under provider "${op.provider}"`,
+      );
+    }
+    rulesSeq.delete(index);
+    return;
   }
-  rulesSeq.delete(index);
+  // rule.move
+  const fromIndex = findRuleIndex(rulesSeq, op.ruleName);
+  if (fromIndex === -1) {
+    throw new Error(`rule.move: rule "${op.ruleName}" not found under provider "${op.provider}"`);
+  }
+  const lastIndex = rulesSeq.items.length - 1;
+  const clampedTo = Math.min(Math.max(op.toIndex, 0), lastIndex);
+  if (clampedTo === fromIndex) return;
+  const removed = rulesSeq.items[fromIndex];
+  if (removed === undefined) {
+    throw new Error(`rule.move: internal — rules item at index ${fromIndex} is undefined`);
+  }
+  rulesSeq.items.splice(fromIndex, 1);
+  rulesSeq.items.splice(clampedTo, 0, removed);
 }
 
 function locateRulesSeq(doc: Document, provider: string): YAMLSeq {

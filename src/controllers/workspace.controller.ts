@@ -1,5 +1,5 @@
-import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
 
 import type { Request, Response } from 'express';
 
@@ -112,6 +112,63 @@ function isErrnoCode(error: unknown, code: string): boolean {
 interface TemplateEntry {
   readonly path: string;
   readonly sizeBytes: number;
+}
+
+/**
+ * GET /api/workspace/:agent/template/* — read a single template body.
+ *
+ * The trailing path is the relative path to the template under the
+ * agent's workspace directory (e.g. `templates/inbox-triage.md`). Used
+ * by the drag-and-drop editor UI to preview a template body when the
+ * operator hovers / clicks one, without forcing the editor to load
+ * every template up front via the listing endpoint.
+ *
+ * Returns `{ path, content, sizeBytes }` as JSON. Path-traversal is
+ * blocked by resolving the candidate path and asserting it remains
+ * under the agent's templates directory — an operator can't `../../`
+ * their way out via this surface.
+ */
+export function createWorkspaceTemplateHandler(agents: readonly ResolvedAgent[]) {
+  const byName = buildAgentIndex(agents);
+
+  return async (request: Request, response: Response): Promise<void> => {
+    const resolved = resolveAgent(byName, request, response);
+    if (resolved === null) return;
+    const { agent } = resolved;
+
+    const rawPath = request.params['0'];
+    if (typeof rawPath !== 'string' || rawPath === '') {
+      response.status(400).json({ error: 'template path is required' });
+      return;
+    }
+
+    const candidate = resolve(agent.dir, rawPath);
+    const templatesRoot = resolve(agent.dir, 'templates');
+    const relativePath = relative(templatesRoot, candidate);
+    if (relativePath === '' || relativePath.startsWith('..') || relativePath.includes('\0')) {
+      response.status(400).json({ error: 'template path must resolve under templates/' });
+      return;
+    }
+    if (!candidate.endsWith('.md') && !candidate.endsWith('.njk')) {
+      response.status(400).json({ error: 'only .md and .njk templates are readable' });
+      return;
+    }
+
+    try {
+      const [content, info] = await Promise.all([readFile(candidate, 'utf8'), stat(candidate)]);
+      response.json({
+        path: `templates/${relativePath}`,
+        content,
+        sizeBytes: info.size,
+      });
+    } catch (error) {
+      if (isErrnoCode(error, 'ENOENT') || isErrnoCode(error, 'ENOTDIR')) {
+        response.status(404).json({ error: `template not found: templates/${relativePath}` });
+        return;
+      }
+      throw error;
+    }
+  };
 }
 
 async function listTemplates(agentDir: string): Promise<readonly TemplateEntry[]> {

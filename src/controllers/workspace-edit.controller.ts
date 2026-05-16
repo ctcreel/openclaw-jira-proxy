@@ -146,6 +146,9 @@ function buildPrBody(payload: EditPayload): string {
         const ruleName = typeof op.rule['name'] === 'string' ? op.rule['name'] : '<unnamed>';
         return `- \`rule.add\` ${op.provider}/${ruleName}`;
       }
+      if (op.op === 'rule.move') {
+        return `- \`rule.move\` ${op.provider}/${op.ruleName} → index ${op.toIndex}`;
+      }
       return `- \`${op.op}\` ${op.provider}/${op.ruleName}`;
     })
     .join('\n');
