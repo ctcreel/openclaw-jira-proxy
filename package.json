@@ -40,7 +40,8 @@
     "pino": "^9.6.0",
     "pino-http": "^10.3.0",
     "ws": "^8.18.0",
-    "zod": "^3.24.0"
+    "zod": "^3.24.0",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
