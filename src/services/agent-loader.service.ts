@@ -56,7 +56,7 @@ const identityInjectionSchema = z
 // loader defaults it to `kebab-case(name)`. See `resolveRuleId`.
 const ruleIdPattern = /^[a-z][a-z0-9-]*$/;
 
-const agentRuleSchema = z.object({
+export const agentRuleSchema = z.object({
   /** Stable identifier that survives renames. Defaults to a kebab-slug of
    * `name:` when omitted. Editor write-back / sidecar layout / audit
    * cross-references all use this. */

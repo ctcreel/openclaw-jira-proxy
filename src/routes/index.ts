@@ -11,7 +11,12 @@ import { listActiveJobs } from '../controllers/active-jobs.controller';
 import { createContextSchemasHandler } from '../controllers/context-schemas.controller';
 import { listRecentSkippedWebhooks } from '../controllers/skipped-webhooks.controller';
 import { handleQueueSnapshot } from '../controllers/queue-snapshot.controller';
+import { handleRoutingSchema } from '../controllers/schema.controller';
 import { listAgentTools, listToolCatalog } from '../controllers/tool-catalog.controller';
+import {
+  createWorkspaceAuditHandler,
+  createWorkspaceHandler,
+} from '../controllers/workspace.controller';
 import {
   createTaskHandler,
   getTaskStatusHandler,
@@ -43,6 +48,14 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/tools/catalog', listToolCatalog);
   app.get('/api/agents/:agent/tools', listAgentTools);
   app.get('/api/agents/:agent/context-schemas', createContextSchemasHandler(agents));
+
+  // Editor UI surface: a workspace read endpoint, a routing-schema
+  // export, and an on-demand audit. Reads are open within the tailnet;
+  // a future write endpoint (PR-style edits to clawndom.yaml) will
+  // sit behind the Tailscale-identity middleware.
+  app.get('/api/schema/routing', handleRoutingSchema);
+  app.get('/api/workspace/:agent', createWorkspaceHandler(agents));
+  app.post('/api/workspace/:agent/audit', createWorkspaceAuditHandler(agents));
 
   app.post(
     '/api/tasks',
