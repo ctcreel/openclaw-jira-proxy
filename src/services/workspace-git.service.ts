@@ -139,9 +139,9 @@ async function runCommand(
 }
 
 function parsePrNumberFromUrl(prUrl: string): number {
-  const match = /\/pull\/(\d+)/.exec(prUrl);
-  if (match === null || match[1] === undefined) {
+  const captured = /\/pull\/(\d+)/.exec(prUrl)?.[1];
+  if (captured === undefined) {
     throw new Error(`could not parse PR number from gh output: ${prUrl}`);
   }
-  return Number.parseInt(match[1], 10);
+  return Number.parseInt(captured, 10);
 }

@@ -39,6 +39,12 @@ modelRules:
 
 const EMPTY_CONFIG: AgentConfig = { routing: {}, modelRules: {} };
 
+// Placeholder for `dir` on agents in tests where the controller never
+// reaches a filesystem read (400/404 short-circuit). Derived from
+// `tmpdir()` so SonarCloud's S5443 ("publicly writable directory")
+// doesn't flag a hardcoded `/tmp/...` literal.
+const PLACEHOLDER_AGENT_DIR = join(tmpdir(), 'workspace-edit-placeholder-never-read');
+
 const CONFIG: WorkspaceEditConfig = {
   baseBranch: 'main',
   authorEmail: 'bot@example.com',
@@ -111,9 +117,9 @@ describe('workspace-edit controller', () => {
   }
 
   it('rejects an empty agent param with 400', async () => {
-    await start([{ name: 'winston', dir: '/tmp/x', config: EMPTY_CONFIG }], new FakeGitOps());
+    await start([{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }], new FakeGitOps());
     const handler = createWorkspaceEditHandler(
-      [{ name: 'winston', dir: '/tmp/x', config: EMPTY_CONFIG }],
+      [{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }],
       new FakeGitOps(),
       CONFIG,
     );
@@ -138,7 +144,7 @@ describe('workspace-edit controller', () => {
   });
 
   it('returns 404 when the agent is not loaded', async () => {
-    await start([{ name: 'winston', dir: '/tmp/x', config: EMPTY_CONFIG }], new FakeGitOps());
+    await start([{ name: 'winston', dir: PLACEHOLDER_AGENT_DIR, config: EMPTY_CONFIG }], new FakeGitOps());
     const response = await fetch(`${baseUrl}/api/workspace/nope/edit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
