@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import type * as osTypes from 'node:os';
+import { join } from 'node:path';
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { GENERATED_MARKER, renderOperationsDoc } from '../../src/services/operations-doc.service';
 import type { ResolvedAgent } from '../../src/services/agent-loader.service';
@@ -22,6 +27,14 @@ vi.mock('../../src/config', async () => {
       port: 8794,
       providers: [],
     }),
+  };
+});
+
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof osTypes>();
+  return {
+    ...actual,
+    hostname: (): string => 'winston-agent',
   };
 });
 
@@ -156,6 +169,18 @@ describe('renderOperationsDoc', () => {
     expect(rendered).toContain('/home/ubuntu/.clawndom-winston/agents/');
   });
 
+  it('renders the tailnet hostname in identity + SSH recipe', () => {
+    expect(rendered).toContain('**Host:** `winston-agent`');
+    expect(rendered).toContain('SSH as `ubuntu@winston-agent`');
+    expect(rendered).toContain('ssh ubuntu@winston-agent');
+  });
+
+  it('cross-references the agency-tools catalog so cold-Claude can drill into a tool', () => {
+    expect(rendered).toContain(
+      '[`AGENCY_TOOLS_CATALOG.md`](https://github.com/SC0RED/agency-tools/blob/main/AGENCY_TOOLS_CATALOG.md)',
+    );
+  });
+
   it('ends in a single trailing newline so byte-identical re-renders are idempotent', () => {
     expect(rendered.endsWith('\n')).toBe(true);
     expect(rendered.endsWith('\n\n')).toBe(false);
@@ -190,5 +215,89 @@ describe('renderOperationsDoc', () => {
     );
     expect(anon).toContain('**<unnamed>**');
     expect(anon).toContain('| `<unnamed>` |');
+  });
+});
+
+describe('renderOperationsDoc SOUL.md integration', () => {
+  let workspaceDir: string;
+
+  beforeEach(() => {
+    workspaceDir = mkdtempSync(join(tmpdir(), 'opsdoc-soul-'));
+  });
+
+  afterEach(() => {
+    rmSync(workspaceDir, { recursive: true, force: true });
+  });
+
+  function agentWithDir(): ResolvedAgent {
+    return {
+      name: 'winston',
+      dir: workspaceDir,
+      config: {
+        routing: {},
+        modelRules: {},
+      } as unknown as ResolvedAgent['config'],
+    };
+  }
+
+  it('includes the first SOUL.md paragraph above the deployment-facts block', () => {
+    writeFileSync(
+      join(workspaceDir, 'SOUL.md'),
+      '# Winston\n\nI am the office manager for a speech-therapy practice. ' +
+        "I read Heather's inbox, draft replies, and keep the calendar tidy.\n\n" +
+        '## Voice\n\nDirect, warm, brief.\n',
+    );
+    const rendered = renderOperationsDoc(agentWithDir());
+    expect(rendered).toContain(
+      'I am the office manager for a speech-therapy practice. ' +
+        "I read Heather's inbox, draft replies, and keep the calendar tidy.",
+    );
+    // Excerpt must sit between the marker and the deployment-facts block,
+    // so cold-Claude reads "what is this agent" before "where do its logs go".
+    const markerIdx = rendered.indexOf(GENERATED_MARKER);
+    const excerptIdx = rendered.indexOf('I am the office manager');
+    const hostIdx = rendered.indexOf('**Host:**');
+    expect(markerIdx).toBeLessThan(excerptIdx);
+    expect(excerptIdx).toBeLessThan(hostIdx);
+  });
+
+  it('skips the SOUL section when the file is absent', () => {
+    const rendered = renderOperationsDoc(agentWithDir());
+    expect(rendered).toContain('**Host:**');
+    // No spurious prose between the marker and the host line.
+    const markerIdx = rendered.indexOf(GENERATED_MARKER);
+    const hostIdx = rendered.indexOf('**Host:**');
+    const between = rendered.slice(markerIdx + GENERATED_MARKER.length, hostIdx).trim();
+    expect(between).toBe('');
+  });
+
+  it('skips when SOUL.md contains only headings', () => {
+    writeFileSync(join(workspaceDir, 'SOUL.md'), '# Heading-only file\n## Subheading\n');
+    const rendered = renderOperationsDoc(agentWithDir());
+    const markerIdx = rendered.indexOf(GENERATED_MARKER);
+    const hostIdx = rendered.indexOf('**Host:**');
+    const between = rendered.slice(markerIdx + GENERATED_MARKER.length, hostIdx).trim();
+    expect(between).toBe('');
+  });
+
+  it('skips a fenced code block at the top of SOUL.md and takes the next paragraph', () => {
+    writeFileSync(
+      join(workspaceDir, 'SOUL.md'),
+      '```yaml\nname: winston\n```\n\nActual purpose prose here.\n',
+    );
+    const rendered = renderOperationsDoc(agentWithDir());
+    expect(rendered).toContain('Actual purpose prose here.');
+    expect(rendered).not.toContain('```yaml');
+  });
+
+  it('truncates very long opening paragraphs at ~400 chars', () => {
+    const longSentence = 'a'.repeat(600);
+    writeFileSync(join(workspaceDir, 'SOUL.md'), `${longSentence}\n`);
+    const rendered = renderOperationsDoc(agentWithDir());
+    expect(rendered).toContain('...');
+    // Total length of the rendered SOUL excerpt should be at most 400.
+    const aRun = rendered.match(/a{20,}/);
+    expect(aRun).not.toBeNull();
+    expect(aRun !== null && aRun[0].length).toBeLessThanOrEqual(400);
   });
 });
