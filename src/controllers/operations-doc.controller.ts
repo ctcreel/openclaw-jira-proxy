@@ -1,4 +1,4 @@
-import type { Request, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 
 import type { ResolvedAgent } from '../services/agent-loader.service';
 import { renderOperationsDoc } from '../services/operations-doc.service';
@@ -16,7 +16,7 @@ import { renderOperationsDoc } from '../services/operations-doc.service';
  * Works in the GH Action. Path is reachable through the
  * Tailscale-identity middleware on the editor mount.
  */
-export function createOperationsDocHandler(agents: readonly ResolvedAgent[]) {
+export function createOperationsDocHandler(agents: readonly ResolvedAgent[]): RequestHandler {
   const byName = new Map(agents.map((a) => [a.name, a] as const));
   return (request: Request, response: Response): void => {
     const raw = request.params['agent'];

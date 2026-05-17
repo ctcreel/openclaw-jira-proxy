@@ -50,6 +50,10 @@ jobs:
       - name: Fetch operations doc for every workspace
         run: |
           set -euo pipefail
+          # nullglob: when no workspaces/*/ matches, the loop runs zero times
+          # instead of iterating the literal pattern (which would produce an
+          # agent name of "*" and a guaranteed curl failure).
+          shopt -s nullglob
           for workspace in workspaces/*/; do
             agent="$(basename "$workspace")"
             target="${workspace}OPERATIONS.md"
@@ -68,12 +72,17 @@ jobs:
       - name: Commit if changed
         run: |
           set -euo pipefail
-          if git diff --quiet workspaces; then
+          # Stage everything under workspaces/ first — a first-run that
+          # creates an OPERATIONS.md from scratch leaves it untracked, and
+          # `git diff --quiet workspaces` ignores untracked files, so the
+          # naive check would skip the commit. Stage first, then check
+          # the staged diff.
+          git add -A workspaces
+          if git diff --cached --quiet -- workspaces; then
             echo "No OPERATIONS.md drift — skipping commit."
             exit 0
           fi
           git config user.name "sc0red-patch[bot]"
           git config user.email "277859894+sc0red-patch[bot]@users.noreply.github.com"
-          git add workspaces/*/OPERATIONS.md
           git commit -m "docs(operations): regenerate OPERATIONS.md from live Clawndom state"
           git push
