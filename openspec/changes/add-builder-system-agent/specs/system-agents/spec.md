@@ -138,6 +138,59 @@ Every agent that is not a system agent (i.e., every ordinary agent loaded via `A
 - **THEN** the checkout used MUST be freshly prepared
 - **AND** any modifications made to files during a previous invocation MUST NOT be present
 
+### Requirement: Defense in Depth — CI Re-Verification of Auto-Merge Verdict
+
+**Shipped (PR #136, commit `0be1892`).** When a system agent self-classifies whether its own diff is safe to auto-merge (today: Builder via the `autoMergeEligible` field on the `testable` callback — see `builder-agent` spec, "Builder Self-Classifies Auto-Merge Eligibility"), that classification MUST NOT be the sole gate on the eventual `git merge`. A compromised system-agent runtime could lie on the callback and then `gh pr merge` a structural change.
+
+The shipped defense is a **reusable GitHub Actions workflow** at `.github/workflows/builder-auto-merge-gate.yml` in this clawndom repo. Each workspace repo opted into Builder MUST:
+
+1. Add a caller workflow (e.g., `.github/workflows/builder-gate.yml` per the example in the reusable workflow's docstring) that delegates to `SC0RED/clawndom/.github/workflows/builder-auto-merge-gate.yml@main` on every PR opened by the system agent's bot identity (e.g., `sc0red-patch[bot]`).
+2. Register the resulting check as a **required status check** on the repo's `main` branch protection.
+
+The workflow:
+
+- Computes `git diff --name-status` between PR base and head.
+- Fails the check if any line is anything other than `M` (no `A` / `D` / `R` / `C`) OR if any modified path falls outside the system agent's published auto-merge allowlist.
+- Routes the caller-supplied `workspace-root` input through an environment variable to avoid shell-injection (`githubactions:S7630`).
+
+Because the check is a required status check, `gh pr merge` issued by the system agent's bot identity MUST fail when the gate disagrees with the agent's verdict. Branch protection blocks the structural change from reaching `main` regardless of what the system-agent runtime tried to do — including the case where the runtime is fully compromised by prompt injection.
+
+The allowlist embedded in the workflow MUST be kept in lockstep with the allowlist in the system agent's prompt (today: `src/system-agents/builder/prompt.md`, "Auto-merge gate"). Both files MUST cite each other as the canonical pair so changes to one trigger review of the other.
+
+When the gate's classification diverges from the system agent's verdict, the divergence is itself a signal worth surfacing — the system agent SHOULD emit a `failed` callback whose reason names the gate failure, so the operator and the reviewer learn about the disagreement immediately.
+
+#### Scenario: Workspace repo opts in via caller workflow
+
+- **GIVEN** a workspace repo `R` has been onboarded to Builder
+- **WHEN** Builder opens a PR in `R` from her bot identity
+- **THEN** the caller workflow MUST delegate to clawndom's reusable workflow with the configured `workspace-root`
+- **AND** the resulting status check MUST be required on `R`'s `main` branch protection
+
+#### Scenario: Compromised runtime cannot launder a structural change
+
+- **GIVEN** Builder's runtime fires `testable` with `autoMergeEligible: true` on a PR whose diff includes a new file
+- **WHEN** Builder runs `gh pr merge <pr-number> --squash --delete-branch`
+- **THEN** the merge MUST fail because the required CI gate fails on the `A` line in the diff
+- **AND** the structural change MUST NOT reach `main`
+
+#### Scenario: Cosmetic diff passes both gates
+
+- **GIVEN** Builder's diff is a single `M` line on `<workspace-root>/<agent>/templates/foo.md`
+- **WHEN** the gate workflow runs
+- **THEN** the check MUST pass
+- **AND** `gh pr merge` MUST succeed
+
+#### Scenario: Empty diff fails the gate
+
+- **GIVEN** Builder opens a PR whose diff is empty
+- **WHEN** the gate workflow runs
+- **THEN** the check MUST fail (a PR that does nothing is never auto-merge-eligible)
+
+#### Scenario: Allowlist drift between workflow and prompt
+
+- **WHEN** the allowlist in `src/system-agents/builder/prompt.md` is changed
+- **THEN** the corresponding patterns in `.github/workflows/builder-auto-merge-gate.yml` MUST be updated in the same change (and vice versa); the two files MUST stay in lockstep
+
 ### Requirement: No-Blocking-Calls Dispatch Contract
 
 Every HTTP hop in any system agent's dispatch and callback lifecycle MUST return within seconds with a 202 status. No hop MUST hold an open connection waiting for the system agent's job to complete. Long-running execution MUST occur in BullMQ; reply to the operator MUST occur via a short outbound API call triggered by a callback, not by long-polling.

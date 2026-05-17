@@ -61,7 +61,7 @@ Builder's agent definition MUST live at `clawndom/src/system-agents/builder/` as
 clawndom MUST expose `POST /webhooks/system/builder` that:
 
 - Validates the internal-bearer token using the strategy defined in the `system-agents` capability
-- Validates the dispatch payload against a Zod schema requiring `{agentName: string, request: string, replyContext: object, senderEmail: string}` and optionally `{resume: {branch: string, answer: string}}`
+- Validates the dispatch payload against a Zod schema requiring `{agentName: string, request: string, replyContext: object, senderEmail: string}` and optionally `{resume: {prUrl: string, answer: string}}` (shipped form per PR #134; the original spec had `{branch, answer}` — see "Git-Native Pause and Resume" below)
 - Resolves the dispatching agent from `AGENTS_CONFIG` by `agentName` (returns 404 if unknown)
 - Re-verifies `senderEmail` against the dispatching agent's operator allowlist (returns 403 if not allowed)
 - Enqueues a Builder job to her dedicated BullMQ queue with the dispatching agent's context preserved
@@ -112,8 +112,8 @@ Builder MUST run on her own dedicated BullMQ queue with her own runner registrat
 Builder's job execution MUST emit callbacks for the following states and only these states:
 
 - `working` — emitted immediately on job pickup
-- `question_pending` — emitted when Builder needs operator input; the job ends and the callback carries `{question: string, branch: string, planPath: string}`
-- `testable` — emitted when the resulting change is live for the dispatching agent per that agent's declared `testableMechanism`; the callback carries `{prUrl: string, testUrl?: string}`
+- `question_pending` — emitted when Builder needs operator input; the job ends and the callback carries `{question: string, prUrl: string}` (shipped form per PR #134, commit `f380408`; see "Git-Native Pause and Resume" below for the migration from the original `{branch, planPath}` shape)
+- `testable` — emitted when the resulting change is live for the dispatching agent per that agent's declared `testableMechanism`; the callback carries `{prUrl: string, testUrl?: string, autoMergeEligible?: boolean}` (the `autoMergeEligible` field shipped in PRs #128 / #129; see "Builder Self-Classifies Auto-Merge Eligibility" and "Defense in Depth — CI Re-Verification of Auto-Merge Verdict" below)
 - `failed` — emitted when Builder cannot proceed; the callback carries `{reason: string}`
 
 Each transition MUST be a POST to `/webhooks/builder-callback` with `eventId` of the form `<jobId>:<state_name>`.
@@ -126,8 +126,8 @@ Each transition MUST be a POST to `/webhooks/builder-callback` with `eventId` of
 #### Scenario: Question-pending callback
 
 - **WHEN** Builder determines she needs operator clarification
-- **THEN** Builder MUST commit the current plan markdown to her working branch
-- **AND** the job MUST end with a callback carrying `state: "question_pending"` and `{question, branch, planPath}`
+- **THEN** Builder MUST update the current plan in the draft PR's body (placing the open question(s) under the "Open questions" section)
+- **AND** the job MUST end with a callback carrying `state: "question_pending"` and `{question, prUrl}`
 
 #### Scenario: Testable via deploy webhook
 
@@ -230,27 +230,44 @@ The envelope's schema MUST contain at minimum:
 
 ### Requirement: Git-Native Pause and Resume
 
-When Builder emits `question_pending`, she MUST persist her in-progress plan as a markdown file committed to her working branch (default path: `.builder/plan.md` under the dispatching agent's `path`). The plan MUST be sufficient for a future Builder invocation to continue from where she paused without external state.
+**Shipped form (PR #134, commit `f380408`).** When Builder picks up a fresh (non-resume) job, she MUST create her working branch, make an empty bootstrap commit, push, and immediately open a **draft pull request** against the dispatching agent's configured base ref. The PR body MUST contain her plan (per the plan-template) and MUST be the canonical source of truth for resume. No file at `.builder/plan.md` is committed to the working branch.
 
-A resume dispatch MUST carry only `{agentName, request, replyContext, senderEmail, resume: {branch: string, answer: string}}`. Builder MUST re-hydrate by checking out the named branch and reading the plan file.
+As Builder makes progress, she MUST update the PR body via `gh pr edit <pr-number> --body "<updated-plan>"`. When she emits `question_pending`, she MUST first update the PR body with the latest plan (placing the open question(s) under the "Open questions" section).
 
-#### Scenario: Pause commits plan
+A resume dispatch MUST carry `{agentName, request, replyContext, senderEmail, resume: {prUrl: string, answer: string}}`. Builder MUST re-hydrate by:
+
+1. `gh pr checkout <pr-number>` — lands on the working branch with full commit history.
+2. `gh pr view <pr-number> --json body --jq .body` — reads the live plan.
+
+No file in the working tree, no Redis hash, and no other external store of resume-token state is required.
+
+The original spec called for a committed `.builder/plan.md` and a `{question, branch, planPath}` callback shape; that form was removed in PR #134 because (a) PR numbers are globally unique so concurrent runs cannot collide on workspace paths, (b) the plan never bleeds onto `main`, and (c) reviewers can see the live plan in the PR UI without checking out a branch. Rationale recorded in `design.md` D9. Implementation: `src/system-agents/builder/prompt.md` ("Plan as you go", "Pause and resume"); `src/system-agents/builder/payloads.ts` (`questionPendingCallback.prUrl`, `resumePayloadSchema = {prUrl, answer}`).
+
+#### Scenario: Fresh job opens draft PR with plan in body
+
+- **WHEN** Builder begins a fresh (non-resume) job
+- **THEN** Builder MUST create her working branch, make an empty bootstrap commit, push, and open a **draft** PR via `gh pr create --draft --body "<plan>"`
+- **AND** the draft PR's body MUST contain the rendered plan template
+- **AND** no committed `.builder/plan.md` file MUST exist on the working branch
+
+#### Scenario: Pause updates PR body
 
 - **WHEN** Builder emits `question_pending`
-- **THEN** the named branch MUST contain a committed `.builder/plan.md` at the path reported in `planPath`
+- **THEN** the draft PR's body (fetched via `gh pr view <pr-number> --json body`) MUST contain the latest plan including the pending question under the "Open questions" section
+- **AND** the callback MUST carry `{question, prUrl}` (not `{question, branch, planPath}`)
 
-#### Scenario: Resume re-hydrates from branch
+#### Scenario: Resume re-hydrates from PR body
 
-- **GIVEN** Builder previously paused on branch `B` for dispatching agent `A` with plan at `.builder/plan.md`
-- **WHEN** a resume dispatch arrives carrying `{agentName: A, resume: {branch: B, answer: ANS}}`
-- **THEN** Builder MUST check out `B` in `A`'s repo
-- **AND** Builder MUST read the plan from `.builder/plan.md`
+- **GIVEN** Builder previously paused for dispatching agent `A` with draft PR at URL `U` (PR number `N`)
+- **WHEN** a resume dispatch arrives carrying `{agentName: A, resume: {prUrl: U, answer: ANS}}`
+- **THEN** Builder MUST run `gh pr checkout N` to land on the working branch with full history
+- **AND** Builder MUST run `gh pr view N --json body --jq .body` to read the live plan
 - **AND** Builder MUST continue execution using `ANS` as the answer to the pending question
 
 #### Scenario: No external resume store
 
 - **WHEN** Builder is resumed
-- **THEN** no Redis hash, database row, or other external store of resume-token state MUST be required
+- **THEN** no Redis hash, database row, file in the working tree, or other external resume-token store MUST be required (the draft PR is the sole state store)
 
 ### Requirement: Repo Hygiene
 
@@ -361,3 +378,92 @@ Builder MUST NOT have Slack, Gmail, or any other outbound user-facing tool. All 
 
 - **WHEN** the dispatching agent processes a callback from Builder
 - **THEN** that agent (using the echoed `replyContext`) MUST be the one that actually sends the reply to the operator's original channel
+
+### Requirement: Builder Self-Classifies Auto-Merge Eligibility
+
+**Shipped (PRs #128, #129).** Before firing the `testable` callback, Builder MUST classify her own diff against a path allowlist and report the result on the callback as `autoMergeEligible: boolean`. The allowlist (canonical in `src/system-agents/builder/prompt.md`, "Auto-merge gate") MUST be:
+
+- Modified-only files (`git diff --name-status <baseRef>...HEAD` shows only `M` lines — no `A` / `D` / `R` / `C`)
+- AND every modified path falls under one of, inside the dispatching agent's `path`:
+  - `templates/**/*.md`
+  - `identity/IDENTITY.md`
+  - `identity/SOUL.md`
+  - `README.md`
+
+When the diff satisfies the allowlist AND the dispatching agent's `make check-all` (or configured equivalent) passes, Builder MUST report `autoMergeEligible: true`, run `gh pr ready <pr-number>`, then `gh pr merge <pr-number> --squash --delete-branch`, and only then fire the `testable` callback. Any other diff MUST report `autoMergeEligible: false`; Builder MUST run `gh pr ready <pr-number>` to lift the draft and leave the PR open for a human reviewer (cleanup rule does NOT delete the branch in this case).
+
+If `gh pr merge` fails for any reason (CI red, branch protection blocks, merge conflict — including a failure by the CI re-verification gate described in the `system-agents` spec), Builder MUST emit `failed` with the underlying reason. She MUST NOT paper over the failure.
+
+The dispatching agent's relay treats the verdict as a routing signal (eligible → plain-language "Done" reply; ineligible → review-style reply to the configured reviewer). The verdict by itself is not a trust boundary — the trust boundary is the CI re-verification gate enforced via branch protection (see `system-agents` spec, "Defense in Depth — CI Re-Verification of Auto-Merge Verdict").
+
+#### Scenario: Cosmetic-only diff auto-merges
+
+- **GIVEN** Builder's diff modifies only `<agent-path>/templates/foo.md`
+- **AND** the dispatching agent's `make check-all` passes
+- **WHEN** Builder is ready to emit `testable`
+- **THEN** Builder MUST report `autoMergeEligible: true`
+- **AND** Builder MUST run `gh pr ready <pr-number>` and then `gh pr merge <pr-number> --squash --delete-branch` BEFORE firing the callback
+
+#### Scenario: New file requires review
+
+- **GIVEN** Builder's diff adds a new file (any `A` line in `git diff --name-status`)
+- **WHEN** Builder is ready to emit `testable`
+- **THEN** Builder MUST report `autoMergeEligible: false`
+- **AND** Builder MUST run `gh pr ready <pr-number>` but MUST NOT merge
+- **AND** the working branch MUST NOT be deleted (the reviewer needs it)
+
+### Requirement: Template-Rendering Convention — Render the Live Payload, Don't Describe It
+
+**Shipped pattern, lesson learned in production.** When a template handles a dispatched task and acts on the dispatch's input fields (`from`, `messageId`, `body`, `clientName`, etc.), the template MUST render the live payload values into the prompt via `{{ field }}` substitution at the top of the prompt. The template MUST NOT only describe the fields by name in prose and assume the runtime will fill them in elsewhere.
+
+Two production incidents lived for months because of this antipattern:
+
+- `relay-builder-callback.md` initially described `{{ state }}`, `{{ prUrl }}`, etc. in a bullet list, expecting Winston to "know what they are" — but never rendered the values. Fixed in winston-agency PR #29 by adding a fenced `## The callback you received` block at the top that uses `{{ }}` substitution for every field.
+- `handle-improvement-request.md` repeated the antipattern. The template described `from`, `subject`, `body`, etc. by name, but never substituted them. Winston opened the playbook, observed "I need the actual inputs," and stopped — `dispatch_to_builder` never fired. Fixed by adding a `## The dispatch you received` block.
+
+The lesson is general: **the live payload is operational input, not documentation.** A workspace-audit rule SHOULD flag templates that reference an input name only in descriptive prose with no `{{ field }}` substitution site.
+
+#### Scenario: New template that acts on a dispatched task
+
+- **WHEN** a new template is added under `templates/` that is the messageTemplate of a routing rule with `inputs:` declared
+- **THEN** the template MUST include a fenced block at the top using `{{ field }}` substitution for every declared input
+- **AND** the template MUST validate (in prose) that each substituted value is non-empty before invoking any tool that consumes it
+
+### Requirement: Tools List on Agent-Callable Scheduled Prompts
+
+**Shipped (PR #141, commit `44fd838`; supersedes/extends SPE-2049).** When an agent calls `schedule_task` from an agency-tools wrapper to schedule a future direct-prompt run, the agent MUST pass the `tools` argument enumerating every MCP tool the scheduled prompt will need at fire time. Same shape as a routing rule's `tools:` list (e.g. `[{"module.python": "agency_tools.google.gmail_send"}, ...]`).
+
+Without the `tools` argument, the fire-time runner runs with claude-cli's built-in toolset only — no agency-tools, no Gmail, no Calendar, no Sheets, no recursive `schedule_task`. A scheduled prompt that wanted to act on the world will silently no-op at fire time.
+
+The `tools` value is stored on the scheduled-task payload at schedule time and resolved against the agent's workspace at fire time exactly the same way the rule-based path resolves them (`buildMCPBundle` in `src/services/tools/load-for-run.ts`).
+
+#### Scenario: Scheduled prompt without tools fails silently
+
+- **GIVEN** an agent calls `schedule_task` with `prompt: "send Heather an email at fire time"` and no `tools` argument
+- **WHEN** the scheduled task fires
+- **THEN** the runner MUST have no MCP bundle
+- **AND** the prompt MUST run to completion without calling `gmail_send`
+- **AND** the failure is detectable only by reading the audit log and noticing the missing tool call
+
+#### Scenario: Scheduled prompt with tools fires correctly
+
+- **GIVEN** an agent calls `schedule_task` with `tools=[{"module.python": "agency_tools.google.gmail_send"}]`
+- **WHEN** the scheduled task fires
+- **THEN** the worker MUST build an MCP bundle from the declared tools BEFORE running the prompt
+- **AND** the prompt's `gmail_send` call MUST land in the audit log
+- **AND** the bundle MUST be cleaned up in a `finally` block whether the run succeeded or failed
+
+#### Scenario: Malformed tools entry degrades safely
+
+- **GIVEN** an agent calls `schedule_task` with `tools` containing a hyphenated python ref
+- **WHEN** the worker validates the tools list via `ruleToolsSchema.safeParse`
+- **THEN** the worker MUST log a warning naming the failed validation
+- **AND** the worker MUST run the prompt with no MCP bundle (degrades to "no tools" rather than crashing the fire)
+
+#### Scenario: Auto-merge attempt blocked by CI gate
+
+- **GIVEN** Builder classifies her diff as `autoMergeEligible: true` but the workspace repo's `builder-auto-merge-gate.yml` required check is failing (it disagrees with Builder's verdict)
+- **WHEN** Builder runs `gh pr merge <pr-number> --squash --delete-branch`
+- **THEN** the merge MUST fail (the required status check blocks it)
+- **AND** Builder MUST emit `failed` with a reason that names the CI gate failure
+- **AND** Builder MUST NOT silently fall back to `autoMergeEligible: false` (the divergence is itself a signal worth surfacing)
