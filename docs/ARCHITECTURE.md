@@ -2,6 +2,28 @@
 
 Read this first. It is the load-bearing mental model for everything else in `docs/`.
 
+## First five minutes (cold start checklist)
+
+Before reasoning about any clawndom behavior, in order:
+
+1. **Identify the agent.** `winston`? `patch`? `scarlett`? The deployment is per-agent — one systemd unit, one log tree, one tailnet host.
+2. **Find the live deployed config**, not your local checkout. SSH `ubuntu@<host>` and read `/home/ubuntu/.clawndom-<agent>/agents/<owner>__<repo>/workspaces/<agent>/clawndom.yaml`. The live HEAD may be commits ahead of your local — Builder-authored PRs land autonomously.
+3. **Tail the right log.** `sudo tail -f /var/log/clawndom-<agent>/clawndom.log` (NOT journalctl — `StandardOutput` redirects to this file). Audit log at `audit.log` next to it has one record per tool call.
+4. **Answer "what can this agent do?" from the route's `tools:` block.** That is the only source of truth. Not templates, not agency-tools, not SOUL.md.
+
+These four steps prevent ~80% of the wrong assumptions I make when walking in cold.
+
+## Anti-patterns (don't do these)
+
+I have made each of these mistakes. The doc is here so future-me doesn't repeat them.
+
+- **Don't read templates to figure out tool surface.** Templates are prose rendered against event payloads. They don't define or grant tools. If you find yourself reading `slack-chat.md` to answer "can Winston send email from Slack?", stop. Read the `slack-winston` route's `tools:` block.
+- **Don't trust your local agent-workspace checkout.** Always `git -C <live-checkout> rev-parse HEAD` on the host first. Build-bots PR autonomously.
+- **Don't conflate `agency-tools` adds with capability grants.** Adding `agency_tools.foo.bar/` gives ZERO agents access. A route declaring it does.
+- **Don't translate `TOOLS_AND_TOOL_USE.md` literally.** It describes the SPE-2078 design in terms of "Anthropic tool_use API." The runtime uses MCP via claude-cli (see "Runtime reality" below). Same outcome, different wire — but the difference matters when reading logs.
+- **Don't grep journalctl for clawndom errors.** `StandardOutput=append:/var/log/...` redirects everything to the file. journalctl shows only systemd lifecycle events.
+- **Don't assume `type: integer` works in `tool.yaml`.** SPE-2078's schema rejects it — use `type: number`. Some existing tools (e.g. `aws.cloudwatch.filter_logs`) still declare `integer` and would crash boot if a route opted in.
+
 ## The three repos
 
 The whole system lives across three repositories. Holding the wrong split in your head will mislead every subsequent doc you read.
