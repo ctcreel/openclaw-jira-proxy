@@ -1,0 +1,79 @@
+# Template: drop this file at .github/workflows/operations.yml in each
+# agent-workspace repo to auto-regenerate per-agent OPERATIONS.md from
+# the live Clawndom state on push-to-main.
+#
+# Substitute <agent-hostname> below with the tailnet hostname of the
+# Clawndom instance hosting the agent(s) (e.g. winston-agent). The
+# workflow loops over every workspaces/<agent>/ dir so a multi-agent
+# workspace (e.g. the-agency with patch + scarlett + shared) generates
+# one OPERATIONS.md per agent automatically.
+#
+# Prerequisites in the agent-workspace repo:
+#   * Secrets: TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET  (Tailscale OAuth
+#     credentials with `tag:ci` allowed). See
+#     https://tailscale.com/kb/1215/oauth-clients
+#   * The agent's Clawndom HTTP port is the default 8794, OR the URL
+#     below is updated to match.
+#   * The Clawndom instance has the operations-doc endpoint deployed
+#     (clawndom main since the operations-doc PR landed).
+
+name: Regenerate OPERATIONS.md from live Clawndom state
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "workspaces/*/clawndom.yaml"
+      - "workspaces/*/templates/**"
+      - ".github/workflows/operations.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  refresh-operations-doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Fetch operations doc for every workspace
+        run: |
+          set -euo pipefail
+          for workspace in workspaces/*/; do
+            agent="$(basename "$workspace")"
+            target="${workspace}OPERATIONS.md"
+            echo "::group::Refreshing ${target}"
+            if curl --fail-with-body -sS \
+                "http://<agent-hostname>:8794/api/agents/${agent}/operations.md" \
+                -o "${target}"; then
+              echo "Fetched ${target}"
+            else
+              echo "::warning::Endpoint did not return an OPERATIONS doc for ${agent} — skipping"
+              rm -f "${target}"
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Commit if changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet workspaces; then
+            echo "No OPERATIONS.md drift — skipping commit."
+            exit 0
+          fi
+          git config user.name "sc0red-patch[bot]"
+          git config user.email "277859894+sc0red-patch[bot]@users.noreply.github.com"
+          git add workspaces/*/OPERATIONS.md
+          git commit -m "docs(operations): regenerate OPERATIONS.md from live Clawndom state"
+          git push
