@@ -25,6 +25,8 @@ import { getActiveJobsRegistry } from './active-jobs.service';
 import { getEventBus } from './event-bus.service';
 import { getRunner } from '../runners/registry';
 import { buildQueueName, getProviderQueue } from './queue.service';
+import { getWorkerEntitiesHook } from './entities/worker-entities-hook.service';
+import type { Actor } from '../types/actor';
 
 // Minimum delay we'll schedule for a quota-recovery re-enqueue. Anthropic's
 // reset times are minute-precision and the operator may already be running
@@ -221,12 +223,51 @@ export async function processJob(
     );
   }
 
+  // Entity pre-render hook: resolve actor + recent interactions +
+  // {{ entity_model }} when the rule declares entities.kinds. No-op
+  // when the rule doesn't opt in or the agent has no entity store.
+  const entitiesHook = getWorkerEntitiesHook();
+  const entityContext = entitiesHook.prepare(
+    {
+      ...(resolved.rule.entities !== undefined ? { entities: resolved.rule.entities } : {}),
+      ...(resolved.rule.interactions !== undefined
+        ? { interactions: resolved.rule.interactions }
+        : {}),
+    },
+    {
+      agentName: agentId,
+      providerName: provider.name,
+      ruleName: resolved.rule.name ?? resolved.rule.id ?? '<unnamed>',
+      traceId,
+    },
+    parsedPayload,
+  );
+  const resolvedActor: Actor | null = entityContext.actor;
+  if (resolvedActor !== null) {
+    logger.info(
+      {
+        jobId: job.id,
+        provider: provider.name,
+        actorKind: resolvedActor.kind,
+        actorId: resolvedActor.id,
+      },
+      'Entity resolver matched actor',
+    );
+  }
+
   let prompt: string;
   let systemPrompt = '';
   if (templatePath) {
     const templateContent = await readFile(join(agentDir, templatePath), 'utf-8');
     const rendered = await renderTemplate(templateContent, parsedPayload, agentDir, {
       identity: resolved.rule.identity,
+      entityContext: {
+        ...(resolvedActor !== null ? { actor: resolvedActor } : {}),
+        ...(entityContext.entity_model !== undefined
+          ? { entity_model: entityContext.entity_model }
+          : {}),
+        interactions: entityContext.interactions,
+      },
     });
     systemPrompt = rendered.systemPrompt;
     // Memory recall fragments are per-event (queryField → embed → search),
@@ -438,6 +479,34 @@ export async function processJob(
     durationMs: Date.now() - jobStartedAt,
     runId: result.runId ?? 'unknown',
   });
+
+  // Entity post-turn hook: write the interaction entity + tag mentions.
+  // Best-effort — never throws. No-ops when the rule didn't opt in or
+  // when the actor was unresolved.
+  if (resolvedActor !== null && resolved.rule.entities !== undefined) {
+    const inboundText = typeof envelope.payload === 'string' ? envelope.payload : '';
+    const outboundSummary =
+      result.status === 'ok' && 'output' in result && typeof result.output === 'string'
+        ? result.output
+        : '';
+    entitiesHook.recordTurn(
+      {
+        ...(resolved.rule.entities !== undefined ? { entities: resolved.rule.entities } : {}),
+        ...(resolved.rule.interactions !== undefined
+          ? { interactions: resolved.rule.interactions }
+          : {}),
+      },
+      {
+        agentName: agentId,
+        providerName: provider.name,
+        ruleName: resolved.rule.name ?? resolved.rule.id ?? '<unnamed>',
+        traceId,
+      },
+      resolvedActor,
+      inboundText,
+      outboundSummary,
+    );
+  }
 
   logger.info(
     { jobId: job.id, provider: provider.name, sessionKey, runId: result.runId },
