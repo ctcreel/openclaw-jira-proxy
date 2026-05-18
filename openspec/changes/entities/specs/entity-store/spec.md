@@ -322,6 +322,156 @@ receive a `{{ entity_model }}` variable.
   for this route`
 - **AND** No row MUST be inserted
 
+### Requirement: Interactions Are an Entity Kind, Written by Framework
+
+Interactions MUST be stored as entities with `kind: 'interaction'`,
+not in a separate store. The workspace MUST ship an
+`interaction.schema.json` declaring the kind's properties (at
+minimum: `inbound_text`, `outbound_summary`, `surface`, `route`,
+`trace_id`, plus `created_at` from the entity table).
+
+For every chat-style run completing on a route with `entities.kinds`
+including `interaction`, Clawndom MUST automatically write one
+interaction entity post-turn, after audit emission, before job
+completion. The agent MUST NOT call any interaction tool — writes
+happen as a side effect of the run.
+
+The interaction entity MUST be related to the resolved actor via a
+`--from-->` relation (e.g., `interaction --from--> team_member` or
+`interaction --from--> contact`). Failure to write the interaction
+MUST log an error but MUST NOT fail the job.
+
+#### Scenario: Interaction Auto-Written
+
+- **GIVEN** A `slack-winston.chat` route with `entities.kinds`
+  including `interaction`
+- **WHEN** A run completes with resolved actor `t_heather`
+- **THEN** Exactly one entity of kind `interaction` MUST be created
+- **AND** A relation `interaction --from--> t_heather` MUST exist
+- **AND** The agent MUST NOT have called any tool to produce this
+  entity
+
+#### Scenario: Stranger Actor Interaction
+
+- **GIVEN** A run with resolved actor `{ kind: 'stranger', email:
+  'bob@example.com' }`
+- **WHEN** The run completes
+- **THEN** An interaction entity MUST be written
+- **AND** The `properties.actor_email` field MUST carry the
+  stranger's email
+- **AND** No `--from-->` relation MUST be set (no entity to relate
+  to)
+
+### Requirement: Post-Turn Entity-Mention Extraction
+
+After writing the interaction entity, Clawndom MUST scan the
+combined inbound + outbound text for tokens that match the `name`
+or `aliases` of existing entities in the store. For each
+unambiguous single-match token, Clawndom MUST create a relation
+`interaction --about--> <matched_entity>`. Ambiguous matches
+(multiple entities share the token) MUST be skipped.
+
+The extractor MUST be deterministic — same text, same store state
+yields the same set of tags. It MUST NOT invoke an LLM.
+
+#### Scenario: Unambiguous Mention Tagged
+
+- **GIVEN** An interaction whose text mentions "Camilla" and
+  exactly one client entity exists with `name: 'Camilla Asher'`
+- **WHEN** The extractor runs post-turn
+- **THEN** A relation `interaction --about--> c_<uuid>` MUST be
+  created
+
+#### Scenario: Ambiguous Mention Skipped
+
+- **GIVEN** Two contacts with name "Sarah" exist
+- **WHEN** The extractor runs against text containing "Sarah"
+- **THEN** No `--about-->` relation MUST be created for Sarah
+- **AND** The interaction MUST still be findable via the
+  `--from-->` relation
+
+### Requirement: Memories Are an Entity Kind
+
+Memories MUST be stored as entities with `kind: 'memory'`. The
+workspace MUST ship a `memory.schema.json` (at minimum:
+`text` string, `written_at` ISO-8601 date, optional
+`written_by_id`).
+
+Memories MUST be related to the entity they are about via an
+`--about-->` relation. A memory with no `--about-->` relation is
+valid (a free-floating note) but discouraged.
+
+Domain-shaped wrapper tools (`remember`, `forget`, `recall`) MUST
+be thin facades over the substrate tools:
+- `remember(text, about_entity_id)` is equivalent to
+  `entity.upsert(kind='memory', properties={...})` followed by
+  `entity.relate(memory_id, 'about', about_entity_id)`
+- `forget(memory_id, ...)` is equivalent to `entity.upsert(memory_id,
+  status='forgotten')`; the entity persists, audit log preserves it
+- `recall(about_entity_id, limit?)` is equivalent to
+  `entity.find(kinds=['memory'], related_to=about_entity_id,
+  relation_type='about', order=created_at desc, limit=limit)`,
+  filtering out memories with `status='forgotten'`
+
+#### Scenario: Remember Tool Writes Memory + Relation
+
+- **GIVEN** A client `c_camilla` exists
+- **WHEN** Winston calls `remember("Family is moving in August",
+  "c_camilla")`
+- **THEN** A new entity with `kind='memory'` MUST be created
+- **AND** A relation `<memory_id> --about--> c_camilla` MUST exist
+- **AND** The memory's `text` property MUST be "Family is moving
+  in August"
+
+### Requirement: Relation-Aware `entity.find`
+
+`entity.find` MUST support these filter parameters:
+- `kinds: string[]` — match any of these kinds (e.g., `['memory',
+  'interaction']`)
+- `q: string` — substring match on entity name or aliases
+- `related_to: string` — entity ID; restricts results to entities
+  with a relation pointing at this ID
+- `relation_type: string` — restricts to relations of this type
+  (used with `related_to`)
+- `text_match: string` — FTS5 keyword match against
+  `entities.properties`
+- `status: string` — match status property
+- `order: { field, dir }` — defaults to `created_at desc` when not
+  specified
+- `limit: number` — defaults to 50
+
+#### Scenario: Memories About an Entity, Most-Recent First
+
+- **GIVEN** Five memory entities each with `--about--> c_camilla`,
+  written between 2026-01 and 2026-05
+- **WHEN** `entity.find(kinds=['memory'], related_to='c_camilla',
+  relation_type='about', order='created_at desc', limit=3)`
+- **THEN** Exactly three memories MUST be returned
+- **AND** They MUST be the three most-recent
+
+#### Scenario: FTS5 Keyword Match
+
+- **GIVEN** A memory with text "discussed cancellation policy"
+- **WHEN** `entity.find(kinds=['memory'], text_match='cancellation
+  policy')`
+- **THEN** The memory MUST be returned
+
+### Requirement: FTS5 Index on `entities.properties`
+
+The store MUST maintain a SQLite FTS5 virtual table indexing the
+JSON-stringified `properties` of every entity. The FTS5 index MUST
+be kept in sync with the entities table via triggers on
+INSERT/UPDATE/DELETE. `entity.find(text_match='...')` MUST use
+this index.
+
+#### Scenario: FTS5 Stays in Sync on Update
+
+- **GIVEN** A memory entity with text "discussed cancellation"
+- **WHEN** The memory is updated to "discussed billing"
+- **THEN** `entity.find(text_match='cancellation')` MUST NOT return
+  this memory
+- **AND** `entity.find(text_match='billing')` MUST return it
+
 ### Requirement: `{{ entity_model }}` Renderer
 
 When a route declares `entities.kinds`, Clawndom MUST synthesize a

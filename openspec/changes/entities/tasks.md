@@ -17,7 +17,10 @@ declarations, the migration script) land in their own repo's PR (e.g.,
 - [ ] 1.2 Schema migration runner: on startup, ensure the three tables
   (`entities`, `relations`, `entity_audit`) exist with the indexes
   described in the design. Idempotent: re-running on an existing DB
-  is a no-op. WAL mode enabled.
+  is a no-op. WAL mode enabled. **Also**: create an FTS5 virtual
+  table `entities_fts(properties, content='entities', content_rowid='rowid')`
+  plus INSERT/UPDATE/DELETE triggers to keep it in sync with the
+  `entities` table.
 - [ ] 1.3 ID generator: `t_<slug>` and `l_<slug>` are passed in by
   the caller (migration script + agent); `c_<uuid-v4>` and
   `p_<uuid-v4>` are generated when an upsert has no provided ID and
@@ -74,24 +77,31 @@ declarations, the migration script) land in their own repo's PR (e.g.,
   arbitrary object; ISO-8601 enforcement; unknown relation type
   rejected.
 
-## 3. Internal identity resolver
+## 3. Internal identity resolver (strategy pattern)
 
-- [ ] 3.1 `src/types/actor.ts` — discriminated `Actor` union with
-  the kinds defined by the workspace's schemas (Clawndom doesn't
-  hardcode kind names; the runtime carries them through).
-- [ ] 3.2 `src/services/entities/entity-resolver.service.ts` —
-  `EntityResolver` class with `resolve(hints: IdentityHints):
-  Promise<Actor>`. Auto-discovers which kinds participate by
-  scanning loaded schemas for `"format": "email"` properties and
-  `slack_user_id` properties.
-- [ ] 3.3 Chain order: slack_user_id → email/oidc_email → stranger.
-  First match wins.
-- [ ] 3.4 Resolver result attached to event context as `actor`.
+- [ ] 3.1 `src/types/actor.ts` — `Actor` is the resolved entity
+  itself (kind + id + name + the entity's own properties), plus
+  the stranger discriminant `{ kind: 'stranger', id: null, email }`.
+- [ ] 3.2 `src/services/entities/resolver-strategy.ts` — interface
+  `ResolverStrategy` with `hintName`, `propertyFormat`,
+  `extractHint(event)`, `normalize(raw)`.
+- [ ] 3.3 `src/services/entities/strategies/email.resolver.ts`,
+  `src/services/entities/strategies/slack-user-id.resolver.ts` —
+  initial two strategies for Winston. (Phone + OIDC are future
+  additions; same shape.)
+- [ ] 3.4 `src/services/entities/entity-resolver.service.ts` —
+  `EntityResolver` orchestrator. At boot, cross-references each
+  strategy's `propertyFormat` against loaded schemas, building a
+  map of (strategy, kind, property-name). At resolve time, runs
+  strategies in priority order; first hit returns the matching
+  entity as the actor.
+- [ ] 3.5 Resolver result attached to event context as `actor`.
   Existing route-condition primitives already handle arbitrary
   field paths; documented as supported on `actor.*`.
-- [ ] 3.5 Tests: each chain step, conflicting hints, missing
-  matching entity, stranger fallback, kind discovery through
-  schemas (a new email-typed kind is automatically scanned).
+- [ ] 3.6 Tests: each strategy hits/misses correctly; orchestrator
+  priority order; new kind with email property automatically
+  scanned; stranger fallback; actor carries entity's own
+  properties.
 
 ## 4. Surface-adapter identity hints
 
@@ -164,34 +174,42 @@ declarations, the migration script) land in their own repo's PR (e.g.,
   render with two kinds; relations correctly filtered to
   in-scope-only; schema description text surfaces in the handbook.
 
-## 8. Interaction log (preserved from earlier proposal)
+## 8. Interactions as entities + post-turn writer + extractor
 
-- [ ] 8.1 `src/services/interactions/interaction-log.service.ts` —
-  `InteractionLog` class with `record(entry)` and `recent(actorId,
-  limit)`. Backed by Redis sorted set: key
-  `interactions:<agent_id>:<actor_id>`. Stranger entries use
-  `interactions:<agent_id>:stranger:<email>`.
-- [ ] 8.2 InteractionEntry shape: `{ id: ulid, actor_id, surface,
-  route, inbound_text, outbound_summary, timestamp, trace_id }`.
-  Outbound summary truncated at 500 chars.
-- [ ] 8.3 Writer hook in `worker.service.ts` — at end-of-run, after
-  audit emission, write to interaction log when the matched rule
-  has `interactions:` opt-in. Failure to write is logged but does
-  not fail the job.
-- [ ] 8.4 Per-actor max length and daily prune.
-- [ ] 8.5 Pre-render injection: when the matched rule has
-  `interactions: { topN }`, call `recent` before render and pass
-  the result as `interactions` in the template context.
-- [ ] 8.6 Tests: write+read round-trip, max-length trim, stranger
-  key separation, template gets `{{ interactions }}` only when
-  opted in.
+- [ ] 8.1 `src/services/entities/interaction-writer.service.ts` —
+  post-turn worker hook. After audit emission and before job
+  completion on chat-style routes (those with `interaction` in
+  `entities.kinds`), writes one `entity` of `kind='interaction'`
+  with the inbound + outbound text, surface, route, trace_id.
+- [ ] 8.2 Establish the `interaction --from--> actor` relation when
+  the actor is non-null. For strangers, set
+  `properties.actor_email` and skip the relation.
+- [ ] 8.3 `src/services/entities/entity-mention-extractor.service.ts`
+  — runs after 8.1. Scans inbound + outbound text for unambiguous
+  matches against existing entity names/aliases; creates
+  `interaction --about--> <matched_entity>` relations.
+- [ ] 8.4 Pre-render injection: when the matched rule includes
+  `interaction` in `entities.kinds` AND the rule declares
+  `interactions: { topN }`, fetch `entity.find(kinds=[interaction],
+  related_to=actor.id, relation_type='from', order='created_at
+  desc', limit=topN)` plus (for actors with related clients) `OR
+  about IN actor's clients` — merge by recency, pass as
+  `{{ interactions }}` in the template context.
+- [ ] 8.5 Failure to write the interaction MUST log an error but
+  MUST NOT fail the job.
+- [ ] 8.6 Tests: interaction written on chat-route fire; from
+  relation set; unambiguous mentions tagged; ambiguous mentions
+  skipped; `{{ interactions }}` populated on opt-in routes;
+  stranger interactions carry actor_email without from relation.
 
-## 9. agency-tools: six entity tools
+## 9. agency-tools: substrate + domain wrappers
+
+### 9a. Six generic substrate tools
 
 - [ ] 9.1 `agency_tools/entity/find/` — POSTs to
-  `/api/agents/<agent>/entities` with search parameters
-  (kind, name substring, alias match, status filter, JSON-path
-  property filters).
+  `/api/agents/<agent>/entities` with search parameters: `kinds[]`,
+  `q`, `related_to`, `relation_type`, `text_match` (FTS5), `status`,
+  `order`, `limit`.
 - [ ] 9.2 `agency_tools/entity/get/` — fetches a single entity by
   ID, with optional `expand_relations` flag.
 - [ ] 9.3 `agency_tools/entity/upsert/` — creates or updates an
@@ -203,9 +221,28 @@ declarations, the migration script) land in their own repo's PR (e.g.,
 - [ ] 9.6 `agency_tools/entity/purge/` — gated destructive tool.
   Routes that include it grant destructive access; the tool
   requires a non-empty `reason` string.
-- [ ] 9.7 Each tool ships with smoke-test fixtures against a local
+
+### 9b. Three domain-shaped wrappers
+
+- [ ] 9.7 `agency_tools/remember/` — inputs: `thing_to_remember`
+  (string), `about_entity` (entity ID). Wraps
+  `entity.upsert(kind='memory', properties={text, written_at})`
+  + `entity.relate(memory_id, 'about', about_entity)`.
+- [ ] 9.8 `agency_tools/forget/` — inputs: `memory_id_or_match`,
+  optional `about_entity`. Wraps
+  `entity.upsert(memory_id, status='forgotten')`. Audit log
+  preserves the original text.
+- [ ] 9.9 `agency_tools/recall/` — inputs: `about_entity`, optional
+  `limit` (default 10). Wraps
+  `entity.find(kinds=['memory'], related_to=about_entity,
+  relation_type='about', order='created_at desc', limit=limit)`,
+  filtering out `status='forgotten'`.
+
+### 9c. Common
+
+- [ ] 9.10 Each tool ships with smoke-test fixtures against a local
   Clawndom HTTP endpoint.
-- [ ] 9.8 Each tool's `tool.yaml` uses only SPE-2078-accepted type
+- [ ] 9.11 Each tool's `tool.yaml` uses only SPE-2078-accepted type
   primitives (string, number, boolean, array, object).
 
 ## 10. Read-only inspection endpoint

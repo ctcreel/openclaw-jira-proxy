@@ -38,33 +38,63 @@ three kinds and MUST be `null` for stranger.
 - **THEN** The resolved actor MUST be `{ kind: 'stranger', id: null,
   email: <raw> }`
 
-### Requirement: Resolver Chain (Schema-Auto-Discovered)
+### Requirement: Resolver Is a Strategy Pattern
 
-The resolver MUST auto-discover which entity kinds participate in
-identity resolution by reading the workspace schemas. A kind is in
-scope for identity resolution if its schema declares any property
-with `"format": "email"` (for email/oidc_email hints) or a property
-named `slack_user_id` (for slack_user_id hints). No separate
-resolver-config block is required.
+Resolution MUST be implemented as a strategy pattern keyed on
+identity-hint type. Each strategy MUST declare:
+- `hintName`: the identity-hint field this strategy consumes
+  (`email`, `slack_user_id`, `phone`, etc.)
+- `propertyFormat`: the JSON Schema `"format"` value (or property
+  name convention) that signals "an entity property of this type
+  participates in resolution"
+- `extractHint(event)`: extracts the hint value from an inbound
+  event payload
+- `normalize(raw)`: per-strategy value normalization
+  (lowercase emails, strip phone formatting, etc.)
 
-Given `IdentityHints { email?, slack_user_id?, oidc_email? }`, the
-resolver MUST try in this order, returning on first match:
+At boot, the orchestrator MUST cross-reference each strategy's
+`propertyFormat` against all workspace schemas, building a map
+of which kinds participate per hint type. At inbound time,
+strategies MUST run in priority order (slack_user_id → email →
+phone → ...), with first hit winning.
 
-1. `slack_user_id` hint against any kind that declares a
-   `slack_user_id` property
-2. `email` / `oidc_email` hint against any kind that declares an
-   email-typed property (case-insensitive match on the property
-   value)
-3. Fallback to stranger.
-
-When the matched entity is a `client`-style kind (i.e., the entity
-represents the subject of the agent's domain rather than a
-communicator), the resolver MAY follow outgoing `is_contact_for`-
-style relations to surface the related client(s) in the returned
-actor. Implementation discovers this via the schema-declared
-relation graph.
+Adding support for a new hint type (e.g., phone, OIDC email) MUST
+be achievable by registering a new strategy plus marking the
+appropriate schema property with the matching `"format"` value or
+property-name convention. No orchestrator changes required.
 
 The resolver MUST NOT consult any source outside the entity store.
+
+### Requirement: Actor IS the Resolved Entity
+
+The returned `Actor` MUST be the resolved entity itself — its
+`id`, `kind`, `name`, and its own properties from the schema. The
+resolver MUST NOT walk outgoing or incoming relations to enrich
+the actor.
+
+Route conditions predicate on the actor's own fields (e.g.,
+`actor.role`, `actor.email`). Looking up related entities (e.g.,
+"which clients does this contact represent") MUST be done by the
+agent during the run via tool calls, not by the resolver.
+
+#### Scenario: Team Member Actor Carries Schema Properties
+
+- **GIVEN** A team_member entity `t_heather` with properties
+  `{ email, role, employment_type, slack_user_id, status }`
+- **WHEN** Resolution returns this entity as the actor
+- **THEN** The actor MUST be
+  `{ kind: 'team_member', id: 't_heather', name: 'Heather Hamilton',
+     email: '...', role: '...', employment_type: '...',
+     slack_user_id: '...', status: 'active' }`
+- **AND** The actor MUST NOT carry related-entity IDs or
+  collections
+
+#### Scenario: Route Condition on Actor Property
+
+- **GIVEN** A route with condition `{ equals: { field: actor.role,
+  value: 'owner' } }`
+- **AND** A team_member entity with `role: 'owner'` resolves
+- **THEN** The route condition MUST match
 
 #### Scenario: Slack Hint Takes Precedence
 

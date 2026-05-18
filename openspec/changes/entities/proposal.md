@@ -84,14 +84,34 @@ restart, done" — zero Clawndom changes.
   rejects unknown relation types) and the `{{ entity_model }}`
   renderer.
 
-- **NEW: Five canonical agent-facing tools** in agency-tools:
-  - `entity.find` — search across kind, name, aliases, properties
+- **NEW: Two layers of agent-facing tools.**
+
+  **Generic substrate tools** (six total) — used by Clawndom internals,
+  by migration scripts, and by routes that need structured operations:
+  - `entity.find` — relation-aware search: `kinds[]`, `q` (name/alias
+    substring), `related_to` + `relation_type`, `text_match` (FTS5
+    over `entities.properties`), `order` (e.g., `created_at desc`),
+    `limit`
   - `entity.get` — fetch by id with optional relation expansion
   - `entity.upsert` — create-or-update with natural-key dedup
   - `entity.relate` — establish a typed relation
   - `entity.unrelate` — break a relation
-  Plus a gated **`entity.purge`** tool for cleanup of test/duplicate
-  entities; routes that include it grant destructive access.
+  - `entity.purge` — gated destructive tool; routes that include it
+    grant cleanup access
+
+  **Domain-shaped wrappers** (Winston's daily surface) — thin SPE-2078
+  tools that compose the substrate tools so Winston doesn't think in
+  data-model terms:
+  - `remember(thing_to_remember, about_entity)` — writes a `memory`
+    entity, tags `--about-->` to the referenced entity
+  - `forget(memory_id_or_match, about_entity)` — soft-deletes a memory
+    (`status='forgotten'`); audit log preserves it
+  - `recall(about_entity, limit?)` — finds memories about an entity,
+    newest first
+
+  Winston's mental model: "I want to remember X about Y" → `remember(X,
+  Y)`. He never thinks "construct an entity of kind memory and relate
+  it via about." The wrappers carry that translation.
 
 - **NEW: HTTP endpoints in Clawndom.** Bearer-gated, per-agent scoped:
   - `GET    /api/agents/:agent/entities` (list/search)
@@ -101,11 +121,27 @@ restart, done" — zero Clawndom changes.
   - `DELETE /api/agents/:agent/entities/:id/relations/:type/:to` (unrelate)
   - `GET    /api/agents/:agent/entities/audit?since=...` (entity audit log)
 
-- **NEW: Internal `EntityResolver` service.** Runs at inbound ingestion,
-  before route matching. Given `IdentityHints {email?, slack_user_id?,
-  oidc_email?}` it scans entities whose schema declares an email-typed
-  property (or a `slack_user_id` property), returns the matching entity
-  as the `actor`. No separate config — the schemas are self-describing.
+- **NEW: Internal `EntityResolver` service with strategy pattern.**
+  Runs at inbound ingestion, before route matching. Resolution is a
+  strategy pattern keyed on identity-hint type — one strategy per
+  hint:
+  - `EmailResolverStrategy` (today: gmail-pubsub)
+  - `SlackUserIdResolverStrategy` (today: slack-socket)
+  - `PhoneResolverStrategy` (forward-looking: Twilio SMS)
+  - `OidcEmailResolverStrategy` (forward-looking: MCP server route)
+
+  Each strategy declares its `hintName` + `propertyFormat` (the JSON
+  Schema `"format"` value it matches against) + extraction +
+  normalization rules. At boot, the orchestrator cross-references
+  each strategy's `propertyFormat` against the workspace schemas to
+  build a map of which kinds participate. At inbound time, strategies
+  run in priority order; first hit wins.
+
+  The actor IS the resolved entity — kind + id + name + the entity's
+  own properties. No relation-walking enrichment; route conditions
+  predicate on `actor.kind` / `actor.role` / etc. directly, and any
+  related-entity lookups (e.g., "which clients is this contact for")
+  happen on demand via tool calls during the run.
 
 - **NEW: Entity audit log.** Every successful create/update/relate/
   unrelate/purge inserts one row into `entity_audit` with timestamp,
@@ -145,15 +181,48 @@ restart, done" — zero Clawndom changes.
   Regenerated per fire (~10ms cold); no caching needed.
 
 - **NEW: Initial Winston kinds (narrow):** `client`, `contact`,
-  `team_member`, `location`. Each authored as a JSON Schema in
+  `team_member`, `location`, plus `memory` and `interaction` (which
+  are entity kinds in the unified model, not separate stores). Each
+  authored as a JSON Schema in
   `winston-agency/workspaces/winston/schemas/`. School, doctor,
   insurer, drive_folder all deferred — data on existing kinds, not
   their own kinds, until a workflow demands first-class status.
 
-- **PRESERVED: Cross-surface interaction log.** Same Redis-sorted-set
-  design as the earlier proposal; `actor_id` is now an entity ID.
-  Strangers continue to key on raw email. Per-route `interactions:
-  { topN }` opt-in preserved.
+- **NEW: Memories and interactions are entity kinds.** No separate
+  Redis store, no separate memory namespace. Both are entities with
+  schemas (`memory.schema.json`, `interaction.schema.json`) and
+  participate in relations:
+  - `memory --about--> <any entity>` — what the memory is about
+  - `interaction --from--> contact|team_member` — who said it
+  - `interaction --about--> <any entity>` — what was mentioned
+  
+  Same store, same tools, same audit log. Retrieval is via
+  relation-aware `entity.find` queries — "recent memories about
+  Camilla" is just `find(kinds=[memory], related_to='c_camilla',
+  relation_type='about', order=created_at desc, limit=5)`.
+
+- **NEW: Interactions are framework-written, not agent-called.** The
+  worker writes one `interaction` entity per chat turn automatically
+  (after audit emission, before job completion). The agent never
+  calls an interaction tool — interactions happen as a side effect
+  of any chat-style route firing. Failure to write is logged but
+  does not fail the job.
+
+- **NEW: Post-turn deterministic entity-mention extractor.** After
+  each chat-style turn, Clawndom scans the inbound + outbound text
+  for tokens that match the `name` or `aliases` of existing entities
+  in the store. Single unambiguous match → tag the interaction with
+  an `--about-->` relation. Ambiguous matches → skip (interaction
+  remains findable by actor). Acceptable coverage gap; actor anchor
+  always works.
+
+- **NEW: FTS5 text search on `entities.properties`.** SQLite full-
+  text index over the JSON-stringified properties of each entity.
+  Backs `entity.find(text_match='...')` for keyword queries that
+  aren't anchored to a known entity ("anything mentioning
+  'cancellation policy'"). Keyword-level, not semantic; sufficient
+  for the use cases that come up in practice. Real semantic search
+  (embeddings) deferred until a use case demands it.
 
 - **NEW: Read-only inspection endpoint.** `GET /api/agents/:agent/entities`
   is the operator surface for "what's in the store right now." No
@@ -180,9 +249,13 @@ restart, done" — zero Clawndom changes.
   before route matching. The resolver auto-discovers email-typed
   properties from the workspace schemas; no separate config.
 
-- `cross-surface-interactions`: Per-actor turn log keyed on entity IDs.
-  Routes opt into retrieval via `interactions: {topN}`; templates
-  receive `{{ interactions }}` at render time.
+- `cross-surface-interactions` capability is rolled into `entity-store`
+  — interactions are an entity kind, not a separate capability. Routes
+  opt into `{{ interactions }}` injection via `interactions: { topN }`;
+  Clawndom internally fetches via `entity.find(kinds=[interaction],
+  related_to=actor.id, relation_type='from')` plus, for actors with
+  related clients, `(or about IN actor.client_ids)` — same template
+  experience, no separate spec.
 
 ### Modified Capabilities
 
@@ -198,13 +271,19 @@ restart, done" — zero Clawndom changes.
   (per-fire `{{ entity_model }}` generator)
 - `src/controllers/entities.controller.ts` — six HTTP handlers
 - `src/routes/entities.routes.ts` — route mounting
-- `src/services/interactions/interaction-log.service.ts`
+- `src/services/entities/interaction-writer.service.ts` — post-turn
+  worker hook that writes one `interaction` entity per chat-style
+  run and runs the entity-mention extractor
+- `src/services/entities/entity-mention-extractor.service.ts` —
+  deterministic post-turn pass that tags `--about-->` relations on
+  the interaction by scanning the inbound/outbound text for entity
+  name/alias matches
 - `src/types/actor.ts` — discriminated union
 - Worker integration in `src/services/worker.service.ts` — resolver
   before render, `{{ entity_model }}` injection, interaction-log
   writer after run
 
-**New code (agency-tools):**
+**New code (agency-tools — generic substrate tools):**
 - `agency_tools/entity/find/`
 - `agency_tools/entity/get/`
 - `agency_tools/entity/upsert/`
@@ -212,12 +291,20 @@ restart, done" — zero Clawndom changes.
 - `agency_tools/entity/unrelate/`
 - `agency_tools/entity/purge/` (gated)
 
+**New code (agency-tools — domain-shaped wrappers):**
+- `agency_tools/remember/` — wraps upsert(kind=memory) + relate
+- `agency_tools/forget/` — wraps upsert(memory_id, status='forgotten')
+- `agency_tools/recall/` — wraps find(kinds=[memory], related_to=...)
+
 **New code (winston-agency — Winston-specific data model):**
 - `workspaces/winston/schemas/client.schema.json`
 - `workspaces/winston/schemas/contact.schema.json`
 - `workspaces/winston/schemas/team_member.schema.json`
 - `workspaces/winston/schemas/location.schema.json`
-- `workspaces/winston/relations.json`
+- `workspaces/winston/schemas/memory.schema.json`
+- `workspaces/winston/schemas/interaction.schema.json`
+- `workspaces/winston/relations.json` — declares `has_therapist`,
+  `had_previous_therapist`, `seen_at`, `has_contact`, `about`, `from`
 - `scripts/migrate-mcl-to-entities.py` (one-shot per tenant; reads
   the v2 MCL restructure built earlier, writes the per-tenant
   SQLite file; ships with a header notice that the agent's systemd
@@ -227,7 +314,8 @@ restart, done" — zero Clawndom changes.
 **New code (specs):**
 - `openspec/specs/entity-store/spec.md`
 - `openspec/specs/actor-resolution/spec.md`
-- `openspec/specs/cross-surface-interactions/spec.md`
+- (no separate cross-surface-interactions spec — folded into
+  entity-store as interactions are an entity kind)
 
 **Affected configuration:**
 - `clawndom.yaml` (per-agent): per-route `entities.kinds` declarations
