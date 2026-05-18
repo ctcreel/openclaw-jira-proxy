@@ -73,10 +73,24 @@ export interface IdPrefixConfig {
   [kind: EntityKind]: string;
 }
 
+export interface ValidationFailure {
+  property: string;
+  message: string;
+  keyword?: string;
+}
+
+export interface SchemaValidatorContract {
+  validate(
+    kind: EntityKind,
+    properties: Record<string, unknown>,
+  ): { valid: boolean; errors: ValidationFailure[] };
+}
+
 export interface EntityStoreOptions {
   filePath: string;
   naturalKeys?: NaturalKeyConfig;
   idPrefixes?: IdPrefixConfig;
+  validator?: SchemaValidatorContract;
 }
 
 const SCHEMA = `
@@ -152,7 +166,9 @@ export class EntityStoreError extends Error {
       | 'ENTITY_NOT_FOUND'
       | 'RELATION_TARGET_MISSING'
       | 'INVALID_ID_FORMAT'
-      | 'PURGE_REASON_REQUIRED',
+      | 'PURGE_REASON_REQUIRED'
+      | 'SCHEMA_VALIDATION_FAILED',
+    public details?: { errors: ValidationFailure[] },
   ) {
     super(message);
     this.name = 'EntityStoreError';
@@ -170,6 +186,7 @@ export class EntityStore {
   private db: Database.Database;
   private naturalKeys: NaturalKeyConfig;
   private idPrefixes: IdPrefixConfig;
+  private validator: SchemaValidatorContract | null;
 
   constructor(options: EntityStoreOptions) {
     this.db = new Database(options.filePath);
@@ -177,6 +194,7 @@ export class EntityStore {
     this.db.pragma('foreign_keys = ON');
     this.naturalKeys = options.naturalKeys ?? {};
     this.idPrefixes = { ...DEFAULT_ID_PREFIXES, ...options.idPrefixes };
+    this.validator = options.validator ?? null;
     this.db.exec(SCHEMA);
     this.db.exec(FTS_TRIGGERS);
   }
@@ -197,6 +215,18 @@ export class EntityStore {
   ): Entity {
     if (!kind) {
       throw new EntityStoreError('kind is required', 'KIND_REQUIRED');
+    }
+    if (this.validator !== null) {
+      const result = this.validator.validate(kind, properties);
+      if (!result.valid) {
+        throw new EntityStoreError(
+          `validation failed for kind '${kind}': ${result.errors
+            .map((error) => `${error.property} ${error.message}`)
+            .join('; ')}`,
+          'SCHEMA_VALIDATION_FAILED',
+          { errors: result.errors },
+        );
+      }
     }
     const now = Date.now();
     const naturalKey = this.computeNaturalKey(kind, properties);

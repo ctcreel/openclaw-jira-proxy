@@ -367,6 +367,32 @@ describe('EntityStore.purge', () => {
   });
 });
 
+describe('EntityStore with validator', () => {
+  it('rejects upserts that fail validation', () => {
+    store.close();
+    rmSync(dbPath, { force: true });
+    const validator = {
+      validate: (
+        kind: string,
+        properties: Record<string, unknown>,
+      ): { valid: boolean; errors: Array<{ property: string; message: string }> } => {
+        if (kind === 'client' && !('legal_name' in properties)) {
+          return { valid: false, errors: [{ property: 'legal_name', message: 'is required' }] };
+        }
+        return { valid: true, errors: [] };
+      },
+    };
+    const validatingStore = new EntityStore({ filePath: dbPath, validator });
+    expect(() => validatingStore.upsert('client', 'Anonymous', { status: 'active' })).toThrowError(
+      /validation failed/,
+    );
+    expect(
+      validatingStore.upsert('client', 'Ari', { legal_name: 'Ariel Goolsby', status: 'active' }),
+    ).toMatchObject({ name: 'Ari' });
+    validatingStore.close();
+  });
+});
+
 describe('EntityStore persistence', () => {
   it('survives reopen of the same file', () => {
     const created = store.upsert('team_member', 'Heather', {
