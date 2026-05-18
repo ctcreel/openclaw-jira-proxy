@@ -10,6 +10,8 @@ After pushing, check CodeRabbit: `gh pr view --comments`
 
 ## Architecture
 
+> **Start here on a fresh session:** read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). It is the load-bearing mental model — the three-repo split (clawndom / agent-workspaces / agency-tools), the job lifecycle, and where to look for any debug entry point. Five minutes there saves an hour of wrong assumptions.
+
 Express.js standalone proxy. BullMQ + Redis for job queue. Pluggable runner backends for prompt delivery.
 
 ```
@@ -28,6 +30,9 @@ Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, H
 
 ## Rules
 
+- **Tool surface = route's `tools:` block.** An agent's capabilities are exactly the union of its routes' `tools:` declarations. Templates do NOT enumerate or grant tools. `agency-tools` is a capability *menu*; adding a tool there grants zero agents access until a route opts in. When debugging "why can't the agent do X?", look at the route's `tools:` — there is no other source.
+- **Live agent-workspace HEAD may be ahead of your local checkout.** Builder PRs (and live edits on the host) advance the deployed workspace autonomously. Before reasoning about deployed behavior, check `/home/ubuntu/.clawndom-<agent>/agents/<owner>__<repo>/` HEAD on the host, not your working copy.
+- **Tail the log file, not journalctl.** Each clawndom service has `StandardOutput=append:/var/log/clawndom-<agent>/clawndom.log`; journalctl shows only systemd lifecycle events, not node stdout.
 - **Fail fast** -- no defensive code, no silent fallbacks
 - **Validate at boundaries only** -- Zod in controllers, trust internally
 - **No `any`** -- use `unknown` and narrow
