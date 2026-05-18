@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@slack/socket-mode": "^2.0.4",
+    "better-sqlite3": "^12.10.0",
     "bullmq": "^5.30.0",
     "cron-parser": "^5.5.0",
     "express": "^4.21.0",
@@ -45,6 +46,7 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
@@ -69,5 +71,10 @@
   "packageManager": "pnpm@10.29.3",
   "engines": {
     "node": ">=22.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }
