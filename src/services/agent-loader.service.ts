@@ -146,6 +146,41 @@ export const agentRuleSchema = z.object({
    * to errors happens once every rule has declared its inputs.
    */
   inputs: z.array(z.string().min(1)).default([]),
+  /**
+   * Per-route entity-data-surface scope. When present, this rule's
+   * runs receive an `actor` (the resolved entity from the EntityStore)
+   * and an injected `{{ entity_model }}` markdown handbook describing
+   * the in-scope kinds + their relations. Entity tools called on this
+   * route MUST reference a kind listed here; out-of-scope calls are
+   * rejected.
+   *
+   *   entities:
+   *     kinds: [client, contact, team_member]
+   *
+   * See openspec/changes/entities for the substrate spec.
+   */
+  entities: z
+    .object({
+      kinds: z.array(z.string().min(1)).min(1),
+    })
+    .optional(),
+  /**
+   * Per-route opt-in for cross-surface interaction injection. When
+   * present, the template render receives `{{ interactions }}` —
+   * recent interactions for the resolved actor (and, with
+   * `includeMentionsOfRelatedEntities`, interactions whose --about-->
+   * is one of the actor's related clients).
+   *
+   *   interactions:
+   *     topN: 5
+   *     includeMentionsOfRelatedEntities: true
+   */
+  interactions: z
+    .object({
+      topN: z.number().int().positive().max(50).default(5),
+      includeMentionsOfRelatedEntities: z.boolean().default(false),
+    })
+    .optional(),
 });
 
 const agentRoutingSchema = z.object({
