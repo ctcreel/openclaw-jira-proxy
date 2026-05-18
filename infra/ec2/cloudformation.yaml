@@ -90,6 +90,7 @@ Resources:
             VolumeSize: 20
             VolumeType: gp3
             DeleteOnTermination: true
+            Encrypted: true
       Tags:
         - Key: Name
           Value: clawndom
