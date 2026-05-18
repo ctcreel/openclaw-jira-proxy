@@ -1,6 +1,7 @@
 import express from 'express';
 import type { Express } from 'express';
 
+import { createEntitiesRoutes } from './entities.routes';
 import { createHealthRoutes } from './health.routes';
 import { createMemoryRoutes } from './memory.routes';
 import { createScheduledTasksRoutes } from './scheduled-tasks.routes';
@@ -92,6 +93,10 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/tasks/:agent/:taskId/wait', requireAgentBearer, waitTaskHandler());
 
   app.use('/api/memory', express.json({ limit: '1mb' }), createMemoryRoutes());
+
+  // /api/agents/:agent/entities — per-tenant entity store, bearer-gated.
+  // See openspec/changes/entities for the substrate spec.
+  app.use('/api/agents/:agent/entities', requireAgentBearer, createEntitiesRoutes());
 
   // /api/version — agent_version hash + per-repo breakdown. Bearer-gated.
   // See openspec/changes/spe-2078-tool-use/specs/agent-versioning/spec.md.
