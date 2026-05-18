@@ -1,11 +1,13 @@
 ## Purpose
 
-Defines the per-tenant entity store: a typed, queryable substrate for the
-practice's proper nouns (clients, contacts, team members, locations) plus
-the typed relations between them. The store is the single source of
-truth for identity across surfaces and over time. The agent reads and
-writes it through four HTTP-backed tools; the framework reads it
-directly via an internal resolver for actor resolution.
+Defines the per-tenant entity store: a typed, queryable substrate for an
+agent's proper nouns plus the typed relations between them. Clawndom
+ships the substrate (storage, tools, HTTP, audit, resolver, renderer);
+each agent's workspace declares the kinds and relations via JSON Schema
+files. The agent reads and writes through five HTTP-backed tools (plus
+a gated sixth, `purge`); the framework reads directly via an internal
+resolver for actor resolution and via the per-fire `{{ entity_model }}`
+renderer.
 
 ## Requirements
 
@@ -39,10 +41,17 @@ Every entity MUST have an `id`, `kind`, `name`, `properties` (JSON
 object), `created_at`, and `updated_at`. IDs MUST follow a
 kind-prefix convention:
 
-- `team_member`: `t_<slug>` (operator-supplied slug)
-- `client`: `c_<8-char Crockford base32>` (generated when not supplied)
-- `contact`: `p_<8-char Crockford base32>` (generated when not supplied)
-- `location`: `loc_<slug>` (operator-supplied slug)
+- `team_member`: `t_<slug>` (operator-supplied slug, human-stable)
+- `client`: `c_<uuid-v4>` (generated when not supplied)
+- `contact`: `p_<uuid-v4>` (generated when not supplied)
+- `location`: `l_<slug>` (operator-supplied slug, human-stable)
+
+Team members and locations keep human-readable slugs because they are
+the small stable enumerations that humans (operators and templates)
+actually reference by ID. Clients and contacts are auto-generated at
+intake; UUIDs avoid the design overhead of defending a custom format
+and remove any collision concerns at any scale (including future
+cross-tenant federation).
 
 IDs MUST NOT change after creation, even when the entity is renamed.
 
@@ -52,7 +61,7 @@ IDs MUST NOT change after creation, even when the entity is renamed.
   'Ari Goolsby', dob: '2018-04-12', ...})` with no supplied ID
 - **WHEN** No existing entity matches the natural key (legal_name +
   dob)
-- **THEN** A new ID MUST be generated matching `^c_[0-9a-tv-z]{8}$`
+- **THEN** A new ID MUST be generated matching `^c_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` (kind-prefix + UUIDv4)
 - **AND** The returned record MUST carry that ID
 
 #### Scenario: Operator-Supplied Team Member Slug
@@ -93,16 +102,39 @@ supplied, `upsert` MUST create a new entity.
 - **THEN** The stored properties MUST be `{ a: 3 }` (not `{ a: 3, b:
   2 }`); the caller is responsible for sending the full desired state
 
-### Requirement: Per-Kind Schema Validation
+### Requirement: Workspace-Declared Schemas
 
-Each entity kind MAY have a JSON Schema file at
-`src/services/entities/schemas/<kind>.schema.json`. When a schema
+Each entity kind MAY have a JSON Schema file in the agent's workspace
+at `<workspace>/schemas/<kind>.schema.json` (e.g.,
+`winston-agency/workspaces/winston/schemas/client.schema.json`).
+Clawndom loads schemas at boot from the workspace path. When a schema
 exists, `entity.upsert` MUST validate the `properties` blob against
 that schema before write. Validation failures MUST be reported with
 the failing property path and the constraint that failed.
 
 When no schema exists for a kind, `entity.upsert` MUST accept any
-JSON object as `properties` (schemaless fallback).
+JSON object as `properties` (schemaless fallback). This lets the
+agent experiment with new kinds before committing to a schema.
+
+Date-typed properties (declared in the schema as `"format": "date"`)
+MUST be ISO-8601 (`YYYY-MM-DD`). Email-typed properties (declared as
+`"format": "email"`) MUST pass standard email validation. The
+validator MUST reject writes that violate these format constraints.
+
+#### Scenario: Workspace Schema Loaded at Boot
+
+- **GIVEN** A workspace ships `schemas/client.schema.json`
+- **WHEN** Clawndom starts the agent
+- **THEN** The schema MUST be loaded and available to the validator
+- **AND** `entity.upsert(kind='client', ...)` MUST validate against it
+
+#### Scenario: ISO-8601 Date Enforced
+
+- **GIVEN** `client.schema.json` declares `started_at` with
+  `"format": "date"`
+- **WHEN** `entity.upsert(kind='client', properties={started_at:
+  '2/19/2025'})` is called (US-format text)
+- **THEN** The call MUST fail with a format-violation error
 
 #### Scenario: Missing Required Property
 
@@ -181,6 +213,34 @@ log. Purge MUST require a non-empty `reason` string.
 - **AND** An audit record MUST capture the orphaned-incoming-
   relation list and the reason
 
+### Requirement: Find Matches on Alias
+
+`entity.find` MUST match against the `aliases` property in addition
+to `name`. Aliases are a clinically-meaningful PHI-protection device
+— therapists use codes like "AIS AH" (Alan Hu at AIS) in shared
+calendars and conversations to avoid surfacing identifying detail
+publicly. When an inbound event or query references a client by
+alias rather than legal name, the resolver MUST surface the same
+entity.
+
+The `aliases` property is an array of strings; a client may have
+zero or more aliases. Aliases SHOULD be unique within a tenant but
+the store does not enforce uniqueness (collisions are a data
+quality issue, not a correctness issue).
+
+#### Scenario: Find by Alias
+
+- **GIVEN** A client `c_<uuid>` with `name: 'Alan Hu'` and
+  `aliases: ['AIS AH']`
+- **WHEN** `entity.find(kind='client', q='AIS AH')` is called
+- **THEN** The result MUST include the Alan Hu entity
+
+#### Scenario: Multiple Aliases
+
+- **GIVEN** A client with `aliases: ['AIS AH', 'AH-K2']`
+- **WHEN** `entity.find` is called with either alias
+- **THEN** The same entity MUST be returned in both cases
+
 ### Requirement: Audit Log on Every Write
 
 Every successful create, update, relate, unrelate, and purge MUST
@@ -230,18 +290,67 @@ Auth failures MUST return 401; invalid request bodies MUST return
 - **THEN** The response MUST be 400 naming the missing field
 - **AND** No row MUST be inserted
 
-### Requirement: Per-Route Opt-In
+### Requirement: Per-Route `entities.kinds` Declaration
 
-Routes in `clawndom.yaml` MUST opt in to entity-resolver activation
-by declaring `entities: true` on the rule. Routes without that
-flag MUST NOT pay the resolver cost and MUST NOT have access to
-the entity tools (the tools are added to the MCP bundle only when
-the route declares them in its `tools:` block; the `entities:
-true` flag governs the *resolver* path).
+Routes in `clawndom.yaml` that use the entity tools MUST declare an
+`entities.kinds` list naming the kinds in scope for that route.
+Clawndom MUST reject `entity.*` tool calls that reference a kind not
+in the route's `entities.kinds`, with an error like `Kind 'X' not
+declared for this route`.
 
-#### Scenario: Route Without Opt-In
+The `entities.kinds` list also drives the `{{ entity_model }}`
+template-context variable: only the listed kinds and the relations
+connecting them are rendered in the handbook for that route.
 
-- **GIVEN** A scheduled rule with no `entities:` flag
+Routes without `entities.kinds` MUST NOT have any entity tools in
+their MCP bundle, MUST NOT pay the resolver cost, and MUST NOT
+receive a `{{ entity_model }}` variable.
+
+#### Scenario: Route Without `entities.kinds`
+
+- **GIVEN** A scheduled rule with no `entities` block
 - **WHEN** The rule fires
 - **THEN** The event context MUST NOT include an `actor` field
 - **AND** The resolver MUST NOT have been called
+- **AND** `{{ entity_model }}` MUST NOT be in the template context
+
+#### Scenario: Out-of-Scope Kind Rejected
+
+- **GIVEN** A route with `entities.kinds: [client, contact]`
+- **WHEN** The agent calls `entity.upsert(kind='team_member', ...)`
+- **THEN** The call MUST fail with `Kind 'team_member' not declared
+  for this route`
+- **AND** No row MUST be inserted
+
+### Requirement: `{{ entity_model }}` Renderer
+
+When a route declares `entities.kinds`, Clawndom MUST synthesize a
+markdown handbook describing the in-scope kinds (per-kind properties
+and descriptions from the schemas) and the relations between them
+(from `relations.json`). The handbook MUST be exposed to the
+template renderer as the `entity_model` variable.
+
+The handbook MUST be regenerated per fire. Generation cost is
+dominated by reading the workspace schema files; at the small file
+sizes typical of these schemas, this is microseconds and need not
+be cached.
+
+#### Scenario: Trimmed Handbook for Read-Only Route
+
+- **GIVEN** A route with `entities.kinds: [client, contact]` and
+  tools `[entity.find, entity.get]` only
+- **WHEN** The route matches and the template renders
+- **THEN** `{{ entity_model }}` MUST describe only `client` and
+  `contact`
+- **AND** Relations whose `from` or `to` is `team_member` or
+  `location` MUST NOT appear
+
+#### Scenario: Schema Update Reflected Next Fire
+
+- **GIVEN** A workspace ships `schemas/client.schema.json` describing
+  property `paperwork_status`
+- **AND** A subsequent workspace deploy updates the schema to
+  remove `paperwork_status`
+- **WHEN** A route fires after the workspace reload
+- **THEN** `{{ entity_model }}` MUST reflect the new schema (no
+  `paperwork_status` field shown)

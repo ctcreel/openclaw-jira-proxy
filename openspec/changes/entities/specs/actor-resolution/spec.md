@@ -38,18 +38,31 @@ three kinds and MUST be `null` for stranger.
 - **THEN** The resolved actor MUST be `{ kind: 'stranger', id: null,
   email: <raw> }`
 
-### Requirement: Resolver Chain
+### Requirement: Resolver Chain (Schema-Auto-Discovered)
 
-The resolver MUST try hints in this order, returning on first match:
+The resolver MUST auto-discover which entity kinds participate in
+identity resolution by reading the workspace schemas. A kind is in
+scope for identity resolution if its schema declares any property
+with `"format": "email"` (for email/oidc_email hints) or a property
+named `slack_user_id` (for slack_user_id hints). No separate
+resolver-config block is required.
 
-1. `slack_user_id` against team_member entities' `slack_user_id`
-   property
-2. `email` or `oidc_email` against team_member entities' `emails`
-   property (case-insensitive)
-3. `email` against contact entities' `email` property (case-
-   insensitive). A match returns a `contact` actor with `client_ids`
-   populated from outgoing `is_contact_for` relations.
-4. Fallback to stranger.
+Given `IdentityHints { email?, slack_user_id?, oidc_email? }`, the
+resolver MUST try in this order, returning on first match:
+
+1. `slack_user_id` hint against any kind that declares a
+   `slack_user_id` property
+2. `email` / `oidc_email` hint against any kind that declares an
+   email-typed property (case-insensitive match on the property
+   value)
+3. Fallback to stranger.
+
+When the matched entity is a `client`-style kind (i.e., the entity
+represents the subject of the agent's domain rather than a
+communicator), the resolver MAY follow outgoing `is_contact_for`-
+style relations to surface the related client(s) in the returned
+actor. Implementation discovers this via the schema-declared
+relation graph.
 
 The resolver MUST NOT consult any source outside the entity store.
 
