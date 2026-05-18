@@ -9,6 +9,7 @@ import { getSettings, isWebhookProvider } from '../config';
 import { handleEventStream } from '../controllers/events.controller';
 import { listActiveJobs } from '../controllers/active-jobs.controller';
 import { createContextSchemasHandler } from '../controllers/context-schemas.controller';
+import { createOperationsDocHandler } from '../controllers/operations-doc.controller';
 import { listRecentSkippedWebhooks } from '../controllers/skipped-webhooks.controller';
 import { handleQueueSnapshot } from '../controllers/queue-snapshot.controller';
 import { handleRoutingSchema } from '../controllers/schema.controller';
@@ -52,6 +53,15 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/tools/catalog', listToolCatalog);
   app.get('/api/agents/:agent/tools', listAgentTools);
   app.get('/api/agents/:agent/context-schemas', createContextSchemasHandler(agents));
+
+  // GET /api/agents/:agent/operations.md — Markdown runbook rendered from
+  // live state (parsed clawndom.yaml, agent_version, port). Intended
+  // caller: a GH Action in each agent-workspace repo that regenerates
+  // and commits OPERATIONS.md on push-to-main. Reachable on the tailnet
+  // without the editor-identity gate — the response carries no secrets
+  // (no resolved tokens, no env values), only structural facts derivable
+  // from the workspace YAML.
+  app.get('/api/agents/:agent/operations.md', createOperationsDocHandler(agents));
 
   // Editor UI surface: workspace read, routing-schema export, on-demand
   // audit, and the PR-style write flow. All editor routes sit behind
