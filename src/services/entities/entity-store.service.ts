@@ -1,8 +1,46 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 
 export type EntityKind = string;
 export type EntityId = string;
+
+interface EntityRow {
+  id: string;
+  kind: string;
+  name: string;
+  properties: string;
+  created_at: number;
+  updated_at: number;
+  rowid?: number;
+}
+
+interface RelationOutRow {
+  type: string;
+  to_id: string;
+  properties: string | null;
+}
+
+interface RelationInRow {
+  type: string;
+  from_id: string;
+  properties: string | null;
+}
+
+interface AuditRow {
+  id: number;
+  ts: number;
+  trace_id: string | null;
+  actor: string | null;
+  entity_id: string;
+  op: string;
+  diff: string;
+}
+
+interface NaturalKeyRow {
+  id: string;
+  properties: string;
+}
 
 export interface Entity {
   id: EntityId;
@@ -290,24 +328,28 @@ export class EntityStore {
     if (entity === null) return null;
     if (!options.expand_relations) return entity;
     const outgoing = this.db
-      .prepare('SELECT type, to_id, properties FROM relations WHERE from_id = ?')
-      .all(id) as Array<{ type: string; to_id: string; properties: string | null }>;
+      .prepare<
+        [string],
+        RelationOutRow
+      >('SELECT type, to_id, properties FROM relations WHERE from_id = ?')
+      .all(id);
     const incoming = this.db
-      .prepare('SELECT type, from_id, properties FROM relations WHERE to_id = ?')
-      .all(id) as Array<{ type: string; from_id: string; properties: string | null }>;
+      .prepare<
+        [string],
+        RelationInRow
+      >('SELECT type, from_id, properties FROM relations WHERE to_id = ?')
+      .all(id);
     return {
       ...entity,
-      outgoing: outgoing.map((r) => ({
-        type: r.type,
-        to_id: r.to_id,
-        properties:
-          r.properties === null ? null : (JSON.parse(r.properties) as Record<string, unknown>),
+      outgoing: outgoing.map((relation) => ({
+        type: relation.type,
+        to_id: relation.to_id,
+        properties: parseJsonOrNull(relation.properties),
       })),
-      incoming: incoming.map((r) => ({
-        type: r.type,
-        from_id: r.from_id,
-        properties:
-          r.properties === null ? null : (JSON.parse(r.properties) as Record<string, unknown>),
+      incoming: incoming.map((relation) => ({
+        type: relation.type,
+        from_id: relation.from_id,
+        properties: parseJsonOrNull(relation.properties),
       })),
     };
   }
@@ -357,21 +399,14 @@ export class EntityStore {
       ORDER BY e.${order.field} ${dirSql}, e.rowid ${dirSql}
       LIMIT ?
     `;
-    const rows = this.db.prepare(sql).all(...params, limit) as Array<{
-      id: string;
-      kind: string;
-      name: string;
-      properties: string;
-      created_at: number;
-      updated_at: number;
-    }>;
-    return rows.map((r) => ({
-      id: r.id,
-      kind: r.kind,
-      name: r.name,
-      properties: JSON.parse(r.properties) as Record<string, unknown>,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
+    const rows = this.db.prepare<unknown[], EntityRow>(sql).all(...params, limit);
+    return rows.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      name: row.name,
+      properties: parseJsonObject(row.properties),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
     }));
   }
 
@@ -440,11 +475,17 @@ export class EntityStore {
     }
     const tx = this.db.transaction(() => {
       const outgoing = this.db
-        .prepare('SELECT type, to_id, properties FROM relations WHERE from_id = ?')
-        .all(id) as Array<{ type: string; to_id: string; properties: string | null }>;
+        .prepare<
+          [string],
+          RelationOutRow
+        >('SELECT type, to_id, properties FROM relations WHERE from_id = ?')
+        .all(id);
       const incoming = this.db
-        .prepare('SELECT type, from_id, properties FROM relations WHERE to_id = ?')
-        .all(id) as Array<{ type: string; from_id: string; properties: string | null }>;
+        .prepare<
+          [string],
+          RelationInRow
+        >('SELECT type, from_id, properties FROM relations WHERE to_id = ?')
+        .all(id);
       this.db.prepare('DELETE FROM relations WHERE from_id = ?').run(id);
       this.db.prepare('DELETE FROM relations WHERE to_id = ?').run(id);
       this.db.prepare('DELETE FROM entities WHERE id = ?').run(id);
@@ -470,48 +511,34 @@ export class EntityStore {
       since !== undefined
         ? 'SELECT id, ts, trace_id, actor, entity_id, op, diff FROM entity_audit WHERE entity_id = ? AND ts >= ? ORDER BY ts DESC, id DESC'
         : 'SELECT id, ts, trace_id, actor, entity_id, op, diff FROM entity_audit WHERE entity_id = ? ORDER BY ts DESC, id DESC';
-    const params: unknown[] = since !== undefined ? [entityId, since] : [entityId];
-    const rows = this.db.prepare(sql).all(...params) as Array<{
-      id: number;
-      ts: number;
-      trace_id: string | null;
-      actor: string | null;
-      entity_id: string;
-      op: string;
-      diff: string;
-    }>;
-    return rows.map((r) => ({
-      id: r.id,
-      ts: r.ts,
-      trace_id: r.trace_id,
-      actor: r.actor,
-      entity_id: r.entity_id,
-      op: r.op as AuditRecord['op'],
-      diff: JSON.parse(r.diff) as Record<string, unknown>,
+    const rows =
+      since !== undefined
+        ? this.db.prepare<[string, number], AuditRow>(sql).all(entityId, since)
+        : this.db.prepare<[string], AuditRow>(sql).all(entityId);
+    return rows.map((row) => ({
+      id: row.id,
+      ts: row.ts,
+      trace_id: row.trace_id,
+      actor: row.actor,
+      entity_id: row.entity_id,
+      op: parseAuditOp(row.op),
+      diff: parseJsonObject(row.diff),
     }));
   }
 
   private getRaw(id: EntityId): Entity | null {
     const row = this.db
-      .prepare(
-        'SELECT id, kind, name, properties, created_at, updated_at FROM entities WHERE id = ?',
-      )
-      .get(id) as
-      | undefined
-      | {
-          id: string;
-          kind: string;
-          name: string;
-          properties: string;
-          created_at: number;
-          updated_at: number;
-        };
+      .prepare<
+        [string],
+        EntityRow
+      >('SELECT id, kind, name, properties, created_at, updated_at FROM entities WHERE id = ?')
+      .get(id);
     if (row === undefined) return null;
     return {
       id: row.id,
       kind: row.kind,
       name: row.name,
-      properties: JSON.parse(row.properties) as Record<string, unknown>,
+      properties: parseJsonObject(row.properties),
       created_at: row.created_at,
       updated_at: row.updated_at,
     };
@@ -536,10 +563,10 @@ export class EntityStore {
     const specification = this.naturalKeys[kind];
     if (specification === undefined) return null;
     const candidates = this.db
-      .prepare('SELECT id, properties FROM entities WHERE kind = ?')
-      .all(kind) as Array<{ id: string; properties: string }>;
+      .prepare<[string], NaturalKeyRow>('SELECT id, properties FROM entities WHERE kind = ?')
+      .all(kind);
     for (const candidate of candidates) {
-      const properties = JSON.parse(candidate.properties) as Record<string, unknown>;
+      const properties = parseJsonObject(candidate.properties);
       const candidateKey = this.computeNaturalKey(kind, properties);
       if (candidateKey === naturalKey) return candidate.id;
     }
@@ -568,4 +595,20 @@ export class EntityStore {
         JSON.stringify(record.diff),
       );
   }
+}
+
+const jsonObjectSchema = z.record(z.string(), z.unknown());
+const auditOpSchema = z.enum(['create', 'update', 'relate', 'unrelate', 'purge']);
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  return jsonObjectSchema.parse(JSON.parse(value));
+}
+
+function parseJsonOrNull(value: string | null): Record<string, unknown> | null {
+  if (value === null) return null;
+  return parseJsonObject(value);
+}
+
+function parseAuditOp(value: string): AuditRecord['op'] {
+  return auditOpSchema.parse(value);
 }

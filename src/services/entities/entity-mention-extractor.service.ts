@@ -84,11 +84,20 @@ function collectTerms(entity: { name: string; properties: Record<string, unknown
 }
 
 function hasWordBoundary(text: string, term: string): boolean {
-  const index = text.indexOf(term);
-  if (index === -1) return false;
-  const before = index === 0 ? ' ' : text.charAt(index - 1);
-  const after = index + term.length >= text.length ? ' ' : text.charAt(index + term.length);
-  return !isWordChar(before) && !isWordChar(after);
+  // Returns true if `term` appears in `text` at any position with
+  // non-word characters on both sides. Iterates all occurrences,
+  // not just the first, so a match later in the text isn't masked by
+  // an earlier substring-match without proper boundaries.
+  let cursor = 0;
+  while (cursor <= text.length - term.length) {
+    const index = text.indexOf(term, cursor);
+    if (index === -1) return false;
+    const before = index === 0 ? ' ' : text.charAt(index - 1);
+    const after = index + term.length >= text.length ? ' ' : text.charAt(index + term.length);
+    if (!isWordChar(before) && !isWordChar(after)) return true;
+    cursor = index + 1;
+  }
+  return false;
 }
 
 function isWordChar(character: string): boolean {

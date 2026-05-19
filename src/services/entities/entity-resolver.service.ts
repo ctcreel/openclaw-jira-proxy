@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { Actor } from '../../types/actor';
 
 import type { EntityStore } from './entity-store.service';
@@ -57,25 +59,23 @@ export class EntityResolver {
     propertyName: string,
     value: string,
   ): { id: string; kind: string; name: string; properties: Record<string, unknown> } | null {
-    const rows = this.store.database
-      .prepare(
+    const row = this.store.database
+      .prepare<
+        [string, string, string],
+        { id: string; kind: string; name: string; properties: string }
+      >(
         `SELECT id, kind, name, properties FROM entities
          WHERE kind = ? AND LOWER(json_extract(properties, '$.' || ?)) = LOWER(?)
          LIMIT 1`,
       )
-      .all(kind, propertyName, value) as Array<{
-      id: string;
-      kind: string;
-      name: string;
-      properties: string;
-    }>;
-    if (rows.length === 0) return null;
-    const row = rows[0]!;
+      .get(kind, propertyName, value);
+    if (row === undefined) return null;
+    const properties = z.record(z.string(), z.unknown()).parse(JSON.parse(row.properties));
     return {
       id: row.id,
       kind: row.kind,
       name: row.name,
-      properties: JSON.parse(row.properties) as Record<string, unknown>,
+      properties,
     };
   }
 

@@ -1,5 +1,11 @@
+/**
+ * `kind` is workspace-declared (any string the workspace ships a JSON
+ * Schema for), with one reserved value: `'stranger'`. ResolvedActor
+ * therefore narrows to `kind: string` excluding `'stranger'` — the
+ * discriminant is purely the value, not a closed enum.
+ */
 export interface ResolvedActor {
-  kind: string;
+  kind: Exclude<string, 'stranger'>;
   id: string;
   name: string;
   [property: string]: unknown;
