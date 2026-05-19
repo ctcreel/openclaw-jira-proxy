@@ -1,270 +1,212 @@
 # clawndom
 
-The runtime that hosts sc0red's agent fleet — receives events, renders prompts, dispatches Claude / OpenAI / Bedrock runs against agent workspaces cloned from Git. Webhooks, scheduled tasks, internal task envelopes, and Slack Socket Mode all land here.
+An agent runtime for LLM agents that need to be auditable, declarative, and run per-tenant.
 
-## What clawndom is
+## What it is
 
-A long-running Node service that loads one or more **agent workspaces** at boot (each is a Git repo specified in `AGENTS_CONFIG`), reads each workspace's `clawndom.yaml` for routing rules, and dispatches every matching event into a per-agent BullMQ queue. The worker renders the rule's Nunjucks template, spawns the chosen runner (today the production runner is `claude-cli`), waits for the run to reach a terminal state, and emits structured audit + observability data the whole time.
+clawndom runs one agent. The agent’s capabilities live in a separate git repo as a `clawndom.yaml` file plus markdown templates. clawndom reads that repo, accepts events from external sources (Slack, Jira, GitHub, Gmail, scheduled fires, internal dispatches), and routes each event to an LLM run that has exactly the tools the matching route declares — nothing more.
 
-Three dispatch surfaces, one engine:
+The runtime is per-agent. One systemd unit, one host, one log tree, one HTTP port per agent. Multi-tenancy is multiple side-by-side deployments, not multi-tenant in-process.
 
-- **Webhook** — third-party services POST to `/hooks/<provider>`. HMAC-validated per provider (`websub` for Jira, `github`, `slack`, `bearer` for trusted callers). Used by Jira, GitHub, Slack, Gmail Push.
-- **Slack Socket Mode** — for Slack apps that need to receive `message.im`, `app_mention`, and assistant-thread events without a public ingress. Opened as an outbound WebSocket via `@slack/socket-mode`.
-- **Scheduled / internal tasks** — `routing.schedule` rules fire on cron (BullMQ repeatable jobs). `/api/tasks` accepts a bearer-authenticated POST that dispatches a `taskType` against `routing.internal` rules. SPE-1981's registry stores durable schedule entries that survive a restart.
+What you get from running it:
 
-Each agent gets its own per-provider BullMQ queue; a Redis-backed global semaphore caps total concurrent runs across all providers (default 1) so a single Anthropic API key isn't spammed by parallel bursts.
+- A pluggable runner interface (`claude-cli`, `openai`, `bedrock`, `shell`, `null`) so the agent loop isn’t married to one LLM provider.
+- Warm-subprocess session pooling with Redis-persisted session ids — conversations survive reaps, restarts, and quota walls via `claude --resume`.
+- A least-privilege tool model: capability is per-route, credentials are per-tool, cred files are mode-600 and unlinked by the MCP server after read. Credentials never enter `process.env`, never appear in the prompt, never appear in `tool_use` definitions registered with the model.
+- One NDJSON audit record per tool invocation with creds redacted, request_id and correlation_id propagated, agent version stamped.
+- Completion-aware queue workers. The queue doesn’t release the next event until the current run has reached a terminal state — `ok`, `error`, `timeout`, or `quota_exceeded`. Quota walls don’t burn retries; they pause the queue, persist the session id, and resume the same conversation when the window opens.
+- A built-in `Builder` system agent that can author PRs into the agent-workspace repo, so capability changes go through code review rather than ambient configuration drift.
 
-## Architecture at a glance
+## Why it exists
+
+Most agent platforms in the wild are one of two things:
+
+- Hosted SaaS where you trade control for convenience. The agent’s capabilities, memory, and execution all live in someone else’s tenant. Audit trail is whatever the vendor decides to expose. Credentials are connected at the org level and the agent uses what it can reach.
+- A toy loop someone wrote in a notebook. Fine for one-off automations. Falls over the first time a webhook source sends a burst, a quota wall hits mid-run, a tool call needs a credential the prompt shouldn’t see, or someone asks what the agent actually did last Tuesday.
+
+clawndom is the third option. It’s the runtime you build when:
+
+- The agent touches data that has to be auditable. Healthcare-adjacent workflows. M&A-adjacent workflows. Anything where “what did the agent do, who authorized each tool call, what credentials did it touch, can you reproduce the run” is a question that will be asked.
+- The agent is going to be a product, not just an internal tool. The agent’s capability spec needs to be a portable artifact — a workspace repo — that can be deployed for a different tenant without code changes.
+- The capability surface should be enforced, not just documented. Adding a tool to the capability menu must give zero agents access until a route in some workspace opts it in. Templates must not be able to grant tool surface they weren’t declared with. The build breaks when these invariants are violated.
+- Bursty event sources are normal. Jira board reorganizations fire ten events in two seconds. GitHub merges fan out into push, PR-close, deployment, status checks. The runtime serializes them, waits for actual completion, and bounds concurrent spend with a Redis semaphore.
+
+If those constraints aren’t yours, you don’t need clawndom. Use a hosted product or write the notebook.
+
+## Architectural shape
+
+Three repos, by design:
 
 ```
-Inbound:
-    Webhook (Jira / GitHub / Slack / Gmail Push)
-    Slack Socket Mode (WS, inbound only)
-    POST /api/tasks (bearer)
-    routing.schedule cron firings
-              │
-              ▼
-    Match an agent + a rule via clawndom.yaml
-              │
-              ▼
-    Render Nunjucks template + system-doc injections
-              │
-              ▼
-    Enqueue on BullMQ queue (per agent + per provider)
-              │
-              │   Worker (concurrency 1 per provider, global semaphore)
-              ▼
-    Spawn runner (claude-cli today; openai / bedrock / shell / null also wired)
-              │
-              ▼
-    Stream stdout, parse session JSON, write audit records,
-    emit SSE events for the dashboard, hold the queue until
-    the run reaches a terminal state.
+clawndom            The runtime. TypeScript. This repo.
+
+<agent-workspace>   The agent's complete capability spec. One repo per
+                    agent (or a monorepo of agents). Carries clawndom.yaml,
+                    templates/, SOUL.md. No executable code. The repo IS
+                    the agent.
+
+agency-tools        The Python tool menu. Each tool is a directory with
+                    tool.yaml + impl.py. Inert until a route in some
+                    agent-workspace opts it in.
 ```
 
-The agent workspace is the source of truth for prompts, identity, and routing — clawndom is the dispatcher.
+An agent can do exactly what its routes declare. Nothing else.
 
-## SPE-2078 route-side tool-use
+- Templates don’t grant tools. They’re prose rendered against event payloads.
+- agency-tools is a menu, not a deployment. Adding a tool there gives zero agents access until a route’s `tools:` block opts in.
+- Credentials are scoped per-tool, injected at call time through a mode-600 file the MCP server reads then unlinks.
 
-When a routing rule declares `tools:`, clawndom resolves each tool's `secrets:` via `SECRETS_CONFIG`, materializes a mode-600 credentials file inside a per-run temp directory, and registers a clawndom-tools MCP server with the spawned claude-cli via `--mcp-config`. The MCP server reads the credentials file at startup, unlinks it, and dispatches every `tool_use` block to the tool's `impl.py` over stdio JSON-RPC. Every dispatch lands a redacted audit record at `$CLAWNDOM_AUDIT_LOG`.
+When you ask “why can’t this agent do X?”, the answer is always in some route’s `tools:` block. There is no other source.
 
-The literal credential value never enters the agent process's environment, the prompt context, or `/proc/<pid>/environ`. See `docs/REGULATED_BUYER_READINESS.md` for the full design.
+For the load-bearing mental model — job lifecycle, runtime reality vs. design language, where things live on a deployed host — read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first. Everything else assumes you’ve read it.
 
-## Agent workspaces
+## Runner abstraction
 
-`AGENTS_CONFIG` lists one or more agents:
+The agent loop isn’t married to one LLM provider. `AgentRunner` is a strategy-pattern interface; concrete implementations live in `src/runners/`:
 
-```json
-[
-  {
-    "name": "winston",
-    "repo": "git@github.com:ctcreel/winston-agency.git",
-    "path": "workspaces/winston",
-    "sharedTools": {
-      "repo": "git@github.com:SC0RED/agency-tools.git",
-      "ref": "v1.4.1",
-      "path": "agency-tools"
-    }
-  }
-]
+|Runner      |When                                                                                                                                                                 |
+|------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|`claude-cli`|Default. Spawns `claude` CLI with `--mcp-config`. Supports session resume, warm subprocess pooling, per-run system prompt for cache hits, quota-aware terminal state.|
+|`openai`    |OpenAI-compatible endpoints. No session resume, no MCP.                                                                                                              |
+|`bedrock`   |AWS Bedrock. No session resume, no MCP.                                                                                                                              |
+|`shell`     |Per-rule maintenance commands. Used for `routing.schedule` rules that aren’t LLM calls. Not registered globally.                                                     |
+|`null`      |Tests. Returns canned results.                                                                                                                                       |
+
+Runner configs are a Zod-validated discriminated union. Adding a runner is a four-step recipe — see [`src/runners/README.md`](src/runners/README.md).
+
+## Completion semantics
+
+`RunResult.status` is one of `ok`, `error`, `timeout`, `quota_exceeded`. The worker treats each differently:
+
+- `ok` → release the job, dequeue the next event.
+- `error` → consume a retry attempt; standard BullMQ backoff.
+- `timeout` → same.
+- `quota_exceeded` → don’t consume a retry. Pause the queue until `quotaResetAt`. Persist the `session_id` captured from `system.init` onto the requeue envelope. When the queue resumes, the runner re-spawns with `claude --resume <id>` and continues the same conversation rather than replanning from scratch.
+
+A Redis-backed global semaphore caps total concurrent runs across all providers (default: 1). The queue doesn’t acknowledge a job until `agent.wait` reports a terminal state — not just that the HTTP request returned.
+
+## Security model
+
+- One mode-700 scratch dir per run under the system temp directory.
+- `tool-config.json` carries tool descriptors only (name, description, args schema). Readable by the run.
+- `tool-creds.json` is mode-600. The Python MCP server reads it once at startup and unlinks it. Never re-read, never copied, never logged.
+- Credentials never enter `process.env` of the runner subprocess. Only `CLAWNDOM_TOOL_CREDS_FILE` (the path) is injected.
+- The model sees `mcp__clawndom-tools__<tool_name>` in its tool surface. Credentials are not part of any descriptor the model receives.
+- `SecretManager` resolves credentials from configurable providers (env, 1Password, OAuth, file). Provider chain is set per-deployment in `SECRETS_PROVIDERS_CONFIG`.
+- One NDJSON record per tool invocation appended to `audit.log`: timestamp, agent_id, route_id, tool_name, args (creds redacted), result_summary, error_summary, latency_ms, request_id, correlation_id, agent_version.
+
+## Audit subsystem
+
+Eleven static checks validate every agent-workspace before deployment. Run with `pnpm audit` against any workspace directory.
+
+|Check                  |What it enforces                                                                             |
+|-----------------------|---------------------------------------------------------------------------------------------|
+|`condition-paths`      |Routing conditions reference fields that exist on the provider’s payload schema.             |
+|`dispatch-declaration` |Internal dispatches name a `routing.internal` rule that actually exists.                     |
+|`dispatch-tool-present`|Rules that emit dispatches declare the dispatch tool in their `tools:` block.                |
+|`injection-targets`    |Template injection targets (`{{system-doc:…}}`, `{{system-shared:…}}`) resolve to real files.|
+|`legacy-patterns`      |Catches deprecated config shapes from prior versions.                                        |
+|`no-literal-mustache`  |Templates don’t contain literal `{{` that didn’t go through the renderer.                    |
+|`rule-id-uniqueness`   |Rule ids are unique across all routing tables.                                               |
+|`template-inputs`      |Every variable a template references is in the route’s resolved payload context.             |
+|`templates-exist`      |Every `messageTemplate:` references a file that exists.                                      |
+|`tool-use-declared`    |Tools referenced from templates are in the route’s `tools:` block.                           |
+
+CI runs these on every push to the workspace repo. Builder can’t merge a PR that breaks them.
+
+## What’s in the box
+
+```
+src/
+  app.ts                  Composition root.
+  server.ts               Startup wiring. The only place concrete
+                          runners get instantiated.
+  config.ts               Settings loading + provider config schemas.
+
+  runners/                Pluggable AgentRunner implementations.
+  strategies/             Signature validation, routing, session keys,
+                          transports, payload schemas.
+  services/               worker, scheduler, session-pool, memory,
+                          audit, secrets, MCP bridge, event bus.
+  controllers/            HTTP route handlers.
+  middleware/             Auth, request context, error mapping.
+  audit/                  Static checks + injection scan.
+  system-agents/          Built-in agents that ship with the runtime.
+                          Currently: Builder.
+
+docs/
+  ARCHITECTURE.md         Load-bearing mental model. Read first.
+  REGULATED_BUYER_READINESS.md
+  guides/                 TOOLS_AND_TOOL_USE, OPERATIONS template,
+                          AGENT_WORKSPACE_LAYOUT, BRANCHING,
+                          ENVIRONMENT_VARIABLES, SECRETS_MANAGEMENT.
+  runners.md              Runner abstraction reference.
+  design-patterns-guide.md
+
+openspec/                 OpenSpec-format specs for every subsystem.
+                          See "Specs" below.
 ```
 
-At boot, clawndom clones each `repo` at `main` (or the pinned `ref`) under `CLAWNDOM_CONFIG_DIR`, plus the `sharedTools` repo as a sibling. Each agent's workspace exposes:
+## Specs
 
-- `clawndom.yaml` — routing rules + per-rule tools + memory namespace declarations
-- `templates/` — Nunjucks templates (one per route)
-- `docs/` — `IDENTITY.md`, `SOUL.md`, structured data files (e.g. `team.json`), and any policy / reference docs the templates inject
+Behavior is defined in OpenSpec format under `openspec/specs/`. The runtime conforms to these; tests verify they’re satisfied; PRs that change behavior change the spec first.
 
-Two repo-level layout variants are supported: **single-agent** repos (e.g. winston-agency, paired with a separately-versioned `agency-tools` library via `sharedTools`) and **multi-agent** repos (e.g. the-agency, with an in-tree `workspaces/shared/` for prose docs shared across the agents). Both variants land at the same per-agent skeleton above. The full layout contract — required files, optional variants, what NOT to put in a workspace, and how to migrate non-canonical layouts — lives in [`docs/guides/AGENT_WORKSPACE_LAYOUT.md`](docs/guides/AGENT_WORKSPACE_LAYOUT.md).
+|Spec                  |What it covers                                                                     |
+|----------------------|-----------------------------------------------------------------------------------|
+|`webhook-proxy-domain`|Ingestion, signature validation, queuing, completion-aware processing, concurrency.|
+|`runner-abstraction`  |The `AgentRunner` interface and runner registry.                                   |
+|`session-pool`        |Warm subprocess lifecycle, session id persistence, resume semantics.               |
+|`tool-execution`      |MCP bridge, credential isolation, audit emission.                                  |
+|`memory`              |Namespaced vector store, per-run rate limits, pruning.                             |
+|`scheduler`           |Cron and fire-at scheduled tasks, Redis-backed records.                            |
+|`audit-checks`        |The eleven static checks and the injection scan.                                   |
+|`testing`             |Coverage thresholds, mock patterns.                                                |
+|`error-handling`      |Exception hierarchy, RFC 7807 responses.                                           |
+|`observability`       |Structured logging, health checks.                                                 |
+|`infrastructure`      |systemd, Tailscale, Redis deployment.                                              |
+|`ci-cd`               |GitHub Actions pipeline.                                                           |
+|`enforcement`         |Pre-commit hooks, CI quality gates.                                                |
 
-A 5-minute systemd timer (`clawndom-sync-agents.timer` on the Patches box) `git pull`s each agent repo; pushes to `main` reach the agent without a clawndom restart. Winston's box doesn't run the timer — Winston restarts manually on config changes.
+## Operating it
+
+Per-agent deployment under systemd on a Tailscale-attached host. Each agent gets its own clone of clawndom, its own systemd unit, its own log tree, its own HTTP port.
+
+```
+/home/ubuntu/clawndom-<agent>/         Compiled clawndom (dist/server.js).
+/etc/clawndom-<agent>/clawndom.env     Operator-provisioned env vars.
+/etc/systemd/system/clawndom-<agent>.service
+/var/log/clawndom-<agent>/
+  clawndom.log                         Pino NDJSON. StandardOutput
+                                       redirects here — not journalctl.
+  audit.log                            Per-tool-call NDJSON.
+/home/ubuntu/.clawndom-<agent>/agents/<owner>__<repo>/
+                                       Live clone of the agent-workspace.
+                                       Clawndom keeps this up to date.
+                                       Its HEAD may be ahead of any local
+                                       checkout — always verify live HEAD.
+```
+
+See [`docs/guides/OPERATIONS.md`](docs/guides/OPERATIONS.md) (generated per-deployment into the agent-workspace) for the runbook of any specific deployment.
 
 ## Prerequisites
 
 - Node.js 22+
 - pnpm 10+ (`corepack enable`)
-- Redis (BullMQ job queue + concurrency semaphore + scheduled-tasks registry)
-- Tailscale with Funnel enabled (HTTPS ingress for webhook providers)
-- 1Password Service Account (resolves `SECRETS_CONFIG` references at boot via `op` CLI)
-- A claude-cli binary on `$PATH` (default `/usr/bin/claude`) or a custom runner
-
-## Installation
-
-clawndom runs on a dedicated EC2 host in `sc0red-dev` (us-east-1). Infrastructure (VPC wiring, systemd units, Redis, Tailscale) is under `infra/ec2/` — `cloudformation.yaml` provisions a `t3.small` / `t3.medium`, `bootstrap.sh` sets it up, and GitHub Actions (`deploy-ec2.yml`) ships every push to `main` via `scripts/deploy.sh`.
-
-For a new instance: deploy the CloudFormation stack, SSH in, run `infra/ec2/bootstrap.sh`, **register the per-instance SSH deploy key it prints as a read-only deploy key on `SC0RED/clawndom`** (Settings → Deploy keys → Add new — without this, `git fetch` from the `clawndom` user fails and the deploy workflow breaks), then follow the printed next steps (Tailscale up, populate `/etc/clawndom/clawndom.env`, `claude login`, `scripts/sync-agents.sh`, `scripts/deploy.sh`).
-
-Winston's EC2 is provisioned the same way with its own `clawndom-winston.service` unit and a separate `/etc/clawndom-winston/clawndom.env`. The clawndom binary is shared; only the env file + workspace differ.
-
-## Configuration
-
-### Core env
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `8792` | HTTP server port (production: `8793` Patches, `8794` Winston) |
-| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis URL for BullMQ + semaphore + registry |
-| `CLAWNDOM_CONFIG_DIR` | — | Where agent workspaces are cloned at boot |
-| `CLAWNDOM_AGENT_TOKEN` | — | Bearer token for `/api/tasks` + agent → memory writes |
-| `MAX_CONCURRENT_RUNS` | `1` | Global concurrency cap across all providers |
-| `AGENT_WAIT_TIMEOUT_MS` | `1800000` | Per-run timeout (30 min) |
-| `CLAWNDOM_AUDIT_LOG` | `/var/log/clawndom-winston/audit.log` | Where SPE-2078 tool audit records land |
-| `NODE_ENV` | `development` | `production` enables optimizations |
-| `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | Pino logger config |
-
-> **systemd quoting:** every JSON-valued env var in `EnvironmentFile=` MUST be wrapped in single quotes or systemd silently drops it. The bundled `infra/ec2/validate-env.sh` (SPE-2000) catches this before deploy.
-
-### `AGENTS_CONFIG`
-
-JSON array. Each entry declares an agent's git source + optional `sharedTools`. Shape above.
-
-### `PROVIDERS_CONFIG`
-
-JSON array. Each entry declares one event ingress:
-
-```json
-[
-  {
-    "name": "jira",
-    "routePath": "/hooks/jira",
-    "signatureStrategy": "websub",
-    "hmacSecret": "...",
-    "runner": {
-      "type": "claude-cli",
-      "workDirectory": "/home/clawndom/.clawndom/agents/SC0RED__the-agency/workspaces/patch",
-      "binary": "/usr/bin/claude"
-    },
-    "secrets": ["JIRA_HMAC"]
-  },
-  {
-    "name": "slack-winston",
-    "transport": "slack-socket",
-    "contextStrategy": "slack",
-    "appTokenSecret": "SLACK_WINSTON_APP_TOKEN",
-    "botTokenSecret": "SLACK_WINSTON_BOT_TOKEN",
-    "envSecrets": ["GCP_SERVICE_ACCOUNT_KEY", "XERO_CLIENT_ID", "XERO_CLIENT_SECRET"],
-    "runner": { "type": "claude-cli", "workDirectory": "...", "binary": "/usr/bin/claude" }
-  }
-]
-```
-
-| Field | Purpose |
-|---|---|
-| `name` | Stable identifier — queue suffix, log facet, semaphore key |
-| `routePath` | HTTP webhook path (omit for Slack Socket Mode) |
-| `transport` | `webhook` (default) or `slack-socket` |
-| `signatureStrategy` | `websub`, `github`, `slack`, or `bearer` |
-| `hmacSecret` | Per-provider HMAC secret (or the bearer token for `bearer`) |
-| `runner` | `{ type, workDirectory, binary }` — which runner + where to spawn |
-| `secrets` | `SECRETS_CONFIG` keys the runner needs at boot validation |
-| `envSecrets` | Keys injected into the agent subprocess env at run time |
-
-### `SECRETS_CONFIG`
-
-JSON array of `{ key, provider, reference }`. `provider: "onepassword"` looks up the secret via `op` CLI using the service account token in `OP_SERVICE_ACCOUNT_TOKEN`. Keys are `UPPER_CASE_ENV_VAR` style and must match the aliases in each tool's `tool.yaml` `secrets:` map.
-
-### Tailscale Funnel
-
-Each public path is allowlisted individually — there's no wildcard. Source of truth: [`infra/ec2/configure-tailscale-funnel.sh`](infra/ec2/configure-tailscale-funnel.sh). Re-run it on the box whenever the route list changes; the script resets and reapplies the full config so removed routes also disappear.
-
-## Webhook provider setup
-
-### Jira
-
-1. Jira Settings → System → WebHooks
-2. URL: `https://<machine>.ts.net/hooks/jira`
-3. Authenticated via HMAC — Jira sends `X-Hub-Signature: sha256=<hex>` (WebSub format)
-
-### GitHub
-
-1. Repo Settings → Webhooks → Add webhook (or org-level for multi-repo)
-2. Payload URL: `https://<machine>.ts.net/hooks/github`
-3. Content type: `application/json`, secret: your `GITHUB_HMAC_SECRET`
-4. GitHub sends `X-Hub-Signature-256: sha256=<hex>`
-
-> Before configuring any new public webhook, add its `routePath` to `infra/ec2/configure-tailscale-funnel.sh` and re-run on the host.
-
-### Slack (Socket Mode)
-
-No public URL needed — clawndom opens a WebSocket outbound. Configure the Slack app with `app_mentions:read`, `chat:write`, `assistant:write`, plus per-channel `*:history` scopes for the read tools. App + bot tokens go into `SECRETS_CONFIG` as `SLACK_<AGENT>_APP_TOKEN` / `SLACK_<AGENT>_BOT_TOKEN`.
-
-### Slack (HTTP webhook — legacy)
-
-For non-Socket-Mode usage, route via `/hooks/slack` with Slack's `v0` signature strategy.
-
-## Memory namespaces
-
-Each agent's `clawndom.yaml` can declare memory namespaces it wants:
-
-```yaml
-memory:
-  namespaces:
-    winston-personal:
-      embeddingProvider: openai
-      vectorStore: redis
-      pruneAfter: 365d
-      maxStoresPerRun: 5
-```
-
-The agent calls `/api/memory/store`, `/api/memory/search`, and `/api/memory/delete` via the `agency_tools.memory` Python client (or curl). Pruning is access-LRU; `maxStoresPerRun` caps runaway-loop write amplification.
-
-## Scheduled tasks
-
-Two ways to fire on a clock:
-
-1. **`routing.schedule` rules** in `clawndom.yaml` — declared at config time, fire via BullMQ repeatable jobs.
-2. **`/api/scheduled-tasks` (SPE-1981 registry)** — agents POST a `{ when, runner, payload }` envelope; the registry persists it in Redis and BullMQ owns the timing. Survives a clawndom restart.
+- Redis (BullMQ queue, semaphore, memory vector store cache, session-id persistence, scheduler records)
+- Tailscale (deployment posture — public webhook routes terminate at Funnel; SSH happens over the tailnet)
+- An agent-workspace repo with a valid `clawndom.yaml`
 
 ## Development
 
-```bash
-make dev          # Local server with hot reload (lint-quick first)
-make check        # lint + test + test-infra + security + naming
-make check-all    # check + sonar — required before commit
-make format       # Auto-fix formatting
+```
+make dev          # Local server with hot reload.
+make check        # Lint + test + security + naming.
+make check-all    # Full validation. Required before commit.
+make format       # Auto-fix formatting.
 ```
 
-`make check-all` is the gate clawndom expects before any push to `main`. `make sonar` requires `SONAR_TOKEN` in env; it's non-blocking when run locally because the GitHub App also runs SonarCloud on every PR.
+File size limits, coverage thresholds, and the naming-convention rules are enforced by the pre-commit hooks and CI. See [`CLAUDE.md`](CLAUDE.md) for the standards.
 
-## Health check
+## License
 
-```
-GET /api/health
-```
-
-Returns overall status plus individual checks for application boot, secret manager readiness, and each registered runner.
-
-```json
-{
-  "status": "healthy",
-  "checks": [
-    { "name": "application", "status": "healthy" },
-    { "name": "secrets", "status": "healthy" },
-    { "name": "runner:claude-cli", "status": "healthy" }
-  ],
-  "version": "0.2.0",
-  "environment": "production",
-  "timestamp": "2026-05-12T17:09:32.000Z"
-}
-```
-
-## Specs
-
-Architecture and behavior are defined in OpenSpec format under `openspec/specs/`:
-
-| Spec | Covers |
-|---|---|
-| `webhook-proxy-domain` | Webhook ingestion, signature validation, queuing, completion-aware processing |
-| `agent-runner-strategy` | Runner abstraction; how claude-cli / openai / bedrock plug in |
-| `agent-tool-use` | SPE-2078 route-side tool-use, MCP bridge, credential confinement, audit |
-| `agent-versioning` | How the audit log records the SHA of every agent repo for forensic replay |
-| `infrastructure` | EC2, systemd, Tailscale, Redis deployment |
-| `observability` | Pino structured logging, health checks, SSE event bus |
-| `error-handling` | Exception hierarchy, structured error responses (RFC 7807) |
-| `quality-framework` | Coverage thresholds, principles |
-| `testing` | Test strategy, coverage thresholds, mock patterns |
-| `developer-experience` | Makefile, tooling, onboarding |
-| `enforcement` | Pre-commit hooks, CI quality gates |
-| `ci-cd` | GitHub Actions pipeline |
-| `api-design` | HTTP response contracts |
-| `code-architecture` | Layered architecture, file size limits, dependency direction, runtime/application boundary |
+Not yet licensed for external use. If you’re reading this and you’re not the author or an authorized contributor, the code is here for inspection, not redistribution.
