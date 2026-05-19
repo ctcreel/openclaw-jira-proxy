@@ -159,11 +159,17 @@ function buildIdentityPreamble(config: IdentityInjection | undefined): string {
   return `${lines.join('\n')}\n\n`;
 }
 
+export interface EntityRenderContext {
+  actor?: unknown;
+  entity_model?: string;
+  interactions?: unknown[];
+}
+
 export async function renderTemplate(
   template: string,
   payload: unknown,
   baseDir: string,
-  options: { identity?: IdentityInjection } = {},
+  options: { identity?: IdentityInjection; entityContext?: EntityRenderContext } = {},
 ): Promise<RenderedTemplate> {
   const preamble = buildIdentityPreamble(options.identity);
   const effectiveTemplate = preamble + template;
@@ -174,9 +180,10 @@ export async function renderTemplate(
   const bodyAfterDocTags = await preprocessDocTags(bodyAfterSystemExtraction, baseDir);
 
   const spreadable = isPlainObject(payload) ? payload : {};
-  const context = {
+  const context: Record<string, unknown> = {
     payload: JSON.stringify(payload, null, 2),
     ...spreadable,
+    ...(options.entityContext ?? {}),
   };
 
   const body = nunjucksEnvironment.renderString(bodyAfterDocTags, context);

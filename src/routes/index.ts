@@ -1,6 +1,8 @@
 import express from 'express';
 import type { Express } from 'express';
 
+import { createEntitiesRoutes } from './entities.routes';
+import { createWorkspaceEntityModelHandler } from '../controllers/workspace-entity-model.controller';
 import { createHealthRoutes } from './health.routes';
 import { createMemoryRoutes } from './memory.routes';
 import { createScheduledTasksRoutes } from './scheduled-tasks.routes';
@@ -102,6 +104,21 @@ export function registerRoutes(app: Express, agents: readonly ResolvedAgent[]): 
   app.get('/api/tasks/:agent/:taskId/wait', requireAgentBearer, waitTaskHandler());
 
   app.use('/api/memory', express.json({ limit: '1mb' }), createMemoryRoutes());
+
+  // /api/agents/:agent/entities — per-tenant entity store, bearer-gated.
+  // See openspec/changes/entities for the substrate spec.
+  app.use('/api/agents/:agent/entities', requireAgentBearer, createEntitiesRoutes());
+
+  // /api/agents/:agent/workspace/entity-model — workspace metadata
+  // (kinds + schemas + relations.json + rules referencing entities).
+  // Read-only. Sits behind the editor's Tailscale identity gate
+  // because it's a workspace-introspection surface, not an agent
+  // runtime tool.
+  app.get(
+    '/api/agents/:agent/workspace/entity-model',
+    editorGate,
+    createWorkspaceEntityModelHandler(agents),
+  );
 
   // /api/version — agent_version hash + per-repo breakdown. Bearer-gated.
   // See openspec/changes/spe-2078-tool-use/specs/agent-versioning/spec.md.

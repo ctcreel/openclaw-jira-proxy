@@ -146,6 +146,32 @@ export const agentRuleSchema = z.object({
    * to errors happens once every rule has declared its inputs.
    */
   inputs: z.array(z.string().min(1)).default([]),
+  /**
+   * Per-route entity-data-surface scope. When present, this rule's
+   * runs receive an `actor` (the resolved entity from the EntityStore)
+   * and an injected `{{ entity_model }}` markdown handbook describing
+   * the in-scope kinds + their relations. Entity tools called on this
+   * route MUST reference a kind listed here; out-of-scope calls are
+   * rejected.
+   *
+   * Retrieval policy (recent interactions, memories about an entity,
+   * etc.) is deliberately NOT a route-level config. The template
+   * decides what to fetch by calling the `recall` / `history` tools
+   * with the parameters that match the moment — `since=2h`,
+   * `since=30d, about_entity=c_camilla`, or whatever the event needs.
+   * "Last 5 turns" as a static route number was structurally arbitrary
+   * (drops yesterday's conversation, doesn't adapt to event context).
+   *
+   *   entities:
+   *     kinds: [client, contact, team_member]
+   *
+   * See openspec/changes/entities for the substrate spec.
+   */
+  entities: z
+    .object({
+      kinds: z.array(z.string().trim().min(1, { message: 'kind names must be non-empty' })).min(1),
+    })
+    .optional(),
 });
 
 const agentRoutingSchema = z.object({
