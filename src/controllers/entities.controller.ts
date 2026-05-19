@@ -25,6 +25,12 @@ const relateSchema = z.object({
   actor: z.string().min(1).optional(),
 });
 
+const purgeSchema = z.object({
+  reason: z.string().min(1),
+  trace_id: z.string().min(1).optional(),
+  actor: z.string().min(1).optional(),
+});
+
 const orderFieldSchema = z.enum(['created_at', 'updated_at', 'name']);
 const orderDirectionSchema = z.enum(['asc', 'desc']);
 
@@ -229,6 +235,32 @@ export function createUnrelateEntityHandler(registry: EntityRegistry = getEntity
       response.status(200).json({ ok: true });
     } catch (error) {
       handleStoreError(error, response, 'unrelate');
+    }
+  };
+}
+
+export function createPurgeEntityHandler(registry: EntityRegistry = getEntityRegistry()) {
+  return (request: Request, response: Response): void => {
+    const context = getAgentContext(request, response, registry);
+    if (context === null) return;
+    const id = getStringParameter(request, 'id');
+    if (id === undefined) {
+      response.status(400).json({ error: 'Missing :id path parameter' });
+      return;
+    }
+    const parsed = purgeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: 'Invalid request', details: parsed.error.issues });
+      return;
+    }
+    try {
+      context.store.purge(id, parsed.data.reason, {
+        trace_id: parsed.data.trace_id ?? null,
+        actor: parsed.data.actor ?? null,
+      });
+      response.status(200).json({ ok: true });
+    } catch (error) {
+      handleStoreError(error, response, 'purge');
     }
   };
 }

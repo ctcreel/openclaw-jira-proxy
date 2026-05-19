@@ -4,6 +4,7 @@ import {
   createAuditEntityHandler,
   createGetEntityHandler,
   createListEntitiesHandler,
+  createPurgeEntityHandler,
   createRelateEntityHandler,
   createUnrelateEntityHandler,
   createUpsertEntityHandler,
@@ -17,6 +18,7 @@ export function createEntitiesRoutes(): Router {
   router.post('/', json, createUpsertEntityHandler());
   router.post('/:id/relations', json, createRelateEntityHandler());
   router.delete('/:id/relations/:type/:to', createUnrelateEntityHandler());
+  router.post('/:id/purge', json, createPurgeEntityHandler());
   router.get('/:id/audit', createAuditEntityHandler());
   return router;
 }

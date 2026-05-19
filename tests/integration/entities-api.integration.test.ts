@@ -349,6 +349,34 @@ describe('API-driven: full Heather cross-channel scenario over HTTP', () => {
     expect(result.body['entities'] as unknown[]).toHaveLength(1);
   });
 
+  it('purge endpoint hard-deletes the entity and severs relations', async () => {
+    const test = await apiCall('POST', '/api/agents/winston/entities/', {
+      kind: 'team_member',
+      name: 'Test Fixture',
+      properties: { email: 'test-fixture@example.com', status: 'active' },
+      id: 't_test',
+    });
+    expect(test.status).toBe(200);
+    const purged = await apiCall('POST', '/api/agents/winston/entities/t_test/purge', {
+      reason: 'test cleanup',
+    });
+    expect(purged.status).toBe(200);
+    const refetch = await apiCall('GET', '/api/agents/winston/entities/t_test');
+    expect(refetch.status).toBe(404);
+    // Audit log captured the purge with reason
+    const audit = await apiCall('GET', '/api/agents/winston/entities/t_test/audit');
+    expect(audit.status).toBe(200);
+    const auditList = audit.body['audit'] as Array<{ op: string; diff: { reason: string } }>;
+    const purgeRecord = auditList.find((entry) => entry.op === 'purge');
+    expect(purgeRecord).toBeDefined();
+    expect(purgeRecord!.diff.reason).toBe('test cleanup');
+  });
+
+  it('purge endpoint requires a non-empty reason', async () => {
+    const result = await apiCall('POST', '/api/agents/winston/entities/no-such-id/purge', {});
+    expect(result.status).toBe(400);
+  });
+
   it('time-based retrieval via order + limit', async () => {
     // Write three interactions with synthetic timestamps via the
     // service (the controller doesn't expose an order_dir=asc shortcut
