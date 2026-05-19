@@ -7,7 +7,6 @@ import { extractIdentityHints, type SurfaceKind } from './identity-hint-extracto
 
 export interface RulePolicy {
   entities?: { kinds: string[] };
-  interactions?: { topN: number; includeMentionsOfRelatedEntities: boolean };
 }
 
 export interface RunDescriptor {
@@ -20,7 +19,6 @@ export interface RunDescriptor {
 export interface PreparedEntityContext {
   actor: Actor | null;
   entity_model: string | undefined;
-  interactions: unknown[];
 }
 
 const PROVIDER_TO_SURFACE: Record<string, SurfaceKind> = {
@@ -48,19 +46,22 @@ export class WorkerEntitiesHook {
   }
 
   /**
-   * Pre-render hook. Called after memories are fetched but before the
-   * template renders. Resolves the actor, fetches recent interactions
-   * if the rule opts in, and synthesizes the entity_model markdown.
+   * Pre-render hook. Called before the template renders. Resolves the
+   * actor and synthesizes the entity_model markdown handbook scoped
+   * to the rule's entities.kinds.
    *
-   * Returns an empty context (all undefined/null/empty) when the
-   * agent has no entity registration, or when the rule doesn't
-   * declare entities.kinds. Callers should use {@link hasEntityScope}
-   * to decide whether to pass the context to the template renderer.
+   * Interaction retrieval is deliberately NOT done here — agents call
+   * the `history` and `recall` tools to fetch the parameters that
+   * match the event (since=24h, about_entity=X, etc.) instead of
+   * receiving a static topN auto-injection.
+   *
+   * Returns null actor + undefined entity_model when the agent has
+   * no entity registration or the rule doesn't declare entities.kinds.
    */
   prepare(rule: RulePolicy, descriptor: RunDescriptor, payload: unknown): PreparedEntityContext {
     const context = this.registry.get(descriptor.agentName);
     if (context === null || rule.entities === undefined) {
-      return { actor: null, entity_model: undefined, interactions: [] };
+      return { actor: null, entity_model: undefined };
     }
     const surface = resolveSurface(descriptor.providerName);
     const hints = extractIdentityHints(surface, payload);
@@ -70,19 +71,7 @@ export class WorkerEntitiesHook {
       relations: context.workspace.relations,
       kinds: rule.entities.kinds,
     });
-    let interactions: unknown[] = [];
-    if (rule.interactions !== undefined && actor !== null) {
-      const recent = this.integration.fetchRecentInteractions(descriptor.agentName, actor, {
-        topN: rule.interactions.topN,
-        includeMentionsOfRelatedEntities: rule.interactions.includeMentionsOfRelatedEntities,
-      });
-      interactions = recent.map((entry) => ({
-        id: entry.id,
-        ...entry.properties,
-        created_at: entry.created_at,
-      }));
-    }
-    return { actor, entity_model: entityModel, interactions };
+    return { actor, entity_model: entityModel };
   }
 
   /**
@@ -100,17 +89,13 @@ export class WorkerEntitiesHook {
   ): void {
     if (actor === null || rule.entities === undefined) return;
     const surface = resolveSurface(descriptor.providerName);
-    try {
-      this.integration.recordInteraction(descriptor.agentName, actor, {
-        inbound_text: inboundText,
-        outbound_summary: outboundSummary,
-        surface,
-        route: `${descriptor.providerName}.${descriptor.ruleName}`,
-        trace_id: descriptor.traceId,
-      });
-    } catch {
-      // best-effort; the worker continues regardless
-    }
+    this.integration.recordInteraction(descriptor.agentName, actor, {
+      inbound_text: inboundText,
+      outbound_summary: outboundSummary,
+      surface,
+      route: `${descriptor.providerName}.${descriptor.ruleName}`,
+      trace_id: descriptor.traceId,
+    });
   }
 }
 

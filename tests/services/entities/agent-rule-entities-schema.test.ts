@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { agentRuleSchema } from '../../../src/services/agent-loader.service';
 
-describe('agentRuleSchema: entities + interactions blocks', () => {
+describe('agentRuleSchema: entities block', () => {
   it('accepts a rule with entities.kinds', () => {
     const result = agentRuleSchema.safeParse({
       name: 'chat',
@@ -14,19 +14,6 @@ describe('agentRuleSchema: entities + interactions blocks', () => {
     }
   });
 
-  it('accepts a rule with interactions config', () => {
-    const result = agentRuleSchema.safeParse({
-      name: 'chat',
-      entities: { kinds: ['team_member', 'interaction'] },
-      interactions: { topN: 5 },
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.interactions?.topN).toBe(5);
-      expect(result.data.interactions?.includeMentionsOfRelatedEntities).toBe(false);
-    }
-  });
-
   it('rejects empty entities.kinds list', () => {
     const result = agentRuleSchema.safeParse({
       name: 'chat',
@@ -35,27 +22,23 @@ describe('agentRuleSchema: entities + interactions blocks', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects interactions.topN exceeding cap', () => {
+  it('rejects unknown fields (e.g., the old interactions block)', () => {
+    // The interactions:{topN} field was dropped — retrieval is now
+    // template-driven via the `history`/`recall` tools. Zod by default
+    // allows extra keys (strip), so the result still parses but the
+    // field is not surfaced on the typed output.
     const result = agentRuleSchema.safeParse({
       name: 'chat',
-      interactions: { topN: 100 },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('parses includeMentionsOfRelatedEntities when supplied', () => {
-    const result = agentRuleSchema.safeParse({
-      name: 'chat',
-      entities: { kinds: ['contact'] },
-      interactions: { topN: 3, includeMentionsOfRelatedEntities: true },
+      entities: { kinds: ['client'] },
+      interactions: { topN: 5 },
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.interactions?.includeMentionsOfRelatedEntities).toBe(true);
+      expect('interactions' in result.data).toBe(false);
     }
   });
 
-  it('rule without entities or interactions still parses (backward compat)', () => {
+  it('rule without entities still parses (backward compat)', () => {
     const result = agentRuleSchema.safeParse({
       name: 'refresh-gmail-watch',
       cron: '0 */6 * * *',
@@ -63,7 +46,6 @@ describe('agentRuleSchema: entities + interactions blocks', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.entities).toBeUndefined();
-      expect(result.data.interactions).toBeUndefined();
     }
   });
 });

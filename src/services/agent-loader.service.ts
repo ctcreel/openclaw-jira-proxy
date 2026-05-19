@@ -154,6 +154,14 @@ export const agentRuleSchema = z.object({
    * route MUST reference a kind listed here; out-of-scope calls are
    * rejected.
    *
+   * Retrieval policy (recent interactions, memories about an entity,
+   * etc.) is deliberately NOT a route-level config. The template
+   * decides what to fetch by calling the `recall` / `history` tools
+   * with the parameters that match the moment — `since=2h`,
+   * `since=30d, about_entity=c_camilla`, or whatever the event needs.
+   * "Last 5 turns" as a static route number was structurally arbitrary
+   * (drops yesterday's conversation, doesn't adapt to event context).
+   *
    *   entities:
    *     kinds: [client, contact, team_member]
    *
@@ -162,23 +170,6 @@ export const agentRuleSchema = z.object({
   entities: z
     .object({
       kinds: z.array(z.string().min(1)).min(1),
-    })
-    .optional(),
-  /**
-   * Per-route opt-in for cross-surface interaction injection. When
-   * present, the template render receives `{{ interactions }}` —
-   * recent interactions for the resolved actor (and, with
-   * `includeMentionsOfRelatedEntities`, interactions whose --about-->
-   * is one of the actor's related clients).
-   *
-   *   interactions:
-   *     topN: 5
-   *     includeMentionsOfRelatedEntities: true
-   */
-  interactions: z
-    .object({
-      topN: z.number().int().positive().max(50).default(5),
-      includeMentionsOfRelatedEntities: z.boolean().default(false),
     })
     .optional(),
 });

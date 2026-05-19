@@ -40,10 +40,7 @@ export class EntityWorkerIntegration {
     record: RunInteractionRecord,
   ): RecordInteractionResult {
     const context = this.registry.get(agentName);
-    if (context === null) {
-      return { interactionId: null, taggedMentions: [], ambiguousMentions: [] };
-    }
-    if (!hasInteractionSchema(context)) {
+    if (context === null || !hasInteractionSchema(context)) {
       return { interactionId: null, taggedMentions: [], ambiguousMentions: [] };
     }
 
@@ -55,31 +52,22 @@ export class EntityWorkerIntegration {
       route: record.route,
       trace_id: record.trace_id,
     };
-    if (actor.kind === 'stranger' && 'email' in actor && actor.email !== null) {
+    if (actor.kind === 'stranger' && actor.email !== null) {
       properties['actor_email'] = actor.email;
     }
 
-    let interaction;
-    try {
-      interaction = context.store.upsert(
-        'interaction',
-        `${record.surface}:${record.route}@${new Date().toISOString()}`,
-        properties,
-        { trace_id: record.trace_id, actor: 'framework:worker' },
-      );
-    } catch {
-      return { interactionId: null, taggedMentions: [], ambiguousMentions: [] };
-    }
+    const interaction = context.store.upsert(
+      'interaction',
+      `${record.surface}:${record.route}@${new Date().toISOString()}`,
+      properties,
+      { trace_id: record.trace_id, actor: 'framework:worker' },
+    );
 
     if (actor.kind !== 'stranger' && actor.id !== null) {
-      try {
-        context.store.relate(interaction.id, 'from', actor.id, null, {
-          trace_id: record.trace_id,
-          actor: 'framework:worker',
-        });
-      } catch {
-        // intentional: relation failure shouldn't fail the run
-      }
+      context.store.relate(interaction.id, 'from', actor.id, null, {
+        trace_id: record.trace_id,
+        actor: 'framework:worker',
+      });
     }
 
     const combinedText = `${record.inbound_text}\n${outboundSummary}`;
@@ -87,15 +75,11 @@ export class EntityWorkerIntegration {
     const tagged: string[] = [];
     for (const match of mentions.matched) {
       if (actor.kind !== 'stranger' && match.entityId === actor.id) continue;
-      try {
-        context.store.relate(interaction.id, 'about', match.entityId, null, {
-          trace_id: record.trace_id,
-          actor: 'framework:worker',
-        });
-        tagged.push(match.entityId);
-      } catch {
-        // intentional: best-effort tagging
-      }
+      context.store.relate(interaction.id, 'about', match.entityId, null, {
+        trace_id: record.trace_id,
+        actor: 'framework:worker',
+      });
+      tagged.push(match.entityId);
     }
 
     return {

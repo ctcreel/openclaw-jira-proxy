@@ -138,31 +138,32 @@ describe('WorkerEntitiesHook.prepare', () => {
     expect(result.actor!.id).toBe('t_heather');
   });
 
-  it('fetches interactions when rule opts in', () => {
-    // Pre-record an interaction
-    const actor = hook.prepare(
+  it('does not auto-fetch interactions (retrieval is template-driven)', () => {
+    // Record an interaction via the post-turn hook
+    const firstActor = hook.prepare(
       { entities: { kinds: ['team_member', 'interaction'] } },
       { agentName: 'winston', providerName: 'slack-winston', ruleName: 'chat', traceId: 't1' },
       { event: { user: 'U_HEATHER' } },
     ).actor;
-    expect(actor).not.toBeNull();
+    expect(firstActor).not.toBeNull();
     hook.recordTurn(
       { entities: { kinds: ['team_member', 'interaction'] } },
       { agentName: 'winston', providerName: 'slack-winston', ruleName: 'chat', traceId: 't1' },
-      actor,
+      firstActor,
       'hello',
       'hi back',
     );
 
+    // Subsequent prepare must NOT pre-populate interactions — that's
+    // the agent's job via the history/recall tools.
     const result = hook.prepare(
-      {
-        entities: { kinds: ['team_member', 'interaction'] },
-        interactions: { topN: 5, includeMentionsOfRelatedEntities: false },
-      },
+      { entities: { kinds: ['team_member', 'interaction'] } },
       { agentName: 'winston', providerName: 'slack-winston', ruleName: 'chat', traceId: 't2' },
       { event: { user: 'U_HEATHER' } },
     );
-    expect(result.interactions.length).toBeGreaterThan(0);
+    expect('interactions' in result).toBe(false);
+    expect(result.actor).not.toBeNull();
+    expect(result.entity_model).toBeDefined();
   });
 });
 

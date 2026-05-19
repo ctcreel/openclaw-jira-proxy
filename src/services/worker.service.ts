@@ -223,17 +223,14 @@ export async function processJob(
     );
   }
 
-  // Entity pre-render hook: resolve actor + recent interactions +
-  // {{ entity_model }} when the rule declares entities.kinds. No-op
-  // when the rule doesn't opt in or the agent has no entity store.
+  // Entity pre-render hook: resolve actor + render {{ entity_model }}
+  // markdown handbook scoped to the rule's entities.kinds. No-op when
+  // the rule doesn't declare entities.kinds or the agent has no
+  // entity store. Interaction/memory retrieval is template-driven via
+  // the `history` and `recall` tools — see openspec/changes/entities.
   const entitiesHook = getWorkerEntitiesHook();
   const entityContext = entitiesHook.prepare(
-    {
-      ...(resolved.rule.entities !== undefined ? { entities: resolved.rule.entities } : {}),
-      ...(resolved.rule.interactions !== undefined
-        ? { interactions: resolved.rule.interactions }
-        : {}),
-    },
+    resolved.rule.entities !== undefined ? { entities: resolved.rule.entities } : {},
     {
       agentName: agentId,
       providerName: provider.name,
@@ -266,7 +263,6 @@ export async function processJob(
         ...(entityContext.entity_model !== undefined
           ? { entity_model: entityContext.entity_model }
           : {}),
-        interactions: entityContext.interactions,
       },
     });
     systemPrompt = rendered.systemPrompt;
@@ -490,12 +486,7 @@ export async function processJob(
         ? result.output
         : '';
     entitiesHook.recordTurn(
-      {
-        ...(resolved.rule.entities !== undefined ? { entities: resolved.rule.entities } : {}),
-        ...(resolved.rule.interactions !== undefined
-          ? { interactions: resolved.rule.interactions }
-          : {}),
-      },
+      resolved.rule.entities !== undefined ? { entities: resolved.rule.entities } : {},
       {
         agentName: agentId,
         providerName: provider.name,
