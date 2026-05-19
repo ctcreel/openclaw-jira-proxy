@@ -12,7 +12,11 @@ import { initializeAgentVersion } from './services/version.service';
 import { buildAlertRegistry } from './services/alerts';
 import { getInflightRegistry } from './services/inflight-registry.service';
 import { getOrphanReaper } from './services/orphan-reaper.service';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { bootstrapMemoryService } from './services/memory/bootstrap';
+import { getEntityRegistry } from './services/entities/entity-registry';
 import { MemoryPruningScheduler } from './services/memory/pruning.service';
 import { registerAgentSchedules } from './services/scheduler.service';
 import { createTaskWorker } from './services/task-worker.service';
@@ -302,6 +306,34 @@ function installShutdownHandlers(
   process.on('SIGINT', shutdown);
 }
 
+/**
+ * Initialize the EntityRegistry for each loaded agent whose workspace
+ * ships entity-store artifacts (a `schemas/` directory). Agents
+ * without those files (system agents, agents that haven't opted into
+ * the entity store) are skipped — the worker hook no-ops on lookup
+ * misses.
+ */
+function registerAgentEntityContexts(agents: readonly ResolvedAgent[], logger: Logger): void {
+  const registry = getEntityRegistry();
+  for (const agent of agents) {
+    const workspaceSchemas = join(agent.dir, 'schemas');
+    if (!existsSync(workspaceSchemas)) continue;
+    try {
+      registry.register({
+        agentName: agent.name,
+        workspacePath: agent.dir,
+      });
+      logger.info({ agent: agent.name }, 'Entity store registered for agent');
+    } catch (error) {
+      logger.error(
+        { agent: agent.name, error: error instanceof Error ? error.message : String(error) },
+        'Failed to register entity store for agent',
+      );
+      throw error;
+    }
+  }
+}
+
 async function startServer(): Promise<void> {
   setupLogging();
   const logger = getLogger('server');
@@ -331,6 +363,12 @@ async function startServer(): Promise<void> {
   // SPE-2078: capture composite agent_version hash from involved repos.
   // Fails boot in CLAWNDOM_ENV=production if any repo has uncommitted changes.
   await initializeAgentVersion(agents.map((a) => a.dir));
+
+  // Register entity store + resolver for each agent whose workspace
+  // ships a schemas/ directory + relations.json. Lazy: agents without
+  // workspace artifacts get no entity context, and the worker hook
+  // no-ops for them. See openspec/changes/entities.
+  registerAgentEntityContexts(agents, logger);
 
   const memoryNamespaces = await bootstrapMemoryService(agents, secretManager);
   const pruningScheduler = new MemoryPruningScheduler(memoryNamespaces);
