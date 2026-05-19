@@ -169,7 +169,7 @@ export const agentRuleSchema = z.object({
    */
   entities: z
     .object({
-      kinds: z.array(z.string().min(1)).min(1),
+      kinds: z.array(z.string().trim().min(1, { message: 'kind names must be non-empty' })).min(1),
     })
     .optional(),
 });
