@@ -377,6 +377,127 @@ describe('API-driven: full Heather cross-channel scenario over HTTP', () => {
     expect(result.status).toBe(400);
   });
 
+  it('remember-then-recall flow via raw HTTP (agency-tools shape)', async () => {
+    // Create a client (this is what entity.upsert does)
+    const camilla = await apiCall('POST', '/api/agents/winston/entities/', {
+      kind: 'client',
+      name: 'Camilla',
+      properties: { legal_name: 'Camilla Asher', date_of_birth: '2018-04-12', status: 'active' },
+    });
+    const camillaId = (camilla.body['entity'] as { id: string }).id;
+
+    // remember(thing, about) = upsert(kind=memory) + relate(memory_about)
+    const memory = await apiCall('POST', '/api/agents/winston/entities/', {
+      kind: 'memory',
+      name: 'Family is moving in August',
+      properties: {
+        text: 'Family is moving in August',
+        written_at: '2026-05-18',
+        status: 'active',
+      },
+    });
+    const memoryId = (memory.body['entity'] as { id: string }).id;
+    await apiCall('POST', `/api/agents/winston/entities/${memoryId}/relations`, {
+      type: 'memory_about',
+      to_id: camillaId,
+    });
+
+    // recall(about=camilla) = find(kinds=memory, related_to=camilla, relation_type=memory_about)
+    const recall = await apiCall(
+      'GET',
+      `/api/agents/winston/entities/?kinds=memory&related_to=${camillaId}&relation_type=memory_about&order_field=created_at&order_dir=desc`,
+    );
+    expect(recall.status).toBe(200);
+    const memories = recall.body['entities'] as Array<{
+      properties: { text: string; status: string };
+    }>;
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.properties.text).toBe('Family is moving in August');
+    expect(memories[0]!.properties.status).toBe('active');
+  });
+
+  it('forget flow: upsert with status=forgotten then recall filters it out', async () => {
+    const camilla = await apiCall('POST', '/api/agents/winston/entities/', {
+      kind: 'client',
+      name: 'Camilla',
+      properties: { legal_name: 'Camilla Asher', date_of_birth: '2018-04-12', status: 'active' },
+    });
+    const camillaId = (camilla.body['entity'] as { id: string }).id;
+    const memory = await apiCall('POST', '/api/agents/winston/entities/', {
+      kind: 'memory',
+      name: 'old thought',
+      properties: { text: 'old thought', written_at: '2026-05-18', status: 'active' },
+    });
+    const memoryId = (memory.body['entity'] as { id: string }).id;
+    await apiCall('POST', `/api/agents/winston/entities/${memoryId}/relations`, {
+      type: 'memory_about',
+      to_id: camillaId,
+    });
+
+    // forget(memory_id) = upsert(id, properties={...existing, status: 'forgotten'})
+    const fetched = await apiCall('GET', `/api/agents/winston/entities/${memoryId}`);
+    const existing = (fetched.body['entity'] as { properties: Record<string, unknown> }).properties;
+    await apiCall('POST', '/api/agents/winston/entities/', {
+      kind: 'memory',
+      name: 'old thought',
+      properties: { ...existing, status: 'forgotten' },
+      id: memoryId,
+    });
+
+    // Confirm find still returns it (status filter is per-call)
+    const all = await apiCall(
+      'GET',
+      `/api/agents/winston/entities/?kinds=memory&related_to=${camillaId}&relation_type=memory_about`,
+    );
+    const allMemories = all.body['entities'] as Array<{ properties: { status: string } }>;
+    expect(allMemories[0]!.properties.status).toBe('forgotten');
+
+    // recall filters status=forgotten client-side; the framework
+    // provides the raw list and the recall tool's invoke() does the
+    // filtering. Test the underlying contract: status field changed.
+  });
+
+  it('history-style time-based interaction retrieval', async () => {
+    // Seed a team_member as the actor
+    await apiCall('POST', '/api/agents/winston/entities/', {
+      kind: 'team_member',
+      name: 'Heather',
+      properties: { email: 'heather@x.com', slack_user_id: 'U_H', status: 'active' },
+      id: 't_heather',
+    });
+
+    // Write three interactions over simulated time
+    for (let i = 0; i < 3; i++) {
+      const interaction = await apiCall('POST', '/api/agents/winston/entities/', {
+        kind: 'interaction',
+        name: `slack:turn-${i}`,
+        properties: {
+          inbound_text: `message ${i}`,
+          outbound_summary: 'ack',
+          surface: 'slack',
+          route: 'slack-winston.chat',
+          trace_id: `trc-${i}`,
+        },
+      });
+      const interactionId = (interaction.body['entity'] as { id: string }).id;
+      await apiCall('POST', `/api/agents/winston/entities/${interactionId}/relations`, {
+        type: 'from',
+        to_id: 't_heather',
+      });
+    }
+
+    // history(with_actor=t_heather, limit=2) = find(kinds=interaction, related_to=t_heather, relation_type=from, limit=2)
+    const recent = await apiCall(
+      'GET',
+      '/api/agents/winston/entities/?kinds=interaction&related_to=t_heather&relation_type=from&order_field=created_at&order_dir=desc&limit=2',
+    );
+    expect(recent.status).toBe(200);
+    const interactions = recent.body['entities'] as Array<{ name: string }>;
+    expect(interactions).toHaveLength(2);
+    // Most recent first
+    expect(interactions[0]!.name).toBe('slack:turn-2');
+  });
+
   it('time-based retrieval via order + limit', async () => {
     // Write three interactions with synthetic timestamps via the
     // service (the controller doesn't expose an order_dir=asc shortcut
